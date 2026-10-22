@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import { DISPO_ROLES, REFERENTIEL_READ, useAuth, useCurrentUser } from '../auth/AuthContext';
+import { ACCUEIL_EDT, PLANIFICATION_ROLES, TABLEAUX_ROLES, VALIDATION_ROLES } from '../auth/droits';
 import { useData } from '../store/DataContext';
 import { ROLE_LABELS, type Role } from '../types';
 
@@ -15,12 +16,14 @@ interface NavSection {
   items: NavItem[];
 }
 
-// Menu filtré selon le rôle : un étudiant ne voit que l'accueil et son profil.
+// Menu filtré selon le rôle : un étudiant ne voit que son emploi du temps, l'accueil et son profil.
 const NAV: NavSection[] = [
   {
     title: 'Général',
     items: [
-      { to: '/', label: 'Accueil' },
+      { to: '/', label: 'Accueil', roles: ['administrateur', 'planificateur', 'chef_departement'] },
+      { to: '/emploi-du-temps', label: 'Mon emploi du temps', roles: ACCUEIL_EDT },
+      { to: '/accueil', label: 'Résumé du jour', roles: ACCUEIL_EDT },
       { to: '/profil', label: 'Profil et notifications' },
     ],
   },
@@ -42,6 +45,33 @@ const NAV: NavSection[] = [
     items: [
       { to: '/enseignants', label: 'Enseignants et habilitations', roles: REFERENTIEL_READ },
       { to: '/disponibilites', label: 'Disponibilités', roles: DISPO_ROLES },
+      { to: '/campagne', label: 'Campagne de saisie', roles: PLANIFICATION_ROLES },
+    ],
+  },
+  {
+    title: 'Planification',
+    items: [
+      { to: '/planification', label: 'Grille de planification', roles: PLANIFICATION_ROLES },
+      { to: '/planification/duplication', label: 'Duplication sur le semestre', roles: PLANIFICATION_ROLES },
+      { to: '/generation', label: 'Génération automatique', roles: PLANIFICATION_ROLES },
+      { to: '/validation', label: 'Validation du département', roles: VALIDATION_ROLES },
+      { to: '/publication', label: 'Publication et versions', roles: PLANIFICATION_ROLES },
+    ],
+  },
+  {
+    title: 'Consultation',
+    items: [
+      { to: '/emploi-du-temps', label: 'Emplois du temps', roles: ['administrateur', 'planificateur', 'chef_departement'] },
+      { to: '/tableaux-de-bord', label: 'Tableaux de bord', roles: TABLEAUX_ROLES },
+    ],
+  },
+  {
+    title: 'Administration',
+    items: [
+      { to: '/admin/utilisateurs', label: 'Comptes et rôles', roles: PLANIFICATION_ROLES },
+      { to: '/admin/audit', label: 'Journal d’audit', roles: PLANIFICATION_ROLES },
+      { to: '/admin/annees', label: 'Années et semestres', roles: PLANIFICATION_ROLES },
+      { to: '/admin/parametres', label: 'Paramètres', roles: PLANIFICATION_ROLES },
     ],
   },
 ];

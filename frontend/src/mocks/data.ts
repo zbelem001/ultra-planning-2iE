@@ -1,4 +1,4 @@
-import type { Campagne, Creneau, Db, Jour } from '../types';
+import type { Campagne, Creneau, Db, Jour, Seance } from '../types';
 
 // Données fictives de démonstration, en attendant l'API FastAPI.
 // Quelques anomalies sont volontaires (cours sans volume horaire, groupe
@@ -29,7 +29,7 @@ export const campagne: Campagne = {
 };
 
 export function seedDb(): Db {
-  return {
+  return completerPages15a28({
     departements: [
       { id: 1, code: 'GEI', libelle: 'Génie électrique, énergétique et industriel' },
       { id: 2, code: 'GCH', libelle: 'Génie civil et hydraulique' },
@@ -158,6 +158,7 @@ export function seedDb(): Db {
       { id: 5, coursId: 8, typeSeanceId: 1, groupeId: 7, enseignantId: 1, salleId: 2, creneauId: 17 },
       { id: 6, coursId: 1, typeSeanceId: 1, groupeId: 1, enseignantId: 5, salleId: 1, creneauId: 2 },
       { id: 7, coursId: 3, typeSeanceId: 1, groupeId: 4, enseignantId: 2, salleId: 2, creneauId: 7 },
+      ...seancesComplementaires,
     ],
     utilisateurs: [
       { id: 1, login: 'admin', nom: 'Administrateur système', email: 'admin@2ie-edu.org', role: 'administrateur' },
@@ -165,6 +166,7 @@ export function seedDb(): Db {
       { id: 3, login: 'chef.inf', nom: 'Félicité Compaoré', email: 'felicite.compaore@2ie-edu.org', role: 'chef_departement', departementId: 4, enseignantId: 6 },
       { id: 4, login: 'aminata.ouedraogo', nom: 'Aminata Ouédraogo', email: 'aminata.ouedraogo@2ie-edu.org', role: 'enseignant', enseignantId: 1 },
       { id: 5, login: 'etu.m2ia', nom: 'Daniel Ilboudo', email: 'daniel.ilboudo@2ie-edu.org', role: 'etudiant', groupeId: 7 },
+      ...utilisateursComplementaires,
     ],
     notifications: [
       { id: 1, utilisateurId: 4, date: '2027-06-02T09:00:00', titre: 'Saisie des disponibilités ouverte', texte: 'Merci de déclarer vos disponibilités avant le 30 juin 2027.', lue: false },
@@ -172,6 +174,128 @@ export function seedDb(): Db {
       { id: 3, utilisateurId: 5, date: '2027-06-01T08:00:00', titre: 'Emploi du temps publié', texte: 'La version 3 de l’emploi du temps M2-IA est disponible.', lue: false },
       { id: 4, utilisateurId: 2, date: '2027-06-03T11:00:00', titre: 'Import terminé', texte: 'Import des salles : 8 lignes chargées, 1 rejetée.', lue: false },
       { id: 5, utilisateurId: 3, date: '2027-06-03T10:00:00', titre: 'Volumes à valider', texte: '3 cours du département INF attendent votre validation.', lue: false },
+    ],
+  });
+}
+
+// ---------- Pages 15 à 28 ----------
+// Les séances 1 à 7 forment la semaine type de départ ; on en ajoute quelques-unes,
+// toutes conformes à CD-01…CD-09, pour remplir la grille et les consultations.
+
+const seancesComplementaires: Seance[] = [
+  { id: 8, coursId: 1, typeSeanceId: 2, groupeId: 2, enseignantId: 5, salleId: 3, creneauId: 3 },
+  { id: 9, coursId: 1, typeSeanceId: 2, groupeId: 3, enseignantId: 5, salleId: 4, creneauId: 4 },
+  { id: 10, coursId: 2, typeSeanceId: 2, groupeId: 2, enseignantId: 2, salleId: 3, creneauId: 5 },
+  { id: 11, coursId: 4, typeSeanceId: 1, groupeId: 5, enseignantId: 3, salleId: 2, creneauId: 9 },
+  { id: 12, coursId: 5, typeSeanceId: 1, groupeId: 5, enseignantId: 3, salleId: 1, creneauId: 10 },
+  { id: 13, coursId: 4, typeSeanceId: 1, groupeId: 6, enseignantId: 3, salleId: 2, creneauId: 13 },
+  { id: 14, coursId: 6, typeSeanceId: 1, groupeId: 6, enseignantId: 4, salleId: 1, creneauId: 14 },
+];
+
+const utilisateursComplementaires: Db['utilisateurs'] = [
+  { id: 6, login: 'chef.gch', nom: 'Mariam Kaboré', email: 'mariam.kabore@2ie-edu.org', role: 'chef_departement', departementId: 2, enseignantId: 3, derniereConnexion: '2027-06-02T08:12:00' },
+  { id: 7, login: 'issaka.sawadogo', nom: 'Issaka Sawadogo', email: 'issaka.sawadogo@2ie-edu.org', role: 'enseignant', enseignantId: 2, derniereConnexion: '2027-05-28T17:40:00' },
+  { id: 8, login: 'etu.l1ing', nom: 'Awa Sanou', email: 'awa.sanou@2ie-edu.org', role: 'etudiant', groupeId: 2 },
+];
+
+type CollectionsPages15a28 =
+  | 'annees'
+  | 'semestres'
+  | 'campagnes'
+  | 'relances'
+  | 'duplications'
+  | 'generations'
+  | 'validations'
+  | 'versions'
+  | 'signalements'
+  | 'audit'
+  | 'parametres'
+  | 'gabarits';
+
+function completerPages15a28(base: Omit<Db, CollectionsPages15a28>): Db {
+  // Instantané de la semaine type pour les versions déjà publiées ; `deplace`
+  // remet certaines séances sur leur ancien créneau pour que la comparaison montre un écart.
+  const instantane = (ids: number[], deplace: Record<number, number> = {}): Seance[] =>
+    base.seances
+      .filter((s) => ids.includes(s.id))
+      .map((s) => (deplace[s.id] ? { ...s, creneauId: deplace[s.id] } : { ...s }));
+
+  return {
+    ...base,
+    seances: base.seances.map((s) => (s.id === 1 || s.id === 6 ? { ...s, verrouillee: true } : s)),
+    annees: [
+      { id: 1, libelle: '2025-2026', debut: '2025-09-01', fin: '2026-07-31', statut: 'cloturee' },
+      { id: 2, libelle: '2026-2027', debut: '2026-09-01', fin: '2027-07-31', statut: 'ouverte' },
+      { id: 3, libelle: '2027-2028', debut: '2027-09-01', fin: '2028-07-31', statut: 'ouverte' },
+    ],
+    semestres: [
+      { id: 1, anneeId: 1, code: 'S1', debut: '2025-09-22', fin: '2026-01-23', statut: 'cloturee' },
+      { id: 2, anneeId: 1, code: 'S2', debut: '2026-02-09', fin: '2026-06-19', statut: 'cloturee' },
+      { id: 3, anneeId: 2, code: 'S1', debut: '2026-09-21', fin: '2027-01-22', statut: 'cloturee' },
+      { id: 4, anneeId: 2, code: 'S2', debut: '2027-02-08', fin: '2027-06-18', statut: 'ouverte' },
+      { id: 5, anneeId: 3, code: 'S1', debut: '2027-09-20', fin: '2028-01-21', statut: 'ouverte' },
+      { id: 6, anneeId: 3, code: 'S2', debut: '2028-02-07', fin: '2028-06-16', statut: 'a_venir' },
+    ],
+    campagnes: [{ id: 1, semestreId: 5, dateLimite: campagne.dateLimite, relanceAuto: true, joursRelance: [14, 7, 1] }],
+    relances: [{ id: 1, campagneId: 1, date: '2027-06-16T09:00:00', auto: true, enseignantIds: [4, 5, 6] }],
+    duplications: [
+      { id: 1, semestreId: 5, date: '2027-06-01T10:00:00', auteurId: 2, semainesExclues: ['2027-12-20', '2027-12-27', '2028-01-17'], occurrences: 98 },
+    ],
+    generations: [],
+    validations: [
+      { id: 1, departementId: 1, semestreId: 5, statut: 'validee', date: '2027-06-02T11:00:00', utilisateurId: 1, commentaire: 'Validé en conseil de département.' },
+      { id: 2, departementId: 2, semestreId: 5, statut: 'validee', date: '2027-06-02T15:20:00', utilisateurId: 6, commentaire: '' },
+      { id: 3, departementId: 3, semestreId: 5, statut: 'corrections', date: '2027-06-03T09:05:00', utilisateurId: 1, commentaire: 'Le TP de ASS403 n’est pas planifié : aucun laboratoire de 30 places.' },
+      { id: 4, departementId: 4, semestreId: 5, statut: 'en_attente', commentaire: '' },
+    ],
+    versions: [
+      { id: 1, semestreId: 5, numero: 1, statut: 'archivee', date: '2027-05-10T16:00:00', auteurId: 2, commentaire: 'Première version : CM du tronc commun.', seances: instantane([1, 6]) },
+      { id: 2, semestreId: 5, numero: 2, statut: 'archivee', date: '2027-05-24T16:00:00', auteurId: 2, commentaire: 'Ajout des cours de M2-IA et L3-GEI.', seances: instantane([1, 2, 3, 6, 7], { 2: 5 }) },
+      { id: 3, semestreId: 5, numero: 3, statut: 'publiee', date: '2027-06-01T08:00:00', auteurId: 2, commentaire: 'Séances M2-IA complètes.', seances: instantane([1, 2, 3, 4, 5, 6, 7], { 2: 5 }) },
+    ],
+    signalements: [
+      { id: 1, seanceId: 3, utilisateurId: 4, date: '2027-06-02T18:30:00', motif: 'Salle inadaptée', texte: 'Le labo électrotechnique n’a pas les postes GPU nécessaires au TP d’apprentissage profond.', statut: 'ouvert' },
+    ],
+    audit: [
+      { id: 1, date: '2027-05-10T15:58:00', utilisateurId: 2, action: 'creation', entite: 'seances', entiteId: 1, resume: 'IA501 CM · M2-IA · Lundi 08:00 · A-AMPHI2' },
+      { id: 2, date: '2027-05-10T15:59:00', utilisateurId: 2, action: 'creation', entite: 'seances', entiteId: 6, resume: 'MAT101 CM · L1-ING-A · Lundi 10:15 · A-AMPHI1' },
+      { id: 3, date: '2027-05-10T16:00:00', utilisateurId: 2, action: 'creation', entite: 'versions', entiteId: 1, resume: 'Version 1 publiée' },
+      { id: 4, date: '2027-05-24T14:10:00', utilisateurId: 2, action: 'creation', entite: 'seances', entiteId: 2, resume: 'IA502 TD · M2-IA · Mardi 08:00 · B-201' },
+      { id: 5, date: '2027-05-31T09:42:00', utilisateurId: 2, action: 'modification', entite: 'seances', entiteId: 2, resume: 'IA502 TD · M2-IA : créneau Mardi 08:00 → Mardi 10:15' },
+      { id: 6, date: '2027-06-01T08:00:00', utilisateurId: 2, action: 'creation', entite: 'versions', entiteId: 3, resume: 'Version 3 publiée' },
+      { id: 7, date: '2027-06-01T10:00:00', utilisateurId: 2, action: 'creation', entite: 'duplications', entiteId: 1, resume: 'Semaine type dupliquée sur S1 2027-2028' },
+      { id: 8, date: '2027-06-02T08:15:00', utilisateurId: 1, action: 'modification', entite: 'utilisateurs', entiteId: 6, resume: 'chef.gch : rôle Chef de département (GCH)' },
+      { id: 9, date: '2027-06-02T15:20:00', utilisateurId: 6, action: 'modification', entite: 'validations', entiteId: 2, resume: 'GCH : validée' },
+      { id: 10, date: '2027-06-03T09:05:00', utilisateurId: 1, action: 'modification', entite: 'validations', entiteId: 3, resume: 'EAE : corrections demandées' },
+      { id: 11, date: '2027-06-03T11:02:00', utilisateurId: 2, action: 'suppression', entite: 'seances', entiteId: 15, resume: 'ASS403 TP · M1-EAE · Mercredi 14:00 · L-CHIM' },
+    ],
+    parametres: [
+      { id: 1, semestreActifId: 5, heuresMaxJour: 6, poidsDefaut: { 'CS-01': 8, 'CS-02': 5, 'CS-03': 5, 'CS-04': 5, 'CS-05': 2, 'CS-06': 2 } },
+    ],
+    gabarits: [
+      {
+        id: 1,
+        code: 'publication',
+        libelle: 'Emploi du temps publié (BF-20)',
+        sujet: '[2iE] Emploi du temps {semestre} : version {version}',
+        corps:
+          'Bonjour {nom},\n\nLa version {version} de l’emploi du temps {semestre} vient d’être publiée. Elle modifie {changements} séance(s) qui vous concernent.\n\nConsultez-la sur https://planning.2ie-edu.org.\n\nLe service de la scolarité',
+      },
+      {
+        id: 2,
+        code: 'relance',
+        libelle: 'Relance des disponibilités (BF-10)',
+        sujet: '[2iE] Rappel : vos disponibilités avant le {date_limite}',
+        corps:
+          'Bonjour {nom},\n\nVous n’avez pas encore déclaré vos disponibilités pour le {semestre}. Merci de le faire avant le {date_limite}. Sans réponse, tous vos créneaux seront considérés comme disponibles.\n\nLe service de la scolarité',
+      },
+      {
+        id: 3,
+        code: 'signalement',
+        libelle: 'Accusé de réception d’un signalement',
+        sujet: '[2iE] Signalement reçu : {seance}',
+        corps: 'Bonjour {nom},\n\nVotre signalement sur la séance {seance} a bien été transmis à la scolarité.\n\nLe service de la scolarité',
+      },
     ],
   };
 }

@@ -944,3 +944,472 @@ tr.row-error td {
     margin-left: 0;
   }
 }
+
+/* ==========================================================================
+   Pages 15 à 28 : planification, génération, publication, consultation,
+   pilotage et administration. Mêmes variables que le reste de la feuille.
+   ========================================================================== */
+
+.nowrap {
+  white-space: nowrap;
+}
+.center {
+  text-align: center !important;
+}
+.row-selected td {
+  background: var(--primary-soft);
+}
+.plain-fieldset {
+  border: none;
+  padding: 0;
+  margin: 0;
+}
+.var-code + .var-code {
+  margin-left: 0.3rem;
+}
+
+/* ---------- Grille hebdomadaire et cartes de séance ---------- */
+
+.week-grid .slot {
+  vertical-align: top;
+  min-width: 130px;
+}
+.week-grid tbody th {
+  min-width: 112px;
+}
+.day-date {
+  display: block;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.cell-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  min-height: 2.5rem;
+}
+.seance-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  padding: 0.4rem 0.5rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--primary);
+  background: var(--surface);
+  text-align: left;
+  font-size: 0.8rem;
+  line-height: 1.3;
+}
+.seance-card[draggable="true"] {
+  cursor: grab;
+}
+.seance-card.type-td {
+  border-left-color: var(--accent);
+}
+.seance-card.type-tp {
+  border-left-color: var(--warn);
+}
+.seance-card.selected {
+  outline: 3px solid var(--primary);
+  outline-offset: 1px;
+}
+.seance-card.linked {
+  opacity: 0.65;
+  border-style: dashed;
+}
+.seance-card.anomalie {
+  background: var(--danger-soft);
+}
+.seance-head {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+.seance-head .lock {
+  margin-left: auto;
+  font-size: 0.75rem;
+}
+.seance-title {
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 160px;
+}
+.seance-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.1rem 0.5rem;
+  color: var(--muted);
+}
+.seance-card .link-btn {
+  align-self: flex-start;
+}
+
+/* ---------- Page 16 : grille de planification ---------- */
+
+.planning-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 1rem;
+  align-items: start;
+}
+.planning-main {
+  min-width: 0;
+}
+.planning-side .card {
+  margin-bottom: 1rem;
+}
+.slot.cell-ok {
+  background: var(--ok-soft);
+}
+.slot.cell-ko {
+  background: var(--danger-soft);
+}
+.move-here {
+  border-style: dashed;
+  color: var(--ok);
+}
+.move-here.ko {
+  color: var(--danger);
+}
+.drop-delete {
+  margin-top: 0.75rem;
+  padding: 0.9rem;
+  border: 2px dashed var(--danger);
+  border-radius: var(--radius);
+  color: var(--danger);
+  text-align: center;
+  font-size: 0.88rem;
+}
+.palette {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.palette-item {
+  width: 100%;
+  text-align: left;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: grab;
+}
+.palette-item.selected {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+}
+.chip-btn {
+  border: none;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.82rem;
+}
+.refus {
+  margin-bottom: 1rem;
+  padding: 0.75rem 1rem;
+}
+.motifs {
+  list-style: none;
+  padding: 0;
+  margin: 0.4rem 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  font-size: 0.88rem;
+}
+.notice .btn {
+  margin-left: 0.5rem;
+}
+
+/* ---------- Pages 17 à 21 ---------- */
+
+.week-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  columns: 2;
+  font-size: 0.88rem;
+}
+.week-list li {
+  break-inside: avoid;
+  padding: 0.15rem 0;
+}
+.sticky-actions {
+  position: sticky;
+  bottom: 0;
+  background: var(--bg);
+  padding: 0.75rem 0;
+}
+.slider-field label {
+  font-weight: 500;
+}
+.slider-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+.slider-row input[type="range"] {
+  flex: 1;
+  min-width: 0;
+  accent-color: var(--primary);
+}
+.slider-value {
+  min-width: 80px;
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+}
+.progress {
+  height: 12px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  overflow: hidden;
+  margin: 0.5rem 0;
+}
+.progress span {
+  display: block;
+  height: 100%;
+  background: var(--primary);
+  transition: width 0.25s linear;
+}
+.etapes {
+  padding-left: 1.2rem;
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+.etapes .done {
+  color: var(--ok);
+}
+.etapes .current {
+  color: var(--text);
+  font-weight: 600;
+}
+.jauge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 160px;
+  width: 100%;
+}
+.jauge-track {
+  flex: 1;
+  height: 8px;
+  border-radius: 4px;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+.jauge-track span {
+  display: block;
+  height: 100%;
+  border-radius: 4px;
+  background: var(--primary);
+}
+.jauge-ok span {
+  background: var(--ok);
+}
+.jauge-warn span {
+  background: var(--warn);
+}
+.jauge-danger span {
+  background: var(--danger);
+}
+.jauge-value {
+  min-width: 3.5rem;
+  text-align: right;
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+}
+.checklist {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.checklist li {
+  padding: 0.5rem 0.75rem;
+  border-radius: 7px;
+  font-size: 0.9rem;
+}
+.checklist li.ok {
+  background: var(--ok-soft);
+}
+.checklist li.ok::before {
+  content: "✓ ";
+  color: var(--ok);
+  font-weight: 700;
+}
+.checklist li.ko {
+  background: var(--warn-soft);
+}
+.checklist li.ko::before {
+  content: "! ";
+  color: var(--warn);
+  font-weight: 700;
+}
+.checklist .badge {
+  margin-right: 0.3rem;
+}
+.email-preview {
+  background: var(--surface-2);
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  font-size: 0.88rem;
+}
+.email-preview summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.email-preview pre {
+  white-space: pre-wrap;
+  font-family: inherit;
+  margin: 0;
+}
+.compare {
+  margin-top: 1rem;
+}
+
+/* ---------- Page 22 : consultation ---------- */
+
+.segmented {
+  display: inline-flex;
+  gap: 0.25rem;
+}
+.period-nav strong {
+  font-size: 0.95rem;
+}
+.mobile-only {
+  display: none;
+}
+.session-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.session-btn:hover strong {
+  color: var(--primary);
+}
+.day-card h2 {
+  text-transform: capitalize;
+}
+.semestre-table td {
+  min-width: 48px;
+  font-variant-numeric: tabular-nums;
+}
+.heat-1 {
+  background: var(--primary-soft);
+}
+.heat-2 {
+  background: color-mix(in srgb, var(--primary) 30%, var(--surface));
+}
+.heat-3 {
+  background: color-mix(in srgb, var(--primary) 50%, var(--surface));
+}
+.heat-4 {
+  background: color-mix(in srgb, var(--primary) 70%, var(--surface));
+  color: #fff;
+}
+
+/* ---------- Pages 25 à 28 ---------- */
+
+.rights-table td:first-child {
+  min-width: 220px;
+}
+.pager {
+  justify-content: center;
+  margin-top: 0.75rem;
+}
+.form-grid {
+  margin-bottom: 0.5rem;
+}
+.gabarit {
+  align-items: start;
+}
+
+/* ---------- Adaptations écran étroit (BNF-11) ---------- */
+
+@media (max-width: 1100px) {
+  .planning-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  /* 1fr seul laisse un tableau large élargir la carte : on autorise la colonne à rétrécir */
+  .grid-2,
+  .grid-3,
+  .grid-4 {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .desktop-only {
+    display: none;
+  }
+  .mobile-only {
+    display: block;
+  }
+  .week-list {
+    columns: 1;
+  }
+  .toolbar > .input,
+  .toolbar > select {
+    flex: 1 1 100%;
+  }
+  .period-nav input[type="date"] {
+    flex: 1;
+  }
+  .jauge {
+    min-width: 120px;
+  }
+  .section-head {
+    flex-wrap: wrap;
+  }
+}
+
+/* ---------- Impression : export PDF de l'emploi du temps (BF-22) ---------- */
+
+@media print {
+  .topbar,
+  .sidebar,
+  .skip-link,
+  .no-print {
+    display: none !important;
+  }
+  .body {
+    display: block;
+  }
+  .content {
+    padding: 0;
+    max-width: none;
+  }
+  .desktop-only {
+    display: block !important;
+  }
+  .mobile-only {
+    display: none !important;
+  }
+  .card,
+  .table-wrap {
+    box-shadow: none;
+    border-color: #999;
+  }
+  .seance-card {
+    break-inside: avoid;
+  }
+  .seance-card .link-btn {
+    display: none;
+  }
+}
