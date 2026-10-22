@@ -13,6 +13,7 @@
 9. [Organisation, charge et risques](#9-organisation-charge-et-risques)
 10. [Recette, acceptation et maintenance](#10-recette-acceptation-et-maintenance)
 11. [Points d'attention : écarts entre le MLD et le cahier des charges](#11-points-dattention--écarts-entre-le-mld-et-le-cahier-des-charges)
+12. [Décisions à confirmer](#12-décisions-à-confirmer)
 
 ---
 
@@ -168,6 +169,35 @@ Une séance n'est enregistrée que si **toutes les contraintes dures sont respec
 
 Les poids sont **paramétrables par le planificateur avant chaque génération** (BF-16). Dans le MLD, ils sont portés par la table `CONTRAINTE` (attributs `nature`, `poids`, `est_active`).
 
+### 4.3 Précisions de conception (schéma version 2)
+
+Ces règles précisent ou complètent les contraintes du cahier des charges. Elles sont contrôlées par la base (voir §7.3).
+
+**Durée et découpage des séances**
+
+- Une séance dure **entre 2 h et 4 h**.
+- Un cours peut être découpé en plusieurs séances par semaine (par exemple 2 h + 3 h, ou 2 h + 2 h). Ce découpage est décrit dans `COURS_SEANCE_MODELE` : une ligne par séance, avec son rang et sa durée. Le moteur y lit combien de séances placer et de quelle durée.
+- Sans découpage, le cours est placé en une séance de `duree_seance` heures.
+- La grille de créneaux de base est plus fine que les séances (**1 h** par défaut). Une séance couvre plusieurs créneaux consécutifs : `id_creneau` désigne son créneau de début, `heure_debut` et `heure_fin` portent sa durée réelle.
+
+**Précisions sur les contraintes dures**
+
+| Réf. | Précision |
+|---|---|
+| CD-01, CD-02, CD-03 | Le conflit se détecte sur les **plages horaires qui se chevauchent**, et non plus seulement sur un créneau de début identique. Deux séances qui se suivent (fin = début) ne sont pas en conflit. |
+| CD-03 | Un cours de **classe entière** (`id_groupe` vide, par exemple un CM) est en conflit avec tous les groupes de la classe. Un cours de **groupe** n'est en conflit qu'avec le même groupe et avec les cours de classe entière. Deux TP de groupes différents peuvent donc avoir lieu en même temps. |
+| CD-04 | La capacité de la salle est comparée à l'effectif du **groupe** si le cours cible un groupe, sinon à l'effectif de la **classe**. |
+| CD-06 | L'enseignant ne doit être déclaré `indisponible` sur **aucun** des créneaux couverts par la séance. Les niveaux `disponible` (par défaut, si aucune ligne n'existe) et `preference` ne bloquent pas : `preference` sert au moteur pour CS-01. |
+| CD-08 | La **somme des durées** des séances d'un cours (hors séances annulées) ne dépasse pas son `volume_horaire`. |
+| CD-09 | Ajout : la séance ne peut pas tomber un **jour férié** (table `JOUR_FERIE`). |
+
+**Nouvelles contraintes dures**
+
+| Réf. | Contrainte |
+|---|---|
+| CD-10 | La séance est alignée sur la grille : son heure de début est celle du créneau de début, son heure de fin est la fin d'un créneau de la grille. |
+| CD-11 | Une séance ne peut pas chevaucher une pause (pause déjeuner, table `PAUSE`). *À confirmer avec la scolarité.* |
+
 ---
 
 ## 5. Besoins non fonctionnels
@@ -239,12 +269,18 @@ Tous les clients passent par l'API. Seul le moteur IA utilise la file de tâches
 | Serveur | Python 3.12 + FastAPI | Même langage que le moteur d'optimisation, documentation OpenAPI automatique |
 | Moteur de génération | Google OR-Tools (solveur CP-SAT) | Solveur libre et performant pour les problèmes d'emploi du temps à contraintes |
 | Tâches de fond | Celery + Redis | Générations longues exécutées hors requête, suivi de l'avancement |
-| Base de données | PostgreSQL 16 | Contraintes, déclencheurs et contraintes d'exclusion déjà prévus dans le MLD |
+| Base de données | PostgreSQL (hébergé sur Supabase) | Contraintes, déclencheurs et contraintes d'exclusion (extension `btree_gist`) prévus dans le MLD |
 | Authentification | CAS / LDAP de l'université, jetons JWT | Pas de nouveaux mots de passe pour les utilisateurs |
 | Déploiement | Docker, Nginx, intégration continue GitLab CI | Environnements identiques en test et en production |
 | Supervision | Prometheus + Grafana, journaux centralisés | Suivi de la disponibilité (BNF-05) et des temps de réponse |
 
 Trois environnements sont prévus : **développement, recette et production**.
+
+### Accès à la base (Supabase)
+
+- Le **moteur et l'API** accèdent à la base avec la **clé secrète** du projet (ancienne clé `service_role`). Cette clé contourne la sécurité par ligne (RLS) : elle ne doit être utilisée que côté serveur.
+- La clé est lue dans une **variable d'environnement** (par exemple `SUPABASE_SECRET_KEY`), à côté de `SUPABASE_URL`. Elle n'est jamais écrite dans le dépôt, dans un fichier versionné, ni partagée dans un message.
+- La RLS est activée sur toutes les tables. Les clients (interface web, mobile) n'utilisent que la clé publique et sont limités par les politiques de lecture.
 
 ---
 
@@ -260,12 +296,15 @@ Le MLD couvre deux grands domaines : la **planification pédagogique** (séances
 
 | Table | Attributs | Rôle |
 |---|---|---|
-| **SEANCE** | <u>id_seance</u>, date_seance, statut, est_verrouillee, #id_cours, #id_salle, #id_creneau, #id_edt | Table centrale : une occurrence datée d'un cours, dans une salle, sur un créneau, rattachée à un emploi du temps. `est_verrouillee` supporte BF-17. |
-| **COURS** | <u>id_cours</u>, type_cours, volume_horaire, duree_seance, nb_seances_semaine, priorite, #id_matiere, #id_classe, #id_enseignant, #id_type_salle, #id_semestre | Enseignement d'une matière, pour une classe, par un enseignant, avec un type de salle exigé, sur un semestre. |
+| **SEANCE** | <u>id_seance</u>, date_seance, heure_debut, heure_fin, statut, est_verrouillee, #id_cours, #id_salle, #id_creneau, #id_edt | Table centrale : une occurrence datée d'un cours (2 h à 4 h), dans une salle, rattachée à un emploi du temps. `id_creneau` est le créneau de début ; `heure_debut` et `heure_fin` portent la durée. `est_verrouillee` supporte BF-17. |
+| **COURS** | <u>id_cours</u>, type_cours, volume_horaire, duree_seance, nb_seances_semaine, priorite, #id_matiere, #id_classe, #id_groupe, #id_enseignant, #id_type_salle, #id_semestre | Enseignement d'une matière, pour une classe ou pour un groupe de cette classe (`id_groupe` vide = classe entière), par un enseignant, avec un type de salle exigé, sur un semestre. `duree_seance` est comprise entre 2 et 4 h. |
+| **COURS_SEANCE_MODELE** | <u>#id_cours</u>, <u>rang</u>, duree_heures | Découpage hebdomadaire d'un cours en séances (par exemple rang 1 : 2 h, rang 2 : 3 h). Lu par le moteur. |
 | **MATIERE** | <u>id_matiere</u>, code_matiere, libelle, coefficient | Référentiel des matières. |
 | **ENSEIGNANT** | <u>id_enseignant</u>, matricule, nom, prenom, email, telephone, grade, nb_heures_max_semaine | Enseignants et leur plafond horaire hebdomadaire (CS-06). |
-| **CRENEAU** | <u>id_creneau</u>, jour, heure_debut, heure_fin | Grille hebdomadaire des créneaux (BF-05). |
-| **INDISPONIBILITE** | <u>#id_enseignant</u>, <u>#id_creneau</u>, motif | Table associative : créneaux où un enseignant est indisponible (clé primaire composée). |
+| **CRENEAU** | <u>id_creneau</u>, jour, heure_debut, heure_fin | Grille hebdomadaire de **base** (BF-05), en créneaux de 1 h par défaut. Une séance couvre plusieurs créneaux. |
+| **DISPONIBILITE** | <u>#id_enseignant</u>, <u>#id_creneau</u>, niveau, motif | Table associative remplaçant `INDISPONIBILITE`. `niveau` vaut `disponible`, `preference` ou `indisponible` (BF-09, CS-01, CD-06). Sans ligne : disponible. |
+| **PAUSE** | <u>id_pause</u>, libelle, heure_debut, heure_fin | Plage pendant laquelle aucune séance n'est possible (pause déjeuner, CD-11). |
+| **JOUR_FERIE** | <u>date_ferie</u>, libelle | Jours sans séance (CD-09). |
 
 #### Structure des publics et des locaux
 
@@ -273,7 +312,7 @@ Le MLD couvre deux grands domaines : la **planification pédagogique** (séances
 |---|---|---|
 | **FILIERE** | <u>id_filiere</u>, code_filiere, libelle | Filière de formation. |
 | **CLASSE** | <u>id_classe</u>, code_classe, libelle, niveau, effectif, #id_filiere | Classe appartenant à une filière. |
-| **GROUPE** | <u>id_groupe</u>, code_groupe, type_groupe, effectif, #id_classe | Subdivision d'une classe (par exemple groupes de TD/TP). *Table ajoutée.* |
+| **GROUPE** | <u>id_groupe</u>, code_groupe, type_groupe, effectif, #id_classe | Subdivision d'une classe (par exemple groupes de TD/TP). Un cours peut cibler un groupe (association CIBLER). |
 | **SALLE** | <u>id_salle</u>, code_salle, nom_salle, capacite, batiment, est_disponible, #id_type_salle | Salle avec sa capacité (CD-04) et son type (CD-05). |
 | **TYPE_SALLE** | <u>id_type_salle</u>, libelle | Amphithéâtre, laboratoire, salle standard, etc. |
 | **SEMESTRE** | <u>id_semestre</u>, libelle, annee_academique, date_debut, date_fin | Période de validité des séances (CD-09, BF-26). |
@@ -303,9 +342,11 @@ La notation `a,b` se lit du côté de l'entité nommée en premier.
 | NECESSITER | COURS (0,1) | TYPE_SALLE (0,n) | Un cours peut exiger un type de salle. |
 | PROGRAMMER | COURS (1,1) | SEMESTRE (0,n) | Un cours est programmé sur un seul semestre. |
 | ETRE_DE_TYPE | SALLE (1,1) | TYPE_SALLE (0,n) | Une salle a un seul type. |
-| ETRE_INDISPONIBLE | ENSEIGNANT (0,n) | CRENEAU (0,n) | Association n-n avec l'attribut `motif`. |
+| DECLARER | ENSEIGNANT (0,n) | CRENEAU (0,n) | Association n-n avec les attributs `niveau` et `motif` (table `DISPONIBILITE`). |
 | APPARTENIR | CLASSE (1,1) | FILIERE (1,n) | Une classe appartient à une filière. |
 | **DIVISER** | CLASSE (0,n) | GROUPE (1,1) | Une classe se divise en 0 à n groupes ; un groupe dépend d'une seule classe. |
+| **CIBLER** | COURS (0,1) | GROUPE (0,n) | Un cours cible au plus un groupe ; vide = classe entière. Le groupe doit appartenir à la classe du cours. |
+| **DECOUPER** | COURS (0,n) | COURS_SEANCE_MODELE (1,1) | Un cours est découpé en 0 à n séances types ; chaque séance type appartient à un seul cours. |
 | PARAMETRER | CONTRAINTE (1,1) | EMPLOI_DU_TEMPS (0,n) | Une contrainte paramètre un emploi du temps. |
 | MODIFIER | PROMPT (1,1) | EMPLOI_DU_TEMPS (0,n) | Un prompt modifie un emploi du temps. |
 | SOUMETTRE | PROMPT (1,1) | UTILISATEUR (0,n) | Un prompt est soumis par un utilisateur. |
@@ -316,8 +357,15 @@ La notation `a,b` se lit du côté de l'entité nommée en premier.
 
 Le cahier des charges prévoit de doubler les contrôles applicatifs par des contraintes en base :
 
-- **trois contraintes d'unicité** sur `SEANCE` : salle, enseignant, groupe, par date et créneau (CD-01 à CD-03) ;
-- **un déclencheur** contrôlant les règles CD-04 à CD-09 (capacité, type de salle, habilitation, programme, volume horaire, dates).
+- **CD-01 (salle)** : une contrainte d'exclusion (`EXCLUDE`, extension `btree_gist`) sur `SEANCE` interdit deux séances de la même salle dont les plages horaires se chevauchent, dans un même emploi du temps. Les séances annulées sont ignorées.
+- **Durée 2 h à 4 h** : contrainte `CHECK` sur `SEANCE` (et sur `duree_seance` et `duree_heures`).
+- **Clé étrangère composite** `(id_groupe, id_classe)` sur `COURS` : le groupe ciblé appartient obligatoirement à la classe du cours.
+- **Un déclencheur** sur `SEANCE` contrôle les autres règles :
+  - CD-02 (enseignant) et CD-03 (classe ou groupe) par détection de chevauchement ;
+  - CD-04 (capacité, selon le groupe ou la classe), CD-05 (type de salle), CD-06 (indisponibilité) ;
+  - CD-08 (cumul des durées), CD-09 (semestre, jour de la semaine, jours fériés) ;
+  - CD-10 (alignement sur la grille) et CD-11 (pause déjeuner).
+- **Non contrôlé pour l'instant** : CD-07 (cours au programme de la filière) et l'habilitation de CD-06, faute de tables `PROGRAMME` et `HABILITATION`.
 
 ### 7.4 Volumétrie estimée
 
@@ -327,6 +375,20 @@ Le cahier des charges prévoit de doubler les contrôles applicatifs par des con
 ### 7.5 Reprise des données
 
 Import des tableurs existants (salles, cours, enseignants, groupes) par des **gabarits CSV** fournis, avec contrôle de qualité et rapport d'anomalies avant chargement. La scolarité valide les données reprises avant la première planification.
+
+### 7.6 Jeu de données de test
+
+Le script SQL contient un jeu de données **fictif** à remplacer par les données réelles (capacités des salles, noms, effectifs, volumes horaires) :
+
+- 13 salles sur deux sites, **Kamboinsé** (8 salles) et **Ouaga** (5 salles), de 25 à 250 places ;
+- 2 filières, 5 classes (de 24 à 120 étudiants), 9 groupes de TD et de TP ;
+- 8 enseignants, 8 matières, 13 cours (de classe entière ou de groupe), avec le découpage hebdomadaire de chacun (par exemple BD : 2 h + 3 h) ;
+- la grille de créneaux de 1 h, la pause déjeuner (12 h – 14 h), 5 jours fériés fixes, des disponibilités et préférences d'enseignants ;
+- un semestre (2026-2027), un utilisateur `planificateur` et un emploi du temps vide en brouillon.
+
+### 7.7 Génération des séances datées
+
+Le moteur produit une **semaine type**. La base, elle, enregistre des **séances datées** (`date_seance`). Il reste à confirmer que l'API (tâche 1) génère les séances datées sur toute la durée du semestre à partir de la semaine type, en sautant les jours fériés (BF-14).
 
 ---
 
@@ -426,15 +488,31 @@ Dossier de conception (MCD, MLD, SQL), spécifications détaillées, code source
 
 En croisant les deux documents, plusieurs écarts apparaissent. Ils sont à arbitrer avant le développement.
 
+**Écarts résolus dans la version 2 du schéma** : `GROUPE` est relié à `COURS` (CIBLER) ; `INDISPONIBILITE` est remplacée par `DISPONIBILITE` à trois niveaux ; la durée des séances et leur découpage sont gérés ; les jours fériés sont pris en compte.
+
+**Écarts restants**
+
 | # | Constat | Piste |
 |---|---|---|
 | 1 | Le cahier des charges (§7) annonce **15 relations** : `DEPARTEMENT`, `TYPE_SEANCE`, `VOLUME_HORAIRE`, `BATIMENT`, `PROGRAMME`, `HABILITATION`, `DISPONIBILITE`, etc. Le MLD actuel est organisé différemment (par exemple, `batiment` est un simple attribut de `SALLE`). | Aligner le MLD sur la liste du cahier des charges, ou mettre à jour le cahier des charges. |
 | 2 | **`DEPARTEMENT`** figure dans le MCD et dans le cahier des charges (BF-01, BF-02, BF-08), mais pas dans le MLD. | Ajouter la table et ses clés étrangères (filière, enseignant). |
 | 3 | **Habilitations** enseignant–cours (CD-06, BF-08) et **programme** filière–cours (CD-07, BF-06) : aucune table correspondante dans le MLD. | Ajouter `HABILITATION` et `PROGRAMME`. |
-| 4 | **Disponibilités à trois niveaux** (disponible / préférence / indisponible, BF-09, CS-01) : le MLD ne modélise que `INDISPONIBILITE` avec un `motif`. | Remplacer par `DISPONIBILITE` avec un attribut de niveau. |
-| 5 | **`GROUPE` n'est lié ni à `COURS` ni à `SEANCE`**. Or CD-03 (un groupe, une séance par créneau) et CD-08 (volume horaire par groupe) portent sur le groupe. | Relier `SEANCE` (ou `COURS`) à `GROUPE`. |
-| 6 | **Volumes horaires par type (CM/TD/TP)** : le MLD stocke un seul `volume_horaire` et un `type_cours` par cours (BF-03). | Introduire `TYPE_SEANCE` et `VOLUME_HORAIRE`. |
-| 7 | **Authentification** : le cahier des charges impose le SSO (BNF-06, « pas de nouveaux mots de passe »), alors que `UTILISATEUR` contient `mot_de_passe`. | Retirer ou rendre optionnel `mot_de_passe`. |
-| 8 | **Rôles, audit, année universitaire** : le cahier des charges prévoit des tables `ROLE` et d'audit (BNF-08, BF-25) ; `role` n'est qu'un attribut de `UTILISATEUR`. | Ajouter `ROLE` et une table d'audit. |
-| 9 | **Table `PROMPT`** : l'usage d'un prompt en langage naturel n'apparaît pas dans les exigences du cahier des charges (le moteur décrit est OR-Tools CP-SAT). | Préciser son rôle (assistant de modification, journal des demandes) dans les spécifications détaillées. |
-| 10 | `COURS` a une cardinalité `1,n` côté `CLASSE` pour l'association CONCERNER, ce qui laisse penser qu'un cours peut concerner plusieurs classes alors que `#id_classe` n'en porte qu'une. | Vérifier la cardinalité réelle du côté `COURS`. |
+| 4 | **Volumes horaires par type (CM/TD/TP)** : un cours porte un seul `type_cours` et un seul `volume_horaire` ; il n'existe ni `TYPE_SEANCE` ni `VOLUME_HORAIRE`. Le découpage en séances est géré par `COURS_SEANCE_MODELE`. | Suffisant si un cours correspond à un seul type de séance (un cours par type). Sinon introduire `TYPE_SEANCE` et `VOLUME_HORAIRE`. |
+| 5 | **Authentification** : le cahier des charges impose le SSO (BNF-06, « pas de nouveaux mots de passe »), alors que `UTILISATEUR` contient `mot_de_passe`. | Retirer ou rendre optionnel `mot_de_passe`. |
+| 6 | **Rôles, audit, année universitaire** : le cahier des charges prévoit des tables `ROLE` et d'audit (BNF-08, BF-25) ; `role` n'est qu'un attribut de `UTILISATEUR`. | Ajouter `ROLE` et une table d'audit. |
+| 7 | **Table `PROMPT`** : l'usage d'un prompt en langage naturel n'apparaît pas dans les exigences du cahier des charges (le moteur décrit est OR-Tools CP-SAT). | Préciser son rôle (assistant de modification, journal des demandes) dans les spécifications détaillées. |
+| 8 | `COURS` a une cardinalité `1,n` côté `CLASSE` pour l'association CONCERNER, ce qui laisse penser qu'un cours peut concerner plusieurs classes alors que `#id_classe` n'en porte qu'une. | Vérifier la cardinalité réelle du côté `COURS`. |
+
+---
+
+## 12. Décisions à confirmer
+
+| # | Sujet | Choix retenu dans le schéma | À confirmer avec |
+|---|---|---|---|
+| 1 | **Grille de créneaux de base** | 1 h. Une grille de 30 min est possible en changeant un paramètre du script (`v_pas`) ; elle n'est utile que si des séances durent un nombre de demi-heures. | Le planificateur |
+| 2 | **Pause déjeuner** : aucune séance ne l'enjambe | 12 h – 14 h, modifiable dans la table `PAUSE`. Les séances de 4 h tiennent donc le matin (8 h – 12 h) ou l'après-midi (14 h – 18 h). | La scolarité |
+| 3 | **Séances datées** | La base stocke des séances datées ; le moteur produit une semaine type. | L'équipe API (tâche 1) |
+| 4 | **Jours fériés mobiles** (fêtes religieuses, Pâques, Ascension, Pentecôte) | Seuls les jours fixes sont fournis. Les autres sont à saisir chaque année dans `JOUR_FERIE`. | La scolarité |
+| 5 | **Volume horaire** | Exprimé en heures, pour tout le semestre. Le découpage décrit la semaine type. | La scolarité |
+| 6 | **Capacités des salles et effectifs** | Valeurs fictives dans le jeu de test. | La scolarité |
+| 7 | **Hébergement** | Le cahier des charges prévoit les serveurs de l'université ; le schéma est déployé sur Supabase. | Le service informatique |
