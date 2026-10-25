@@ -1,0 +1,23 @@
+[project]
+name = "ultraplanning-backend"
+version = "0.1.0"
+description = "API REST et assistant IA d'UltraPlanning 2iE"
+requires-python = ">=3.11"
+dependencies = [
+    "groq==1.7.0",
+    "python-dotenv",
+    "fastapi==0.162.0",
+    "uvicorn[standard]",
+    "psycopg[binary]==3.2.6",
+    "ultraplanning-solver",
+    "pyjwt[crypto]==2.10.1",      # jetons de Supabase Auth
+    "email-validator==2.2.0",
+    "httpx",                      # API d'administration de Supabase Auth
+]
+
+[project.optional-dependencies]
+test = ["pytest==8.3.5", "httpx"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
