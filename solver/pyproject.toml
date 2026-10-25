@@ -1,0 +1,13 @@
+[project]
+name = "ultraplanning-solver"
+version = "0.1.0"
+description = "Solveur CP-SAT de génération des emplois du temps (UltraPlanning 2iE)"
+requires-python = ">=3.11"
+dependencies = ["ortools==9.12.4544", "psycopg[binary]==3.2.6"]
+
+[project.optional-dependencies]
+test = ["pytest==8.3.5"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
