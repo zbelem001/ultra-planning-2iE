@@ -1,0 +1,15 @@
+# Secrets : jamais versionnés (voir les .env.example)
+.env
+*.local
+
+# Environnements et fichiers générés
+.venv/
+node_modules/
+dist/
+__pycache__/
+.pytest_cache/
+*.egg-info/
+*.tsbuildinfo
+.DS_Store
+.vscode/
+.idea/
