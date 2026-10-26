@@ -56,6 +56,8 @@ def generer(d: Donnees, demande: Demande | None = None) -> Resultat:
     ids = {c.id_cours for c in cours}
 
     def a_remplacer(s: Seance) -> bool:
+        if demande.completer:
+            return False
         return s.id_cours in ids and du <= s.date_seance <= au and not (demande.garder_verrouillees and s.est_verrouillee)
 
     remplacees = [s for s in d.seances if a_remplacer(s)]

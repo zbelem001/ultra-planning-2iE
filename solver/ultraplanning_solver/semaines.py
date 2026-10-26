@@ -101,11 +101,15 @@ def planifier_semaines(
     fixe_classe: dict[tuple[int, date], int] = defaultdict(int)
     fixe_type: dict[tuple[int, date], int] = defaultdict(int)
     fixe_matieres: dict[tuple[int, date], set[int]] = defaultdict(set)
+    # Heures déjà fixées de chaque cours dans la semaine (séances verrouillées, mode « compléter ») :
+    # elles comptent dans son rythme maximal (CD-14)
+    fixe_cours: dict[tuple[int, date], int] = defaultdict(int)
     for s in fixes:
         c = d.cours.get(s.id_cours)
         if c is None:
             continue
         w = lundi_de(s.date_seance)
+        fixe_cours[s.id_cours, w] += s.duree
         fixe_ens_semaine[c.id_enseignant, w] += s.duree
         fixe_matieres[c.id_classe, w].add(c.id_matiere)
         if du <= s.date_seance <= au:
@@ -125,13 +129,13 @@ def planifier_semaines(
             continue
         queue = []
         for w in semaines:
-            ub = min(c.heures_semaine_max, heures_ouvertes_cours(d, c, w, demande), plafonds.get((k, w), 10**6))
+            ub = min(c.heures_semaine_max - fixe_cours[k, w], heures_ouvertes_cours(d, c, w, demande), plafonds.get((k, w), 10**6))
             hv = m.new_int_var(0, max(ub, 0), f"h_{k}_{w}")
             av = m.new_bool_var(f"a_{k}_{w}")
             fin = m.new_bool_var(f"fin_{k}_{w}")  # semaine de fin, sous le minimum
             m.add(hv >= 2).only_enforce_if(av)
             m.add(hv == 0).only_enforce_if(~av)
-            hmin = min(c.heures_semaine_min, besoin)
+            hmin = max(min(c.heures_semaine_min, besoin) - fixe_cours[k, w], 0)
             m.add(hv >= hmin).only_enforce_if(av, ~fin)
             m.add_implication(fin, av)
             queue.append(fin)

@@ -212,3 +212,14 @@ def test_generation_d_une_seule_semaine_garde_le_rythme():
     d = donnees([cours(1, "CM", 24, 1, 1, 1, AMPHI, hmax=6)], semaines=4)
     r = generer(d, Demande(du=semaine, au=semaine + timedelta(days=5), **RAPIDE))
     assert [(n.id_cours, n.heures) for n in r.non_places] == [(1, 6)]
+
+
+def test_completer_garde_toutes_les_seances_existantes():
+    # 12 h de volume, 4 h déjà placées (non verrouillées) : compléter place les 8 h restantes
+    # sans toucher aux séances existantes
+    existantes = [Seance(1, LUNDI + timedelta(days=j), time(8), time(10), 1, id_seance=10 + j) for j in (0, 1)]
+    d = donnees([cours(1, "CM", 12, 1, 1, 1, AMPHI, hmax=6)], semaines=3, seances=existantes)
+    r = generer(d, Demande(completer=True, **RAPIDE))
+    assert r.remplacees == [] and r.non_places == []
+    assert r.heures_placees == 8
+    assert violations(d, r.seances + r.conservees) == []

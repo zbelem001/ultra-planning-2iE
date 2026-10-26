@@ -154,6 +154,7 @@ Demande(
     du=…, au=…,                    # période (défaut : le semestre)
     contraintes=[ContrainteAjoutee(…)],
     garder_verrouillees=True,      # BF-17 : les séances verrouillées ne bougent pas
+    completer=False,               # True : toutes les séances existantes restent ; seules les heures manquantes sont placées
     minimiser_changements=False,   # True = replanification minimale
     horizon=None,                  # génération courte : planifier le rythme jusqu'à cette date
     temps_max_semaines=20.0,       # secondes, étage 1
@@ -182,6 +183,10 @@ Ces contraintes sont **dures** : elles filtrent les placements possibles aux deu
 
 - **à remplacer** : cours du périmètre, date dans la période, et pas verrouillée (si `garder_verrouillees`) ;
 - **figées** : toutes les autres. Elles ne bougent pas et occupent salles, enseignants et classes.
+
+Avec `completer=True`, aucune séance n'est à remplacer : toutes sont figées, et le besoin de chaque cours est ce qui manque à son volume.
+
+Les heures figées d'un cours dans une semaine comptent dans son rythme : l'étage 1 ne lui ajoute au plus que `heures_semaine_max − heures déjà fixées` (CD-14).
 
 Puis il calcule, pour chaque cours du périmètre :
 

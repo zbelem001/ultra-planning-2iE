@@ -94,6 +94,9 @@ class Demande:
     au: date | None = None  # défaut : fin du semestre
     contraintes: list[ContrainteAjoutee] = field(default_factory=list)
     garder_verrouillees: bool = True  # BF-17
+    # Compléter seulement : toutes les séances existantes restent en place (comme verrouillées) ;
+    # seules les heures qui manquent au volume de chaque cours sont placées
+    completer: bool = False
     # Replanification : déplacer au minimum les séances déjà prévues dans la
     # fenêtre (mêmes heures par cours), au lieu de compléter le programme
     minimiser_changements: bool = False
