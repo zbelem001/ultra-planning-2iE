@@ -8,7 +8,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { toast } from 'sonner'
 import type { Db, EmploiDuTemps } from '@/types/db'
-import { createMockDb } from '@/data/mock'
 import { useSession } from './auth'
 import { chargerBase, ErreurApi, MODE_CONNECTE, synchroniser, type Changements } from './api'
 
@@ -60,20 +59,24 @@ function difference(avant: Db, apres: Db): Changements | null {
   return Object.keys(out).length ? out : null
 }
 
-function chargerLocal(): Db {
+/** Mode simulé : base gardée dans le navigateur, sinon null (jeu de test à charger) */
+function chargerLocal(): Db | null {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (raw) return JSON.parse(raw) as Db
   } catch {
     /* stockage indisponible : on repart du jeu de test */
   }
-  return createMockDb()
+  return null
 }
+
+/** Jeu de test, téléchargé seulement en mode simulé (absent de l'espace invités en production) */
+const jeuDeTest = () => import('@/data/mock').then((m) => m.createMockDb())
 
 export function StoreProvider({ children }: { children: ReactNode }) {
   const session = useSession()
-  const [db, setDb] = useState<Db>(() => (MODE_CONNECTE ? vide() : chargerLocal()))
-  const [etat, setEtat] = useState<Etat>(MODE_CONNECTE ? 'chargement' : 'pret')
+  const [db, setDb] = useState<Db>(() => (MODE_CONNECTE ? vide() : chargerLocal() ?? vide()))
+  const [etat, setEtat] = useState<Etat>(MODE_CONNECTE || chargerLocal() === null ? 'chargement' : 'pret')
   const [erreur, setErreur] = useState('')
   const [ecoleAChoisir, setEcoleAChoisir] = useState(false)
   const courant = useRef(db)
@@ -103,6 +106,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       setEtat('erreur')
     }
   }, [session, appliquer])
+
+  // Mode simulé, première visite : jeu de test
+  useEffect(() => {
+    if (MODE_CONNECTE || etat !== 'chargement') return
+    void jeuDeTest().then((d) => { appliquer(d); setEtat('pret') })
+  }, [etat, appliquer])
 
   // Au démarrage et à chaque connexion / déconnexion : image publique ou complète
   useEffect(() => {
@@ -142,7 +151,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const reset = useCallback(() => {
     if (MODE_CONNECTE) void recharger()
-    else appliquer(createMockDb())
+    else void jeuDeTest().then(appliquer)
   }, [appliquer, recharger])
 
   const value = useMemo(

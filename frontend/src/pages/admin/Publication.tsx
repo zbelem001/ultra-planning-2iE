@@ -10,7 +10,8 @@ import { PropositionCarte } from '@/components/PropositionCarte'
 import { Badge, Button, Card, Dialog, PageTitle, SectionTitle, Switch } from '@/components/ui'
 import { publierEdt } from '@/lib/api'
 import { useSession } from '@/lib/auth'
-import { edtPublie, edtTravail, nextId, useStore } from '@/lib/store'
+import { edtPublie, edtTravail, useStore } from '@/lib/store'
+import { creerVersionDeTravail } from '@/lib/versions'
 import { fmtDateHeure } from '@/lib/time'
 import type { Db, EmploiDuTemps, Seance } from '@/types/db'
 import { STATUT_EDT } from './AdminLayout'
@@ -83,21 +84,7 @@ export default function Publication() {
     })
   }
 
-  const nouvelleVersion = (source: EmploiDuTemps) => {
-    const id_edt = nextId(db.emploi_du_temps, 'id_edt')
-    const version = Math.max(...db.emploi_du_temps.filter((e) => e.id_semestre === source.id_semestre).map((e) => e.version)) + 1
-    mutate((x) => {
-      x.emploi_du_temps.push({
-        ...source, id_edt, version, statut: 'brouillon', mode_generation: 'manuel',
-        date_creation: new Date().toISOString(), date_publication: null, id_utilisateur: session ?? source.id_utilisateur,
-      })
-      let idS = nextId(x.seance, 'id_seance')
-      x.seance.push(...x.seance.filter((s) => s.id_edt === source.id_edt).map((s) => ({ ...s, id_seance: idS++, id_edt })))
-      let idC = nextId(x.contrainte, 'id_contrainte')
-      x.contrainte.push(...x.contrainte.filter((c) => c.id_edt === source.id_edt).map((c) => ({ ...c, id_contrainte: idC++, id_edt })))
-    })
-    toast.success(`Version ${version} créée en brouillon`, { description: `Copie de la version ${source.version}.` })
-  }
+  const nouvelleVersion = (source: EmploiDuTemps) => void creerVersionDeTravail(source, { db, mutate, connecte, recharger, session })
 
   const enAttente = db.proposition
     .filter((p) => p.id_edt === travail.id_edt && p.statut === 'en_attente')

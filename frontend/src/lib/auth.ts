@@ -3,7 +3,7 @@
 // de développement (compte choisi dans une liste).
 
 import { useSyncExternalStore } from 'react'
-import { supabase } from './supabase'
+import { obtenirSupabase, SUPABASE_ACTIF } from './supabase'
 
 const KEY = 'ultraplanning-session'
 const listeners = new Set<() => void>()
@@ -27,7 +27,7 @@ export function login(id_utilisateur: number) {
 
 export function logout() {
   try { sessionStorage.removeItem(KEY) } catch { /* ignoré */ }
-  if (supabase) void supabase.auth.signOut()
+  if (SUPABASE_ACTIF) void obtenirSupabase().then((sb) => sb.auth.signOut())
   listeners.forEach((l) => l())
 }
 

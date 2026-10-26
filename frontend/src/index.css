@@ -1,6 +1,5 @@
 @import "tailwindcss";
 @import "@fontsource-variable/outfit";
-@import "@fontsource-variable/geist-mono";
 
 /* Valeurs issues de DESIGN.md */
 :root {
@@ -25,7 +24,8 @@
 
 @theme {
   --font-sans: "Outfit Variable", ui-sans-serif, system-ui, sans-serif;
-  --font-mono: "Geist Mono Variable", ui-monospace, monospace;
+  /* police système : rien à télécharger (espace invités léger) */
+  --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", "Roboto Mono", Menlo, Consolas, monospace;
   --color-navy: #03254c;
   --color-navy-hover: #0a3566;
   --color-orange: #f39b2a;

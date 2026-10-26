@@ -10,6 +10,7 @@ import { joursGrille, WeekGrid, type SlotState } from '@/components/timetable/We
 import { WeekStrip } from '@/components/timetable/WeekStrip'
 import { expandWeek } from '@/lib/generator'
 import { couleurMatiere, enrichir, filtrer, lieuSalle, heuresPlanifiees, nomEnseignant, publicCours, type Ressource, type SeanceVue } from '@/lib/queries'
+import { VersionPubliee } from '@/components/VersionPubliee'
 import { checkSeance, creneauAt, decoupage, sallesCompatibles, type SeanceDraft } from '@/lib/rules'
 import { edtTravail, nextId, useStore } from '@/lib/store'
 import { addDays, fmtHeure, fmtJourCourt, fromMin, mondayOf, todayIso, toMin, weeksBetween } from '@/lib/time'
@@ -183,6 +184,7 @@ export default function Planification() {
           <CopyPlus />Dupliquer la semaine
         </Button>
       </PageTitle>
+      <VersionPubliee edt={edt} />
 
       {lecture && (
         <Card className="bg-highlight/80 p-4 text-sm">Cette version est {edt.statut === 'publie' ? 'publiée' : 'archivée'} : créez une nouvelle version depuis l'onglet Publication pour la modifier.</Card>

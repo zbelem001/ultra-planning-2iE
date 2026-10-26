@@ -2,6 +2,7 @@
 // grille de base devient une zone de dépôt colorée selon les contraintes dures.
 
 import type { DragEvent, ReactNode } from 'react'
+import { useHauteurRestante } from '@/lib/hauteur'
 import { cn } from '@/components/ui'
 import type { Db } from '@/types/db'
 import type { SeanceVue } from '@/lib/queries'
@@ -79,7 +80,7 @@ function lanes(list: SeanceVue[]): Map<number, { lane: number; of: number }> {
   return out
 }
 
-export function WeekGrid({ db, days, seances, hide, selectedId, onSelect, edition, renderEmptyDay, idClasse }: {
+export function WeekGrid({ db, days, seances, hide, selectedId, onSelect, edition, renderEmptyDay, idClasse, remplir }: {
   db: Db
   /** Classe affichée : ses congés propres sont aussi grisés */
   idClasse?: number | null
@@ -90,16 +91,21 @@ export function WeekGrid({ db, days, seances, hide, selectedId, onSelect, editio
   onSelect?: (s: SeanceVue) => void
   edition?: GridEdition
   renderEmptyDay?: (date: string) => ReactNode
+  /** Agrandir les heures pour occuper l'espace restant jusqu'au bas de l'écran */
+  remplir?: boolean
 }) {
   const [start, end] = bornesGrille(db)
-  const height = ((end - start) / 60) * PX_HEURE
+  const [refGrille, disponible] = useHauteurRestante<HTMLDivElement>(16)
+  // En-tête des jours (≈ 44 px) et marge du bas (12 px) déduits ; jamais plus petit qu'avant
+  const pxHeure = remplir && disponible ? Math.max(PX_HEURE, (disponible - 56) / ((end - start) / 60)) : PX_HEURE
+  const height = ((end - start) / 60) * pxHeure
   const heuresLabels: number[] = []
   for (let m = start; m <= end; m += 60) heuresLabels.push(m)
   const today = todayIso()
-  const y = (min: number) => ((min - start) / 60) * PX_HEURE
+  const y = (min: number) => ((min - start) / 60) * pxHeure
 
   return (
-    <div className="overflow-x-auto pt-1 pb-3 scroll-thin">
+    <div ref={refGrille} className="overflow-x-auto pt-1 pb-3 scroll-thin">
       <div
         className="grid"
         style={{ gridTemplateColumns: `3.25rem repeat(${days.length}, minmax(${days.length > 1 ? '9.5rem' : '0'}, 1fr))`, minWidth: days.length > 1 ? `${3.25 + days.length * 9.5}rem` : undefined }}
@@ -173,7 +179,7 @@ export function WeekGrid({ db, days, seances, hide, selectedId, onSelect, editio
                       st?.ok && 'bg-[#DCFCE7]/80 ring-1 ring-[#15803D]/30',
                       st && !st.ok && 'bg-[#FEE2E2]/45',
                     )}
-                    style={{ top: y(toMin(c.heure_debut)) + 1, height: PX_HEURE - 2 }}
+                    style={{ top: y(toMin(c.heure_debut)) + 1, height: pxHeure - 2 }}
                   />
                 )
               })}

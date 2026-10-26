@@ -9,7 +9,7 @@ import { Button, Card, Field, Input, Logo, Select } from '@/components/ui'
 import { comptes as comptesApi, MODE_CONNECTE, moi } from '@/lib/api'
 import { login } from '@/lib/auth'
 import { ecoleCourante, useStore } from '@/lib/store'
-import { LIEN_AUTH, supabase, traduireErreurAuth } from '@/lib/supabase'
+import { LIEN_AUTH, obtenirSupabase, SUPABASE_ACTIF, traduireErreurAuth } from '@/lib/supabase'
 
 const ROLES_ADMIN = ['administrateur', 'planificateur']
 
@@ -28,7 +28,7 @@ export default function Login() {
         <Link to="/" className="mb-6 inline-flex items-center gap-1.5 text-sm text-ink-2 hover:text-ink"><ArrowLeft className="size-4" />Espace invités</Link>
         <Card className="p-7 sm:p-9">
           <Logo suffix="Console" ecole={ecoleCourante(db)} />
-          {supabase && MODE_CONNECTE ? <ConnexionSupabase onConnecte={entrer} /> : <ConnexionDev onConnecte={entrer} />}
+          {SUPABASE_ACTIF && MODE_CONNECTE ? <ConnexionSupabase onConnecte={entrer} /> : <ConnexionDev onConnecte={entrer} />}
         </Card>
       </div>
     </div>
@@ -49,7 +49,7 @@ function ConnexionSupabase({ onConnecte }: { onConnecte: (id: number) => void })
   const ouvrir = async () => {
     const c = await moi()
     if (!ROLES_ADMIN.includes(c.role)) {
-      await supabase!.auth.signOut()
+      await (await obtenirSupabase()).auth.signOut()
       throw new Error("Ce compte n'a pas accès à la console d'une école.")
     }
     onConnecte(c.id_utilisateur)
@@ -58,7 +58,7 @@ function ConnexionSupabase({ onConnecte }: { onConnecte: (id: number) => void })
   // Déjà connecté à Supabase (autre onglet, retour sur la page) : on entre directement
   useEffect(() => {
     if (vue !== 'connexion') return
-    void supabase!.auth.getSession().then(({ data }) => { if (data.session) ouvrir().catch((e: Error) => setErreur(e.message)) })
+    void obtenirSupabase().then((sb) => sb.auth.getSession()).then(({ data }) => { if (data.session) ouvrir().catch((e: Error) => setErreur(e.message)) })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -77,7 +77,7 @@ function ConnexionSupabase({ onConnecte }: { onConnecte: (id: number) => void })
   const seConnecter = (e: FormEvent) => {
     e.preventDefault()
     void executer(async () => {
-      const { error } = await supabase!.auth.signInWithPassword({ email: email.trim(), password: mdp })
+      const { error } = await (await obtenirSupabase()).auth.signInWithPassword({ email: email.trim(), password: mdp })
       if (error) throw new Error(traduireErreurAuth(error.message))
       await ouvrir()
     })
@@ -88,7 +88,7 @@ function ConnexionSupabase({ onConnecte }: { onConnecte: (id: number) => void })
     if (mdp.length < 8) return setErreur('Le mot de passe doit faire au moins 8 caractères.')
     if (mdp !== mdp2) return setErreur('Les deux mots de passe ne sont pas identiques.')
     void executer(async () => {
-      const { error } = await supabase!.auth.updateUser({ password: mdp })
+      const { error } = await (await obtenirSupabase()).auth.updateUser({ password: mdp })
       if (error) throw new Error(traduireErreurAuth(error.message))
       history.replaceState(null, '', window.location.pathname)
       await ouvrir()
@@ -98,7 +98,7 @@ function ConnexionSupabase({ onConnecte }: { onConnecte: (id: number) => void })
   const demanderLien = (e: FormEvent) => {
     e.preventDefault()
     void executer(async () => {
-      const { error } = await supabase!.auth.resetPasswordForEmail(email.trim(), { redirectTo: `${window.location.origin}/admin/connexion` })
+      const { error } = await (await obtenirSupabase()).auth.resetPasswordForEmail(email.trim(), { redirectTo: `${window.location.origin}/admin/connexion` })
       if (error) throw new Error(traduireErreurAuth(error.message))
       setVue('envoye')
     })

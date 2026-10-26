@@ -13,6 +13,7 @@ import { envoyerMessage } from '@/lib/api'
 import { useSession } from '@/lib/auth'
 import { enrichir, nomEnseignant, publicCours } from '@/lib/queries'
 import { edtTravail, nextId, useStore } from '@/lib/store'
+import { useHauteurRestante } from '@/lib/hauteur'
 import { addDays, fmtDateHeure, fmtHeure, fmtJourCourt, fmtJourMois, jourOf, JOURS, mondayOf, todayIso, toIso, toMin } from '@/lib/time'
 import type { Conversation, Db, Prompt } from '@/types/db'
 
@@ -88,6 +89,8 @@ function groupeDate(iso: string): string {
 
 export default function Assistant() {
   const { db, mutate, connecte, recharger } = useStore()
+  // Les deux colonnes occupent l'écran jusqu'en bas (48 px : marge basse de la page)
+  const [refColonnes, hauteur] = useHauteurRestante<HTMLDivElement>(48, 448)
   // Mode connecté : message en cours de traitement par l'agent (affiché en attendant sa réponse)
   const [envoi, setEnvoi] = useState<{ texte: string; id_conversation: number | null } | null>(null)
   const session = useSession()
@@ -199,9 +202,9 @@ export default function Assistant() {
     <div className="grid grid-cols-1 gap-6">
       <PageTitle eyebrow="Tables CONVERSATION et PROMPT" title="Assistant IA" />
 
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[20rem_minmax(0,1fr)]">
+      <div ref={refColonnes} className="grid grid-cols-1 gap-6 lg:grid-cols-[20rem_minmax(0,1fr)]">
         {/* Historique des discussions */}
-        <Card className={cn('h-[calc(100dvh-16rem)] min-h-[28rem] flex-col p-3 lg:sticky lg:top-4 lg:flex', historiqueMobile ? 'flex' : 'hidden')}>
+        <Card style={{ height: hauteur ?? undefined }} className={cn('min-h-[28rem] flex-col p-3 lg:sticky lg:top-4 lg:flex', historiqueMobile ? 'flex' : 'hidden')}>
           <Button variant="accent" className="w-full" onClick={() => { ouvrir('nouvelle'); setTimeout(() => saisie.current?.focus(), 0) }}>
             <MessageSquarePlus />Nouvelle discussion
           </Button>
@@ -248,7 +251,7 @@ export default function Assistant() {
         </Card>
 
         {/* Discussion */}
-        <Card className="flex h-[calc(100dvh-16rem)] min-h-[28rem] min-w-0 flex-col p-0">
+        <Card style={{ height: hauteur ?? undefined }} className="flex min-h-[28rem] min-w-0 flex-col p-0">
           <div className="flex items-center gap-3 border-b border-white/80 px-5 py-4 sm:px-7">
             <Button variant="outline" size="icon-sm" className="lg:hidden" onClick={() => setHistoriqueMobile((v) => !v)} aria-label="Afficher l'historique" aria-expanded={historiqueMobile}>
               <History />

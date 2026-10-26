@@ -2,8 +2,9 @@
 
 import { clsx } from 'clsx'
 import { Check, ChevronDown, Search, X } from 'lucide-react'
+import { createPortal } from 'react-dom'
 import {
-  forwardRef, useEffect, useId, useMemo, useRef, useState,
+  forwardRef, useEffect, useId, useLayoutEffect, useMemo, useRef, useState,
   type ButtonHTMLAttributes, type HTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes,
 } from 'react'
 
@@ -262,7 +263,22 @@ export function Combobox({ options, value, onChange, placeholder, emptyText = 'A
   const [q, setQ] = useState('')
   const [active, setActive] = useState(0)
   const root = useRef<HTMLDivElement>(null)
+  const liste = useRef<HTMLUListElement>(null)
   const listId = useId()
+  // La liste s'ouvre au premier plan de la page (portail), sous le champ : les cartes givrées
+  // (backdrop-filter) forment chacune leur propre plan, qu'une liste ne pourrait pas dépasser
+  const [place, setPlace] = useState<{ top: number; left: number; width: number } | null>(null)
+  useLayoutEffect(() => {
+    if (!open) return
+    const placer = () => {
+      const r = root.current?.getBoundingClientRect()
+      if (r) setPlace({ top: r.bottom + 8, left: r.left, width: r.width })
+    }
+    placer()
+    window.addEventListener('scroll', placer, true)
+    window.addEventListener('resize', placer)
+    return () => { window.removeEventListener('scroll', placer, true); window.removeEventListener('resize', placer) }
+  }, [open])
   const selected = options.find((o) => o.value === value)
 
   const norm = (s: string) => s.normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase()
@@ -273,7 +289,8 @@ export function Combobox({ options, value, onChange, placeholder, emptyText = 'A
 
   useEffect(() => {
     if (!open) return
-    const onDown = (e: MouseEvent) => !root.current?.contains(e.target as Node) && setOpen(false)
+    const onDown = (e: MouseEvent) =>
+      !root.current?.contains(e.target as Node) && !liste.current?.contains(e.target as Node) && setOpen(false)
     document.addEventListener('mousedown', onDown)
     return () => document.removeEventListener('mousedown', onDown)
   }, [open])
@@ -315,8 +332,9 @@ export function Combobox({ options, value, onChange, placeholder, emptyText = 'A
           <ChevronDown className="pointer-events-none absolute top-1/2 right-4 size-4 -translate-y-1/2 text-ink-2" />
         )}
       </div>
-      {open && (
-        <ul id={listId} role="listbox" className="rise absolute z-40 mt-2 max-h-80 w-full overflow-y-auto rounded-3xl border border-white bg-white/95 p-1.5 shadow-xl backdrop-blur scroll-thin">
+      {open && place && createPortal(
+        <ul ref={liste} id={listId} role="listbox" style={{ top: place.top, left: place.left, width: place.width }}
+          className="rise fixed z-[60] max-h-80 overflow-y-auto rounded-3xl border border-white bg-white/95 p-1.5 shadow-xl backdrop-blur scroll-thin">
           {filtered.length === 0 && <li className="px-4 py-3 text-sm text-ink-2">{emptyText}</li>}
           {filtered.map((o, i) => {
             const header = o.group && o.group !== lastGroup ? o.group : null
@@ -340,7 +358,8 @@ export function Combobox({ options, value, onChange, placeholder, emptyText = 'A
               </li>
             )
           })}
-        </ul>
+        </ul>,
+        document.body,
       )}
     </div>
   )

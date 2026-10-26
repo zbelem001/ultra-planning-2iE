@@ -3,7 +3,7 @@
 
 import type { Db } from '@/types/db'
 import { logout, sessionCourante } from './auth'
-import { supabase } from './supabase'
+import { obtenirSupabase, sessionSupabasePresente, SUPABASE_ACTIF } from './supabase'
 
 export const API_URL: string = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '')
 export const MODE_CONNECTE = API_URL !== ''
@@ -18,8 +18,9 @@ export class ErreurApi extends Error {
 
 /** Supabase Auth : jeton de la session ; développement : identifiant du compte choisi */
 async function identification(): Promise<Record<string, string>> {
-  if (supabase) {
-    const { data } = await supabase.auth.getSession()
+  if (SUPABASE_ACTIF) {
+    if (!sessionSupabasePresente()) return {}  // invité : rien à charger
+    const { data } = await (await obtenirSupabase()).auth.getSession()
     return data.session ? { Authorization: `Bearer ${data.session.access_token}` } : {}
   }
   const session = sessionCourante()
@@ -37,7 +38,7 @@ async function appel<T>(chemin: string, options: RequestInit = {}): Promise<T> {
     throw new ErreurApi(0, "L'API est injoignable.")
   }
   // Session Supabase expirée ou compte désactivé : retour à l'espace invités
-  if (rep.status === 401 && supabase && sessionCourante() !== null) logout()
+  if (rep.status === 401 && SUPABASE_ACTIF && sessionCourante() !== null) logout()
   if (!rep.ok) {
     let message = `Erreur ${rep.status}`
     try {
@@ -97,6 +98,10 @@ export const comptesEcole = {
     patch<CompteEcole & { envoi: 'invitation' | null }>(`/api/ecole/comptes/${id}`, c),
 }
 
+/** Version de travail (brouillon) copiée d'une version publiée ou archivée */
+export const nouvelleVersion = (id_edt: number) =>
+  post<{ id_edt: number; version: number; seances: number }>(`/api/emplois-du-temps/${id_edt}/nouvelle-version`)
+
 /** Écoles actives (espace invités : choix de l'école quand l'adresse ne la précise pas) */
 export const ecoles = () => appel<{ code_ecole: string; nom: string; ville: string | null }[]>('/api/ecoles')
 
@@ -135,7 +140,7 @@ export interface TacheGeneration {
   seances_remplacees?: number
 }
 
-export const lancerGeneration = (d: { id_edt: number; filieres: string[]; classes: string[]; du: string; au: string; minimiser_changements: boolean; garder_verrouillees: boolean }) =>
+export const lancerGeneration = (d: { id_edt: number; filieres: string[]; classes: string[]; du: string; au: string; minimiser_changements: boolean; garder_verrouillees: boolean; completer: boolean }) =>
   post<TacheGeneration>('/api/generations', d)
 export const etatGeneration = (id: string) => appel<TacheGeneration>(`/api/generations/${id}`)
 export const appliquerGeneration = (id: string) => post<{ seances_enregistrees: number }>(`/api/generations/${id}/appliquer`)

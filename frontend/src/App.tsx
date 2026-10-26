@@ -2,31 +2,26 @@ import { createBrowserRouter, Navigate, RouterProvider } from 'react-router-dom'
 import { Toaster } from 'sonner'
 import { StoreProvider } from '@/lib/store'
 import Consultation from '@/pages/Consultation'
-import AdminLayout from '@/pages/admin/AdminLayout'
-import Assistant from '@/pages/admin/Assistant'
-import Dashboard from '@/pages/admin/Dashboard'
-import Disponibilites from '@/pages/admin/Disponibilites'
-import Generation from '@/pages/admin/Generation'
-import Login from '@/pages/admin/Login'
-import Planification from '@/pages/admin/Planification'
-import Publication from '@/pages/admin/Publication'
-import Referentiel from '@/pages/admin/referentiel/Referentiel'
+
+// La console d'administration n'est téléchargée qu'à l'ouverture de /admin : l'espace invités
+// reste léger (connexions lentes ou forfaits limités)
+const page = (charger: () => Promise<{ default: React.ComponentType }>) => () => charger().then((m) => ({ Component: m.default }))
 
 const router = createBrowserRouter([
   { path: '/', element: <Consultation /> },
-  { path: '/admin/connexion', element: <Login /> },
+  { path: '/admin/connexion', lazy: page(() => import('@/pages/admin/Login')) },
   {
     path: '/admin',
-    element: <AdminLayout />,
+    lazy: page(() => import('@/pages/admin/AdminLayout')),
     children: [
-      { index: true, element: <Dashboard /> },
-      { path: 'planification', element: <Planification /> },
-      { path: 'disponibilites', element: <Disponibilites /> },
-      { path: 'generation', element: <Generation /> },
-      { path: 'assistant', element: <Assistant /> },
-      { path: 'publication', element: <Publication /> },
+      { index: true, lazy: page(() => import('@/pages/admin/Dashboard')) },
+      { path: 'planification', lazy: page(() => import('@/pages/admin/Planification')) },
+      { path: 'disponibilites', lazy: page(() => import('@/pages/admin/Disponibilites')) },
+      { path: 'generation', lazy: page(() => import('@/pages/admin/Generation')) },
+      { path: 'assistant', lazy: page(() => import('@/pages/admin/Assistant')) },
+      { path: 'publication', lazy: page(() => import('@/pages/admin/Publication')) },
       { path: 'referentiel', element: <Navigate to="/admin/referentiel/classes" replace /> },
-      { path: 'referentiel/:table', element: <Referentiel /> },
+      { path: 'referentiel/:table', lazy: page(() => import('@/pages/admin/referentiel/Referentiel')) },
     ],
   },
   { path: '*', element: <Navigate to="/" replace /> },

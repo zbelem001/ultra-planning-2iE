@@ -51,6 +51,19 @@ L'API doit autoriser l'origine du frontend (`ULTRAPLANNING_ORIGINES`).
 
 **Publication** : la publication passe par l'API, qui prévient par e-mail les enseignants dont les séances changent.
 
+**Import CSV** (Référentiel, bouton Importer ; gabarit par table avec le bouton Gabarit CSV) :
+- les colonnes sont reconnues par leur libellé (« Code », « Effectif ») ou leur nom technique (`code_classe`), sans tenir compte des majuscules ni des accents ; une référence s'écrit par son code (« L2INFO » pour la classe) ; une colonne inconnue est ignorée et signalée ;
+- une ligne déjà présente (même code, ou même clé : classe + groupe, classe + matière + semestre…, `cle` dans `config.tsx`) est **mise à jour** avec les cellules remplies ; les autres sont créées ;
+- chaque ligne passe par les mêmes contrôles que la saisie ; le rapport donne les lignes créées, mises à jour et rejetées (avec le motif).
+
+**Génération** (mode connecté) : à partir d'une semaine, pour tout l'établissement, une filière ou des classes choisies, jusqu'à la fin du semestre, pour une ou deux semaines, ou jusqu'à une date. Deux modes : recalculer les séances non verrouillées de la période, ou **compléter seulement** (les séances existantes restent, seules les heures manquantes sont ajoutées). Si la version courante est publiée, un bandeau propose de créer une version de travail.
+
+**Espace invités léger** (connexions lentes, forfaits limités) :
+- la console d'administration et le client Supabase ne sont téléchargés qu'à l'ouverture de `/admin` ; le jeu de test, qu'en mode simulé ; la bibliothèque Excel, qu'au clic sur l'export. Première visite : ≈ 170 Ko au total ;
+- l'API compresse ses réponses et étiquette l'emploi du temps public (ETag) : tant que rien n'est publié ou modifié, une visite ne coûte qu'une réponse « 304 » vide ;
+- un service worker (`public/sw.js`, en production) garde les fichiers du site et le dernier emploi du temps sur l'appareil : visites suivantes quasi gratuites, consultation possible sans connexion (bandeau « Hors ligne ») ;
+- pas de police monospace à télécharger (police système).
+
 **Exports** (espace invités) : iCalendar, impression / PDF, et Excel (feuille des séances du semestre et récapitulatif des heures par matière ; bibliothèque `exceljs`, chargée seulement au moment de l'export).
 
 **Connexion** : avec `VITE_SUPABASE_URL` et `VITE_SUPABASE_PUBLISHABLE_KEY`, la console se connecte par e-mail et mot de passe (Supabase Auth). Les comptes sont créés par invitation depuis la console super admin (`../superadmin`) ; le lien de l'invitation mène à `/admin/connexion`, où la personne choisit son mot de passe. Sans ces variables, la connexion de développement (liste des comptes) demande une API lancée avec `ULTRAPLANNING_AUTH_DEV=1`.

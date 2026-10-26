@@ -93,8 +93,21 @@ function AucunEmploiDuTemps() {
   )
 }
 
+/** Connexion présente ? (sans connexion, le service worker sert la dernière version enregistrée) */
+function useEnLigne() {
+  const [enLigne, setEnLigne] = useState(() => navigator.onLine)
+  useEffect(() => {
+    const maj = () => setEnLigne(navigator.onLine)
+    window.addEventListener('online', maj)
+    window.addEventListener('offline', maj)
+    return () => { window.removeEventListener('online', maj); window.removeEventListener('offline', maj) }
+  }, [])
+  return enLigne
+}
+
 function Contenu() {
   const { db } = useStore()
+  const enLigne = useEnLigne()
   const [params, setParams] = useSearchParams()
   const edt = edtPublie(db)
   const semestre = db.semestre.find((s) => s.id_semestre === edt?.id_semestre) ?? db.semestre[0]
@@ -228,6 +241,7 @@ function Contenu() {
           <Logo suffix="Invités" ecole={ecoleCourante(db)} />
         </Link>
         <div className="flex items-center gap-2">
+          {!enLigne && <Badge tone="warning" dot>Hors ligne · dernière version enregistrée</Badge>}
           {edt && (
             <span className="hidden sm:block">
               <Badge tone="success" dot>
@@ -245,7 +259,7 @@ function Contenu() {
         <div className="no-print mb-6 flex flex-wrap items-end justify-between gap-4">
           <div>
             <p className="section-label mb-2">Espace invités · enseignants et étudiants</p>
-            <h1 className="text-4xl font-light tracking-tight sm:text-5xl">Emplois du temps</h1>
+            <h1 className="sr-only">Emplois du temps</h1>
           </div>
         </div>
 
@@ -255,42 +269,44 @@ function Contenu() {
           <div className="grid grid-cols-1 gap-5">
             {/* Filtres */}
             <Card className="no-print p-4 sm:p-5">
-              <PillTabs
-                label="Type de ressource"
-                value={res}
-                onChange={(r) => set({ r, id: null, g: null })}
-                items={RESSOURCES.map(({ value, label, icon }) => ({ value, label, icon }))}
-              />
-              <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-[minmax(0,13rem)_minmax(0,13rem)_minmax(0,1fr)_minmax(0,14rem)]">
-                {res !== 'matiere' ? (
-                  <Select aria-label="Campus" value={idSite ?? ''} onChange={(e) => { setIdSite(e.target.value ? Number(e.target.value) : null); setIdFiliere(null) }}>
-                    <option value="">Tous les campus</option>
-                    {db.site.map((s) => <option key={s.id_site} value={s.id_site}>{s.nom_site}</option>)}
-                  </Select>
-                ) : <div className="hidden lg:block" />}
-                {res === 'classe' ? (
-                  <Select aria-label="Filière" value={idFiliere ?? ''} onChange={(e) => setIdFiliere(e.target.value ? Number(e.target.value) : null)}>
-                    <option value="">Toutes les filières</option>
-                    {db.filiere.filter((f) => idSite === null || f.id_site === idSite).map((f) => <option key={f.id_filiere} value={f.id_filiere}>{f.libelle}</option>)}
-                  </Select>
-                ) : <div className="hidden lg:block" />}
+              {/* Ligne 1 : type de ressource à gauche, recherche à droite */}
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <PillTabs
+                  label="Type de ressource"
+                  value={res}
+                  onChange={(r) => set({ r, id: null, g: null })}
+                  items={RESSOURCES.map(({ value, label, icon }) => ({ value, label, icon }))}
+                />
                 <Combobox
-                  className="sm:col-span-2 lg:col-span-1"
+                  className="w-full sm:w-80 lg:w-96"
                   ariaLabel={RESSOURCES.find((r) => r.value === res)!.placeholder}
                   placeholder={RESSOURCES.find((r) => r.value === res)!.placeholder}
                   options={options}
                   value={id}
                   onChange={(v) => set({ id: v, g: null })}
                 />
-                {res === 'classe' && groupes.length > 0 ? (
-                  <Select aria-label="Groupe" value={idGroupe ?? ''} onChange={(e) => set({ g: e.target.value || null })}>
+              </div>
+              {/* Ligne 2 : filtres resserrés */}
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                {res !== 'matiere' && (
+                  <Select className="w-full sm:w-52" aria-label="Campus" value={idSite ?? ''} onChange={(e) => { setIdSite(e.target.value ? Number(e.target.value) : null); setIdFiliere(null) }}>
+                    <option value="">Tous les campus</option>
+                    {db.site.map((s) => <option key={s.id_site} value={s.id_site}>{s.nom_site}</option>)}
+                  </Select>
+                )}
+                {res === 'classe' && (
+                  <Select className="w-full sm:w-52" aria-label="Filière" value={idFiliere ?? ''} onChange={(e) => setIdFiliere(e.target.value ? Number(e.target.value) : null)}>
+                    <option value="">Toutes les filières</option>
+                    {db.filiere.filter((f) => idSite === null || f.id_site === idSite).map((f) => <option key={f.id_filiere} value={f.id_filiere}>{f.libelle}</option>)}
+                  </Select>
+                )}
+                {res === 'classe' && groupes.length > 0 && (
+                  <Select className="w-full sm:w-52" aria-label="Groupe" value={idGroupe ?? ''} onChange={(e) => set({ g: e.target.value || null })}>
                     <option value="">Tous les groupes</option>
                     {groupes.map((g) => <option key={g.id_groupe} value={g.id_groupe}>Groupe {g.code_groupe} ({g.effectif})</option>)}
                   </Select>
-                ) : <div className="hidden lg:block" />}
-              </div>
-              <div className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-3">
-                <div className="flex items-center gap-1.5" role="group" aria-label="Types de séance">
+                )}
+                <div className="flex items-center gap-1.5 sm:ml-2" role="group" aria-label="Types de séance">
                   <span className="mr-1 text-sm text-ink-2">Types</span>
                   {(['CM', 'TD', 'TP'] as TypeSeance[]).map((t) => {
                     const on = types.includes(t)
@@ -307,7 +323,7 @@ function Contenu() {
                     )
                   })}
                 </div>
-                <label className="flex items-center gap-2 text-sm text-ink-2">
+                <label className="flex items-center gap-2 text-sm text-ink-2 sm:ml-2">
                   <Switch checked={masquerAnnulees} onChange={setMasquerAnnulees} label="Masquer les séances annulées" />
                   Masquer les annulées
                 </label>
@@ -380,8 +396,8 @@ function Contenu() {
                 )}
 
                 <div className="mt-4">
-                  {vue === 'semaine' && <WeekGrid db={db} days={jours} seances={semaineList} hide={HIDE[res]} onSelect={setDetail} idClasse={res === 'classe' ? id : null} />}
-                  {vue === 'jour' && <WeekGrid db={db} days={[jour]} seances={semaineList} hide={HIDE[res]} onSelect={setDetail} idClasse={res === 'classe' ? id : null} />}
+                  {vue === 'semaine' && <WeekGrid remplir db={db} days={jours} seances={semaineList} hide={HIDE[res]} onSelect={setDetail} idClasse={res === 'classe' ? id : null} />}
+                  {vue === 'jour' && <WeekGrid remplir db={db} days={[jour]} seances={semaineList} hide={HIDE[res]} onSelect={setDetail} idClasse={res === 'classe' ? id : null} />}
                   {vue === 'liste' &&
                     (semaineList.length ? (
                       <ListView seances={semaineList} onSelect={setDetail} />
