@@ -1,6 +1,6 @@
 # UltraPlanning 2iE · API et assistant IA
 
-API FastAPI autour du solveur (`../solver`) et de l'assistant IA (modèle servi par Groq).
+API FastAPI autour du solveur (`../solver`) et de l'assistant IA (Groq ou Claude d'Anthropic).
 
 Elle porte :
 - l'image de la base pour le frontend, et l'enregistrement de ses modifications (revalidées par les déclencheurs) ;
@@ -25,6 +25,9 @@ Le fichier `backend/.env` (ignoré par git) est lu au démarrage ; les variables
 | `GROQ_API_KEY` | Clé de l'API Groq |
 | `GROQ_API_URL` | Point d'accès (on en garde l'hôte ; défaut `https://api.groq.com`) |
 | `MODEL` | Modèle Groq (défaut `openai/gpt-oss-120b`) |
+| `ANTHROPIC_API_KEY` | Clé de l'API Anthropic (Claude) |
+| `ANTHROPIC_MODEL` | Modèle Claude (défaut `claude-haiku-5-5`) |
+| `ULTRAPLANNING_LLM` | Fournisseur essayé en premier : `groq` ou `anthropic`. L'autre, s'il a une clé, prend le relais quand le premier est saturé ou injoignable. Autre valeur ou vide : Groq d'abord |
 | `DATABASE_URL` | Connexion PostgreSQL (peut aussi être placée ici) |
 | `SUPABASE_POOLER_URL` | URI du « Session pooler » de Supabase, utilisée si `DATABASE_URL` est absente |
 | `ULTRAPLANNING_EFFORT` | Niveau de raisonnement du modèle : `low`, `medium` (défaut), `high` |
@@ -61,6 +64,7 @@ Toutes les réponses de plus de 1 Ko sont compressées (gzip).
 | `POST /api/generations/{id}/appliquer` | Enregistre le résultat ; la base revalide chaque séance |
 | `POST /api/verifications` | Teste une séance contre les règles CD-01 à CD-14, sans rien écrire |
 | `POST /api/assistant/messages` | Envoie un message à l'assistant (nouvelle discussion ou suite) |
+| `POST /api/assistant/messages/flux` | Même chose, avec les étapes en direct (Server-Sent Events) : contextualisation, analyse, vérification, calcul, réflexion, rédaction, puis la réponse |
 | `GET /api/propositions?id_edt=…` | Propositions de l'assistant en attente, avec leurs conséquences |
 | `POST /api/propositions/{id}/appliquer` · `/rejeter` | Décision du planificateur |
 | `GET` · `POST /api/superadmin/ecoles` | Écoles clientes (nombre de comptes), création |
@@ -109,7 +113,7 @@ La RLS de chaque table (schéma, section 7) ne montre et ne laisse écrire à ce
 
 ## Assistant IA
 
-L'agent (`app/agent.py`) dialogue avec le modèle par l'API « chat completions » de Groq, avec appels d'outils : le modèle demande un outil, l'agent l'exécute et lui renvoie le résultat, jusqu'à la réponse finale (12 étapes au plus). Les six outils sont dans `app/outils.py` ; leur schéma JSON est déduit de la signature et de la docstring (`app/schema_outil.py`), et leurs arguments sont validés avant l'appel.
+L'agent (`app/agent.py`) dialogue avec le modèle, au choix par l'API « chat completions » de Groq ou par l'API Messages d'Anthropic (`app/llm_anthropic.py`, SDK officiel `anthropic`), avec appels d'outils : le modèle demande un outil, l'agent l'exécute et lui renvoie le résultat, jusqu'à la réponse finale (12 étapes au plus). Les six outils sont dans `app/outils.py` ; leur schéma JSON est déduit de la signature et de la docstring (`app/schema_outil.py`), et leurs arguments sont validés avant l'appel.
 
 | Outil | Rôle |
 |---|---|

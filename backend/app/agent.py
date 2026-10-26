@@ -1,9 +1,13 @@
 """Assistant IA : un agent qui comprend les demandes en langage naturel et agit
 à travers des outils (lecture, vérification, solveur, propositions).
 
-Le modèle est servi par Groq (API « chat completions » avec appels d'outils).
-La boucle est écrite ici : le modèle demande des outils, on les exécute, on
-renvoie les résultats, jusqu'à sa réponse finale.
+Deux fournisseurs de modèle, avec les mêmes outils et la même consigne :
+- Groq (API « chat completions » avec appels d'outils), boucle écrite ici ;
+- Claude d'Anthropic (API Messages), boucle dans llm_anthropic.py.
+ULTRAPLANNING_LLM choisit celui qui est essayé en premier ; si l'autre a une clé,
+il prend le relais quand le premier est saturé ou injoignable.
+Dans les deux cas : le modèle demande des outils, on les exécute, on renvoie les
+résultats, jusqu'à sa réponse finale.
 """
 
 from __future__ import annotations
@@ -11,13 +15,14 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, timedelta
 
 import groq
 import psycopg
 
-from . import config
+from . import config, llm_anthropic
 from .outils import Contexte, construire_outils
 from .schema_outil import Outil, ValidationError
 
@@ -72,6 +77,7 @@ class Reponse:
     texte: str
     statut: str  # 'traite' ou 'erreur'
     propositions: list[int]
+    modele: str | None = None  # modèle qui a répondu
 
 
 def executer_outil(ctx: Contexte, outils: dict[str, Outil], nom: str, arguments: str) -> str:
@@ -119,6 +125,59 @@ def contexte(id_edt: int, version: tuple, aujourd_hui: date | None = None) -> st
     )
 
 
+# --- étapes affichées pendant le traitement (contextualisation, analyse...) ---------------
+
+Progres = Callable[[str, str], None]  # (étape, détail)
+_SUJETS = {"cours": "les cours", "classes": "les classes et groupes", "enseignants": "les enseignants",
+           "salles": "les salles", "programme": "le programme", "calendrier": "le calendrier"}
+
+
+def _date(iso: str | None) -> str:
+    try:
+        d = date.fromisoformat(iso or "")
+    except ValueError:
+        return iso or ""
+    return f"{JOURS[d.weekday()]} {d.day}/{d.month:02d}"
+
+
+def etape_outil(nom: str, args: dict) -> tuple[str, str]:
+    """Étape et phrase affichées pendant un appel d'outil."""
+    if nom == "lire_emploi_du_temps":
+        cible = args.get("code_classe") or args.get("matricule") or args.get("code_salle")
+        return "analyse", f"Lecture de l'emploi du temps{f' de {cible}' if cible else ''} du {_date(args.get('du'))} au {_date(args.get('au'))}"
+    if nom == "lire_referentiel":
+        return "analyse", f"Consultation du référentiel : {_SUJETS.get(args.get('sujet'), args.get('sujet', ''))}"
+    if nom == "verifier_seance":
+        return "verification", (f"Test d'une séance le {_date(args.get('date_seance'))} de {args.get('heure_debut')} "
+                                f"à {args.get('heure_fin')} contre les règles CD-01 à CD-14")
+    if nom == "proposer_generation":
+        portee = ", ".join(args.get("classes") or args.get("filieres") or []) or "le périmètre demandé"
+        return "calcul", f"Le solveur génère l'emploi du temps de {portee}"
+    if nom == "proposer_replanification":
+        return "calcul", f"Le solveur replanifie du {_date(args.get('du'))} au {_date(args.get('au'))} en changeant le moins possible"
+    if nom == "proposer_priorites":
+        return "calcul", "Enregistrement des priorités suggérées"
+    return "analyse", nom
+
+
+def resultat_court(nom: str, resultat: str) -> str | None:
+    """Issue d'une vérification ou d'un calcul, en une ligne."""
+    premiere = resultat.splitlines()[0] if resultat else ""
+    if nom == "verifier_seance" or nom.startswith("proposer_") or premiere.startswith(("Erreur", "Demande invalide")):
+        return premiere[:140]
+    return None
+
+
+def fournisseurs() -> list[str]:
+    """Fournisseurs à essayer, dans l'ordre : celui de ULTRAPLANNING_LLM d'abord, puis l'autre
+    s'il a une clé. Sans choix valide : Groq (offre gratuite) d'abord."""
+    avec_cle = [f for f, cle in (("groq", config.GROQ_API_KEY), ("anthropic", config.ANTHROPIC_API_KEY)) if cle]
+    if config.LLM in avec_cle:
+        avec_cle.remove(config.LLM)
+        avec_cle.insert(0, config.LLM)
+    return avec_cle
+
+
 def repondre(
     conn: psycopg.Connection,
     id_edt: int,
@@ -126,26 +185,92 @@ def repondre(
     historique: list[tuple[str, str | None]],
     texte: str,
     client: groq.Groq | None = None,
+    client_anthropic=None,
+    progres: Progres | None = None,
 ) -> Reponse:
     """Répond à un message de la discussion. `historique` : couples (demande,
-    réponse) des messages précédents, du plus ancien au plus récent."""
+    réponse) des messages précédents, du plus ancien au plus récent.
+    `client` / `client_anthropic` : clients imposés (tests) ; seuls ceux-là sont alors essayés."""
+    signaler: Progres = progres or (lambda etape, detail: None)
     ctx = Contexte(conn, id_edt, id_prompt, [])
     version = conn.execute("SELECT version, statut FROM emploi_du_temps WHERE id_edt = %s", (id_edt,)).fetchone()
+    signaler("contextualisation", f"Emploi du temps version {version[0]} ({version[1]})"
+             + (f", {len(historique)} message(s) précédent(s) de la discussion" if historique else ", nouvelle discussion"))
     outils = {o.nom: o for o in construire_outils(ctx)}
-    schemas = [o.schema() for o in outils.values()]
+    demande = f"{contexte(id_edt, version)}\n\n{texte}"
 
+    relance = {"faite": False}
+
+    def relancer_si_decrit(reponse: str) -> str | None:
+        """Le modèle décrit parfois l'appel d'un outil de proposition au lieu de le faire : relance, une fois."""
+        decrits = [n for n in outils if n.startswith("proposer_") and n in reponse]
+        if decrits and not ctx.propositions_creees and not relance["faite"]:
+            relance["faite"] = True
+            return f"Tu as décrit l'appel à {decrits[0]} sans le faire. Appelle l'outil maintenant, puis réponds d'après son résultat."
+        return None
+
+    def executer(nom: str, arguments: str) -> str:
+        try:
+            args = json.loads(arguments or "{}")
+        except json.JSONDecodeError:
+            args = {}
+        signaler(*etape_outil(nom, args if isinstance(args, dict) else {}))
+        resultat = executer_outil(ctx, outils, nom, arguments)
+        court = resultat_court(nom, resultat)
+        if court:
+            signaler("resultat", court)
+        return resultat
+
+    appels = {"n": 0}
+
+    def reflechir() -> None:
+        signaler("reflexion", "Compréhension de la demande" if appels["n"] == 0 else "Interprétation des résultats obtenus")
+        appels["n"] += 1
+
+    if client is not None or client_anthropic is not None:
+        ordre = [f for f, c in (("groq", client), ("anthropic", client_anthropic)) if c is not None]
+    else:
+        ordre = fournisseurs()
+    if not ordre:
+        raise AgentIndisponible("Aucune clé d'assistant IA : renseignez GROQ_API_KEY ou ANTHROPIC_API_KEY dans backend/.env.")
+
+    echecs = []
+    for f in ordre:
+        try:
+            if f == "groq":
+                texte_final, fini = _boucle_groq(outils, historique, demande, executer, relancer_si_decrit, client, reflechir)
+                modele = config.MODELE
+            else:
+                texte_final, fini = llm_anthropic.boucle(SYSTEME, historique, demande, outils, executer,
+                                                         relancer_si_decrit, client_anthropic, reflechir)
+                modele = config.ANTHROPIC_MODEL
+        except (AgentIndisponible, llm_anthropic.Indisponible) as e:
+            journal.warning("assistant : %s indisponible (%s)", f, e)
+            echecs.append(str(e))
+            if f != ordre[-1]:
+                signaler("relais", f"{'Groq' if f == 'groq' else 'Claude'} indisponible : un autre modèle prend le relais")
+            continue
+        signaler("redaction", "Rédaction de la réponse")
+        # Le modèle ajoute parfois du gras Markdown malgré la consigne : l'interface affiche du texte brut
+        texte_final = texte_final.replace("**", "").strip()
+        return Reponse(texte_final or "(réponse vide)", "traite" if fini else "erreur", ctx.propositions_creees, modele)
+    raise AgentIndisponible(" ; ".join(echecs))
+
+
+def _boucle_groq(outils, historique, demande, executer, relancer_si_decrit, client, reflechir=lambda: None) -> tuple[str, bool]:
+    schemas = [o.schema() for o in outils.values()]
     messages: list[dict] = [{"role": "system", "content": SYSTEME}]
-    for demande, reponse in historique:
-        messages.append({"role": "user", "content": demande})
-        messages.append({"role": "assistant", "content": reponse or "(pas de réponse)"})
-    messages.append({"role": "user", "content": f"{contexte(id_edt, version)}\n\n{texte}"})
+    for d, r in historique:
+        messages.append({"role": "user", "content": d})
+        messages.append({"role": "assistant", "content": r or "(pas de réponse)"})
+    messages.append({"role": "user", "content": demande})
 
     try:
         # Nouvelles tentatives espacées en cas de limite de débit (plan gratuit de Groq)
         client = client or groq.Groq(api_key=config.GROQ_API_KEY or None, base_url=config.GROQ_BASE_URL, max_retries=4)
         essais = 0
-        relance = False
         for _ in range(config.ITERATIONS_MAX_AGENT):
+            reflechir()
             try:
                 rep = client.chat.completions.create(
                     model=config.MODELE,
@@ -174,23 +299,19 @@ def repondre(
                     ],
                 })
                 for tc in msg.tool_calls:
-                    resultat = executer_outil(ctx, outils, tc.function.name, tc.function.arguments)
+                    resultat = executer(tc.function.name, tc.function.arguments)
                     journal.info("outil %s %s -> %s", tc.function.name, tc.function.arguments[:300], resultat.splitlines()[0][:200] if resultat else "")
                     messages.append({"role": "tool", "tool_call_id": tc.id, "content": resultat})
                 continue
-            # Le modèle décrit parfois l'appel d'un outil de proposition au lieu de le faire : on le relance une fois
-            decrits = [n for n in outils if n.startswith("proposer_") and n in (msg.content or "")]
-            if decrits and not ctx.propositions_creees and not relance:
-                relance = True
+            consigne = relancer_si_decrit(msg.content or "")
+            if consigne:
                 messages.append({"role": "assistant", "content": msg.content or ""})
-                messages.append({"role": "user", "content": f"Tu as décrit l'appel à {decrits[0]} sans le faire. "
-                                 "Appelle l'outil maintenant, puis réponds d'après son résultat."})
+                messages.append({"role": "user", "content": consigne})
                 continue
-            # Le modèle ajoute parfois du gras Markdown malgré la consigne : l'interface affiche du texte brut
-            texte_final = (msg.content or "").replace("**", "").strip()
+            texte_final = msg.content or ""
             if choix.finish_reason == "length":
                 texte_final += "\n\n(Réponse interrompue : reformulez la demande de façon plus précise.)"
-            return Reponse(texte_final or "(réponse vide)", "traite", ctx.propositions_creees)
+            return texte_final, True
     except groq.AuthenticationError as e:
         raise AgentIndisponible("Clé d'API Groq invalide (GROQ_API_KEY dans backend/.env).") from e
     except groq.RateLimitError as e:
@@ -201,7 +322,4 @@ def repondre(
         raise AgentIndisponible(f"Erreur de l'API Groq ({e.status_code}).") from e
     except groq.GroqError as e:  # ex. aucune clé configurée
         raise AgentIndisponible(f"Assistant indisponible : {e}") from e
-
-    return Reponse(
-        "Demande trop longue à traiter en une fois : découpez-la ou précisez-la.", "erreur", ctx.propositions_creees
-    )
+    return "Demande trop longue à traiter en une fois : découpez-la ou précisez-la.", False

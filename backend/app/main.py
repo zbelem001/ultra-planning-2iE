@@ -7,12 +7,17 @@ vérification d'une séance, assistant IA et application de ses propositions.
 
 from __future__ import annotations
 
+import json
+import logging
+import queue
+import threading
 from datetime import date, time
 
 import psycopg
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from ultraplanning_solver.base import verifier
@@ -24,7 +29,9 @@ from .comptes import routeur as routeur_comptes
 from .publication import routeur as routeur_publication
 from .superadmin_api import routeur as routeur_superadmin
 from .auth import Utilisateur, utilisateur_courant
-from .db import connexion, origine
+from .db import connexion, entrer_ecole, origine
+
+journal = logging.getLogger("ultraplanning.api")
 
 app = FastAPI(title="UltraPlanning 2iE", version="0.1.0")
 app.add_middleware(
@@ -54,7 +61,11 @@ def _edt_modifiable(conn: psycopg.Connection, id_edt: int) -> None:
 @app.get("/api/sante")
 def sante(conn: psycopg.Connection = Depends(connexion)) -> dict:
     conn.execute("SELECT 1")
-    return {"statut": "ok", "modele": config.MODELE}
+    modeles = {"groq": config.MODELE, "anthropic": config.ANTHROPIC_MODEL}
+    ordre = agent.fournisseurs()
+    # « modele » : celui qui répond en premier ; « assistant » : l'ordre d'essai (relais en cas d'échec)
+    return {"statut": "ok", "modele": modeles[ordre[0]] if ordre else None,
+            "assistant": [{"fournisseur": f, "modele": modeles[f]} for f in ordre]}
 
 
 # --- génération -------------------------------------------------------------------
@@ -161,6 +172,42 @@ class Message(BaseModel):
 @app.post("/api/assistant/messages")
 def message_assistant(m: Message, conn: psycopg.Connection = Depends(connexion),
                       u: Utilisateur = Depends(utilisateur_courant)) -> dict:
+    return _traiter_message(conn, u, m)
+
+
+@app.post("/api/assistant/messages/flux")
+def message_assistant_flux(m: Message, u: Utilisateur = Depends(utilisateur_courant)) -> StreamingResponse:
+    """Même traitement, avec les étapes envoyées au fur et à mesure (Server-Sent Events) :
+    contextualisation, analyse, vérification, calcul, réflexion, rédaction ; puis « fin »
+    avec la réponse (mêmes champs que /api/assistant/messages) ou « erreur »."""
+    file: queue.Queue = queue.Queue()
+
+    def travail() -> None:
+        try:
+            # Connexion propre au fil, cantonnée à l'école du compte comme celle des requêtes
+            with psycopg.connect(config.DATABASE_URL) as c:
+                entrer_ecole(c, u.id_ecole, u.id_utilisateur)
+                fin = _traiter_message(c, u, m, lambda etape, detail: file.put({"type": "etape", "etape": etape, "detail": detail}))
+            file.put({"type": "fin", **fin})
+        except HTTPException as e:
+            file.put({"type": "erreur", "detail": e.detail})
+        except Exception:  # noqa: BLE001 - l'erreur est rapportée à l'interface
+            journal.exception("assistant : échec du traitement")
+            file.put({"type": "erreur", "detail": "Erreur interne de l'assistant"})
+        finally:
+            file.put(None)
+
+    threading.Thread(target=travail, daemon=True).start()
+
+    def evenements():
+        while (ev := file.get()) is not None:
+            yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(evenements(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+def _traiter_message(conn: psycopg.Connection, u: Utilisateur, m: Message, progres=None) -> dict:
     _edt(conn, m.id_edt)
     if m.id_conversation is None:
         titre = m.texte if len(m.texte) <= 48 else m.texte[:47].rstrip() + "…"
@@ -189,7 +236,7 @@ def message_assistant(m: Message, conn: psycopg.Connection = Depends(connexion),
     conn.commit()  # le message reste enregistré même si l'assistant échoue
 
     try:
-        r = agent.repondre(conn, m.id_edt, id_prompt, historique, m.texte)
+        r = agent.repondre(conn, m.id_edt, id_prompt, historique, m.texte, progres=progres)
     except agent.AgentIndisponible as e:
         conn.rollback()
         r = agent.Reponse(str(e), "erreur", [])
@@ -200,6 +247,7 @@ def message_assistant(m: Message, conn: psycopg.Connection = Depends(connexion),
         "statut": r.statut,
         "reponse": r.texte,
         "propositions": r.propositions,
+        "modele": r.modele,
     }
 
 

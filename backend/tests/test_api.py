@@ -1,3 +1,4 @@
+import json
 import copy
 import time
 from types import SimpleNamespace
@@ -115,6 +116,7 @@ def test_assistant_discussion(client, monkeypatch):
 def test_assistant_sans_cle(client, monkeypatch):
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
     monkeypatch.setattr(config, "GROQ_API_KEY", "")
+    monkeypatch.setattr(config, "ANTHROPIC_API_KEY", "")
     r = client.post("/api/assistant/messages", headers=ADMIN, json={"id_edt": 1, "texte": "Bonjour"})
     corps = r.json()
     assert r.status_code == 200 and corps["statut"] == "erreur"
@@ -155,3 +157,82 @@ def test_appel_d_outil_decrit_puis_relance(client, monkeypatch):
     r = client.post("/api/assistant/messages", headers=ADMIN, json={"id_edt": 1, "texte": "Planifie la semaine du 9 novembre du M1IA"}).json()
     assert r["statut"] == "traite" and r["reponse"] == "Proposition créée." and len(r["propositions"]) == 1
     assert len(factice.appels) == 3
+
+
+class ClaudeFactice:
+    """Imite l'API Messages d'Anthropic : un appel d'outil, puis la réponse."""
+
+    def __init__(self):
+        self.appels = []
+        self.messages = SimpleNamespace(create=self.create)
+
+    def create(self, **kwargs):
+        self.appels.append(copy.deepcopy({k: v for k, v in kwargs.items() if k != "messages"}) | {"messages": list(kwargs["messages"])})
+        dernier = kwargs["messages"][-1]["content"]
+        if isinstance(dernier, list) and dernier and dernier[0]["type"] == "tool_result":
+            salles = dernier[0]["content"]
+            return SimpleNamespace(stop_reason="end_turn", content=[
+                SimpleNamespace(type="thinking", thinking=""),
+                SimpleNamespace(type="text", text=f"Il y a **{salles.count('salle ')}** salles.")])
+        return SimpleNamespace(stop_reason="tool_use", content=[
+            SimpleNamespace(type="tool_use", id="toolu_1", name="lire_referentiel", input={"sujet": "salles"})])
+
+
+def test_assistant_avec_claude(client, monkeypatch):
+    claude = ClaudeFactice()
+    vrai = agent.repondre
+    monkeypatch.setattr(agent, "repondre", lambda *a, **k: vrai(*a, client_anthropic=claude, **k))
+    r = client.post("/api/assistant/messages", headers=ADMIN, json={"id_edt": 1, "texte": "Combien de salles ?"}).json()
+    assert r["statut"] == "traite" and r["reponse"] == "Il y a 13 salles." and r["modele"] == config.ANTHROPIC_MODEL
+    premier, second = claude.appels
+    assert premier["model"] == config.ANTHROPIC_MODEL and "temperature" not in premier
+    assert premier["output_config"] == {"effort": config.EFFORT} and premier["system"][0]["cache_control"]
+    assert {t["name"] for t in premier["tools"]} >= {"lire_referentiel", "proposer_generation"}
+    assert all("input_schema" in t for t in premier["tools"])
+    # 2e appel : la réponse complète du modèle, puis le résultat de l'outil dans un message utilisateur
+    assert second["messages"][-2]["role"] == "assistant" and second["messages"][-1]["content"][0]["tool_use_id"] == "toolu_1"
+
+
+def test_relais_vers_le_second_fournisseur(client, monkeypatch):
+    """Groq saturé (quota du jour) : Claude répond à sa place."""
+    def groq_sature(*a, **k):
+        raise agent.AgentIndisponible("Quota journalier de Groq épuisé")
+    monkeypatch.setattr(agent, "_boucle_groq", groq_sature)
+    monkeypatch.setattr(config, "GROQ_API_KEY", "gsk_test")
+    monkeypatch.setattr(config, "ANTHROPIC_API_KEY", "sk-ant-test")
+    monkeypatch.setattr(config, "LLM", "groq")
+    assert agent.fournisseurs() == ["groq", "anthropic"]
+    monkeypatch.setattr(config, "LLM", "anthropic")
+    assert agent.fournisseurs() == ["anthropic", "groq"]
+    monkeypatch.setattr(config, "LLM", "groq")
+    claude = ClaudeFactice()
+    monkeypatch.setattr(agent.llm_anthropic.anthropic, "Anthropic", lambda **k: claude)
+    r = client.post("/api/assistant/messages", headers=ADMIN, json={"id_edt": 1, "texte": "Combien de salles ?"}).json()
+    assert r["statut"] == "traite" and r["modele"] == config.ANTHROPIC_MODEL and len(claude.appels) == 2
+
+
+def test_assistant_etapes_en_direct(client, monkeypatch):
+    """Les étapes arrivent dans l'ordre, puis la réponse (Server-Sent Events)."""
+    claude = ClaudeFactice()
+    vrai = agent.repondre
+    monkeypatch.setattr(agent, "repondre", lambda *a, **k: vrai(*a, client_anthropic=claude, **k))
+    with client.stream("POST", "/api/assistant/messages/flux", headers=ADMIN, json={"id_edt": 1, "texte": "Combien de salles ?"}) as r:
+        assert r.headers["content-type"].startswith("text/event-stream") and "content-encoding" not in r.headers
+        evenements = [json.loads(l[6:]) for l in r.iter_lines() if l.startswith("data: ")]
+    etapes = [(e["etape"], e["detail"]) for e in evenements if e["type"] == "etape"]
+    assert [e for e, _ in etapes] == ["contextualisation", "reflexion", "analyse", "reflexion", "redaction"]
+    assert etapes[2][1] == "Consultation du référentiel : les salles"
+    assert evenements[-1]["type"] == "fin" and evenements[-1]["reponse"] == "Il y a 13 salles."
+    # Discussion d'une autre personne : erreur annoncée dans le flux
+    with client.stream("POST", "/api/assistant/messages/flux", headers={"X-Utilisateur": "2"},
+                       json={"id_edt": 1, "texte": "Suite", "id_conversation": evenements[-1]["id_conversation"]}) as r:
+        dernier = [json.loads(l[6:]) for l in r.iter_lines() if l.startswith("data: ")][-1]
+    assert dernier == {"type": "erreur", "detail": "Discussion introuvable"}
+
+
+def test_phrases_des_etapes():
+    assert agent.etape_outil("verifier_seance", {"date_seance": "2026-11-04", "heure_debut": "13:00", "heure_fin": "15:00"}) == (
+        "verification", "Test d'une séance le mercredi 4/11 de 13:00 à 15:00 contre les règles CD-01 à CD-14")
+    assert agent.etape_outil("proposer_generation", {"classes": ["M1IA"]})[1] == "Le solveur génère l'emploi du temps de M1IA"
+    assert agent.resultat_court("lire_referentiel", "salle 1 | …") is None
+    assert agent.resultat_court("verifier_seance", "Refusée : CD-03 : la classe…\nsuite").startswith("Refusée : CD-03")

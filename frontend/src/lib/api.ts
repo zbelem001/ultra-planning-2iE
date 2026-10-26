@@ -27,7 +27,8 @@ async function identification(): Promise<Record<string, string>> {
   return session !== null ? { 'X-Utilisateur': String(session) } : {}
 }
 
-async function appel<T>(chemin: string, options: RequestInit = {}): Promise<T> {
+/** Requête vers l'API ; lève ErreurApi si elle échoue (motif renvoyé par l'API) */
+async function requete(chemin: string, options: RequestInit = {}): Promise<Response> {
   let rep: Response
   try {
     rep = await fetch(`${API_URL}${chemin}`, {
@@ -49,7 +50,11 @@ async function appel<T>(chemin: string, options: RequestInit = {}): Promise<T> {
     }
     throw new ErreurApi(rep.status, message)
   }
-  return rep.json() as Promise<T>
+  return rep
+}
+
+async function appel<T>(chemin: string, options: RequestInit = {}): Promise<T> {
+  return (await requete(chemin, options)).json() as Promise<T>
 }
 
 const post = <T>(chemin: string, corps?: unknown) =>
@@ -153,6 +158,42 @@ export interface ReponseAssistant {
   statut: 'traite' | 'erreur'
   reponse: string
   propositions: number[]
+  modele?: string | null
+}
+
+/** Étape du traitement d'un message : contextualisation, analyse, verification, calcul, reflexion,
+ *  redaction, relais ; « resultat » complète l'étape précédente (issue d'une vérification, d'un calcul) */
+export interface EtapeAssistant {
+  etape: string
+  detail: string
+}
+
+/** Envoie un message et reçoit les étapes au fur et à mesure (Server-Sent Events), puis la réponse */
+export async function envoyerMessageFlux(
+  id_edt: number, texte: string, id_conversation: number | null, surEtape: (e: EtapeAssistant) => void,
+): Promise<ReponseAssistant> {
+  const rep = await requete('/api/assistant/messages/flux', {
+    method: 'POST', body: JSON.stringify({ id_edt, texte, id_conversation }),
+  })
+  const lecteur = rep.body!.getReader()
+  const decodeur = new TextDecoder()
+  let tampon = ''
+  for (;;) {
+    const { value, done } = await lecteur.read()
+    if (done) break
+    tampon += decodeur.decode(value, { stream: true })
+    let fin: number
+    while ((fin = tampon.indexOf('\n\n')) >= 0) {
+      const bloc = tampon.slice(0, fin)
+      tampon = tampon.slice(fin + 2)
+      if (!bloc.startsWith('data: ')) continue
+      const ev = JSON.parse(bloc.slice(6))
+      if (ev.type === 'etape') surEtape({ etape: ev.etape, detail: ev.detail })
+      else if (ev.type === 'erreur') throw new ErreurApi(0, ev.detail)
+      else if (ev.type === 'fin') return ev as ReponseAssistant
+    }
+  }
+  throw new ErreurApi(0, "La réponse de l'assistant s'est interrompue.")
 }
 
 export const envoyerMessage = (id_edt: number, texte: string, id_conversation: number | null) =>

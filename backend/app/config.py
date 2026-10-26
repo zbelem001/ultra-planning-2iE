@@ -21,6 +21,13 @@ _url = urlsplit(os.environ.get("GROQ_API_URL", "https://api.groq.com/openai/v1/c
 GROQ_BASE_URL = f"{_url.scheme}://{_url.netloc}"  # le SDK Groq ajoute lui-même /openai/v1/…
 MODELE = os.environ.get("MODEL", "openai/gpt-oss-120b")
 EFFORT = os.environ.get("ULTRAPLANNING_EFFORT", "medium")  # raisonnement : low, medium, high
+
+# Assistant IA : Claude (Anthropic), en second fournisseur ou en principal
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-haiku-5-5")
+# Fournisseur essayé en premier : groq ou anthropic. L'autre, s'il a une clé, prend le relais
+# quand le premier est saturé ou injoignable. Autre valeur (ou vide) : groq d'abord.
+LLM = os.environ.get("ULTRAPLANNING_LLM", "").strip().lower()
 ITERATIONS_MAX_AGENT = int(os.environ.get("ULTRAPLANNING_ITERATIONS_AGENT", "12"))
 
 # Origines autorisées : console des écoles (5173) et console super admin (5174)

@@ -3,13 +3,13 @@
 // qui interroge le solveur et enregistre ses propositions. Mode simulé : on repère
 // jour, période, classe et enseignant, puis on décrit les séances concernées.
 
-import { ArrowUp, Bot, History, Loader2, MessageSquarePlus, Search, Trash2, UserRound } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { ArrowUp, Bot, Brain, Compass, Cpu, History, Loader2, MessageSquarePlus, PenLine, Repeat, Search, ShieldCheck, Trash2, UserRound } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { toast } from 'sonner'
 import { PropositionCarte } from '@/components/PropositionCarte'
 import { Badge, Button, Card, cn, Dialog, Input, PageTitle } from '@/components/ui'
-import { envoyerMessage } from '@/lib/api'
+import { envoyerMessageFlux, type EtapeAssistant } from '@/lib/api'
 import { useSession } from '@/lib/auth'
 import { enrichir, nomEnseignant, publicCours } from '@/lib/queries'
 import { edtTravail, nextId, useStore } from '@/lib/store'
@@ -93,6 +93,14 @@ export default function Assistant() {
   const [refColonnes, hauteur] = useHauteurRestante<HTMLDivElement>(48, 448)
   // Mode connecté : message en cours de traitement par l'agent (affiché en attendant sa réponse)
   const [envoi, setEnvoi] = useState<{ texte: string; id_conversation: number | null } | null>(null)
+  // Étapes du traitement en cours, reçues en direct de l'API
+  const [etapes, setEtapes] = useState<(EtapeAssistant & { resultat?: string })[]>([])
+  const ajouterEtape = (e: EtapeAssistant) => setEtapes((l) => {
+    const derniere = l[l.length - 1]
+    if (e.etape === 'resultat') return derniere ? [...l.slice(0, -1), { ...derniere, resultat: e.detail }] : l
+    if (derniere && derniere.etape === e.etape && derniere.detail === e.detail) return l
+    return [...l, e]
+  })
   const session = useSession()
   const edt = edtTravail(db)
   const [params, setParams] = useSearchParams()
@@ -137,14 +145,15 @@ export default function Assistant() {
 
   useEffect(() => {
     fin.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
-  }, [prompts.length, enCours, courante?.id_conversation])
+  }, [prompts.length, enCours, courante?.id_conversation, etapes.length])
 
   const envoyerAuServeur = async (txt: string) => {
     const idConv = courante?.id_conversation ?? null
     setEnvoi({ texte: txt, id_conversation: idConv })
+    setEtapes([])
     setTexte('')
     try {
-      const r = await envoyerMessage(courante?.id_edt ?? edt.id_edt, txt, idConv)
+      const r = await envoyerMessageFlux(courante?.id_edt ?? edt.id_edt, txt, idConv, ajouterEtape)
       await recharger()
       setParams({ c: String(r.id_conversation) }, { replace: true })
     } catch (e) {
@@ -318,7 +327,7 @@ export default function Assistant() {
                 <div className="flex gap-2">
                   <span className="grid size-8 shrink-0 place-items-center rounded-full bg-orange text-navy"><Bot className="size-4" /></span>
                   <div className="rounded-3xl rounded-bl-lg bg-white/85 px-4 py-3 text-sm ring-1 ring-white">
-                    <span className="flex items-center gap-2 text-ink-2"><Loader2 className="size-4 animate-spin" />L'assistant consulte l'emploi du temps et le solveur…</span>
+                    <EtapesEnCours etapes={etapes} />
                   </div>
                 </div>
               </div>
@@ -360,6 +369,51 @@ export default function Assistant() {
       >
         <p className="text-sm text-ink-2">Les emplois du temps ne sont pas modifiés.</p>
       </Dialog>
+    </div>
+  )
+}
+
+const ETAPES: Record<string, { label: string; icone: ReactNode }> = {
+  contextualisation: { label: 'Contextualisation', icone: <Compass /> },
+  analyse: { label: 'Analyse', icone: <Search /> },
+  verification: { label: 'Vérification', icone: <ShieldCheck /> },
+  calcul: { label: 'Calcul', icone: <Cpu /> },
+  reflexion: { label: 'Réflexion', icone: <Brain /> },
+  redaction: { label: 'Rédaction', icone: <PenLine /> },
+  relais: { label: 'Relais', icone: <Repeat /> },
+}
+
+/** Durée minimale d'affichage d'une étape : une étape très rapide ne fait pas qu'un éclair */
+const DUREE_ETAPE_MS = 900
+
+/** Une seule étape à la fois : la suivante remplace la précédente (transition), après un temps
+ *  d'affichage minimal ; si plusieurs étapes arrivent d'un coup, elles défilent à ce rythme. */
+function EtapesEnCours({ etapes }: { etapes: (EtapeAssistant & { resultat?: string })[] }) {
+  const [affichee, setAffichee] = useState(0)
+  const derniere = etapes.length - 1
+  useEffect(() => {
+    if (affichee >= derniere) return
+    const t = setTimeout(() => setAffichee((i) => Math.min(i + 1, derniere)), DUREE_ETAPE_MS)
+    return () => clearTimeout(t)
+  }, [affichee, derniere])
+
+  if (!etapes.length) {
+    return <span className="flex items-center gap-2 text-ink-2"><Loader2 className="size-4 animate-spin" />Envoi de la demande…</span>
+  }
+  const i = Math.min(affichee, derniere)
+  const e = etapes[i]
+  const def = ETAPES[e.etape] ?? { label: e.etape, icone: <Search /> }
+  return (
+    <div aria-live="polite" aria-label="Étape de l'assistant" className="min-h-10 min-w-64 max-w-md">
+      {/* key : chaque nouvelle étape remonte le bloc et rejoue l'animation d'entrée */}
+      <div key={i} className="rise flex items-start gap-2.5">
+        <span className="mt-0.5 grid size-5 shrink-0 place-items-center text-navy [&_svg]:size-3.5"><Loader2 className="animate-spin" /></span>
+        <span className="min-w-0">
+          <span className="flex items-center gap-1.5 font-medium text-ink [&_svg]:size-3.5 [&_svg]:text-ink-2">{def.icone}{def.label}</span>
+          <span className="block text-xs text-ink-2">{e.detail}</span>
+          {e.resultat && <span className="block text-xs text-ink-2">→ {e.resultat}</span>}
+        </span>
+      </div>
     </div>
   )
 }
