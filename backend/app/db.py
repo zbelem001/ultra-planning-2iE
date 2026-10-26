@@ -1,8 +1,13 @@
 from collections.abc import Iterator
 
+import logging
+
 import psycopg
+from fastapi import HTTPException
 
 from . import config
+
+journal = logging.getLogger("ultraplanning.db")
 
 
 def connexion() -> Iterator[psycopg.Connection]:
@@ -13,7 +18,14 @@ def connexion() -> Iterator[psycopg.Connection]:
     si le pooler de Supabase réutilise la connexion serveur."""
     if not config.DATABASE_URL:
         raise RuntimeError("DATABASE_URL n'est pas défini")
-    with psycopg.connect(config.DATABASE_URL) as conn:
+    try:
+        conn = psycopg.connect(config.DATABASE_URL, connect_timeout=10)
+    except psycopg.OperationalError as e:
+        # Réseau coupé, nom du serveur introuvable (DNS), base arrêtée... : message clair, pas une erreur 500
+        journal.warning("base injoignable : %s", e)
+        raise HTTPException(503, "Base de données injoignable : vérifiez la connexion internet du serveur, "
+                                 "puis réessayez dans un instant.") from e
+    with conn:
         conn.execute("RESET ROLE")
         conn.execute("SELECT set_config('app.id_ecole', '', false), set_config('app.id_utilisateur', '', false), "
                      "set_config('app.origine', '', false)")

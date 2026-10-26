@@ -98,3 +98,11 @@ def test_espace_invites_econome_en_donnees(client):
     assert r.json()["ecole"][0]["code_ecole"] == "2IE"
     r2 = client.get("/api/base/public?ecole=2IE", headers={"If-None-Match": r.headers["etag"]})
     assert r2.status_code == 304 and r2.content == b""
+
+
+def test_base_injoignable(monkeypatch):
+    """Réseau coupé ou DNS en panne : 503 avec un message clair, pas une erreur 500."""
+    from app import config
+    monkeypatch.setattr(config, "DATABASE_URL", "postgresql://u:p@hote-inexistant.invalid:5432/x")
+    r = TestClient(app).get("/api/base/public?ecole=2IE")
+    assert r.status_code == 503 and "injoignable" in r.json()["detail"]
