@@ -18,13 +18,15 @@ refuse toute écriture dans une autre école.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections import defaultdict
 from datetime import date, datetime, time
 from decimal import Decimal
 from typing import Any, Literal
 
 import psycopg
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from psycopg import sql
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
@@ -125,8 +127,21 @@ def ecoles_publiques(conn: psycopg.Connection = Depends(connexion)) -> list[dict
 
 
 @routeur.get("/api/base/public")
-def base_publique(ecole: str | None = None, conn: psycopg.Connection = Depends(connexion)) -> dict:
-    """Ce que voit un invité d'une école : référentiel, version publiée, enseignants sans coordonnées."""
+def base_publique(request: Request, ecole: str | None = None, conn: psycopg.Connection = Depends(connexion)) -> Response:
+    """Ce que voit un invité d'une école : référentiel, version publiée, enseignants sans coordonnées.
+
+    Économe en données : JSON compact, compressé (GZipMiddleware), et étiquette ETag. Le navigateur
+    la renvoie à la visite suivante ; tant que rien n'a été publié ou modifié, la réponse est un
+    304 vide et il réutilise sa copie."""
+    contenu = json.dumps(_image_publique(conn, ecole), ensure_ascii=False, separators=(",", ":")).encode()
+    etiquette = '"' + hashlib.sha256(contenu).hexdigest()[:20] + '"'
+    entetes = {"ETag": etiquette, "Cache-Control": "no-cache"}  # toujours revalider, jamais tout retélécharger
+    if etiquette in request.headers.get("if-none-match", ""):
+        return Response(status_code=304, headers=entetes)
+    return Response(contenu, media_type="application/json", headers=entetes)
+
+
+def _image_publique(conn: psycopg.Connection, ecole: str | None) -> dict:
     entrer_ecole(conn, _ecole_publique(conn, ecole))
     cols = _colonnes(conn)
     out: dict[str, list] = {t: (_lire(conn, t, cols[t]) if t in PUBLIQUES else []) for t in TABLES}

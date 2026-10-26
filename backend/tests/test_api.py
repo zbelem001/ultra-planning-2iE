@@ -40,6 +40,18 @@ def test_generation_d_une_classe(client):
     # Une génération ne s'applique qu'une fois
     assert client.post(f"/api/generations/{id_tache}/appliquer", headers=ADMIN).status_code == 409
 
+    # Compléter seulement : rien de ce qui vient d'être placé n'est remplacé
+    r = client.post("/api/generations", headers=ADMIN, json={
+        "id_edt": 1, "classes": ["M1IA"], "du": "2026-11-02", "au": "2026-11-28", "completer": True,
+    })
+    id_tache = r.json()["id"]
+    for _ in range(360):
+        etat = client.get(f"/api/generations/{id_tache}", headers=ADMIN).json()
+        if etat["statut"] in ("terminee", "erreur"):
+            break
+        time.sleep(0.5)
+    assert etat["statut"] == "terminee" and etat["seances_remplacees"] == 0
+
 
 def test_codes_inconnus_refuses(client):
     r = client.post("/api/generations", headers=ADMIN, json={"id_edt": 1, "classes": ["NEXISTEPAS"]})

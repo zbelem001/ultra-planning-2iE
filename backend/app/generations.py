@@ -79,9 +79,9 @@ def appliquer(conn: psycopg.Connection, t: Tache) -> int:
 
 
 def construire_demande(filieres: set[int], classes: set[int], du: date | None, au: date | None,
-                       minimiser_changements: bool, garder_verrouillees: bool = True) -> Demande:
+                       minimiser_changements: bool, garder_verrouillees: bool = True, completer: bool = False) -> Demande:
     return Demande(
         perimetre=Perimetre(frozenset(filieres), frozenset(classes)),
-        du=du, au=au, minimiser_changements=minimiser_changements, garder_verrouillees=garder_verrouillees,
+        du=du, au=au, minimiser_changements=minimiser_changements, garder_verrouillees=garder_verrouillees, completer=completer,
         temps_max_placement=5,
     )

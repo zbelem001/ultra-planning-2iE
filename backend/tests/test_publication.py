@@ -91,3 +91,17 @@ def test_envoi_smtp(monkeypatch):
                                            publication.Message("refuse@exemple.org", "S", "T")])
     assert (envoyes, echecs) == (1, ["refuse@exemple.org"])
     assert [j[0] for j in journal] == ["connexion", "starttls", "login", "envoi", "fin"]
+
+
+def test_nouvelle_version_de_travail(client):
+    client.post("/api/emplois-du-temps/1/publier", headers=ADMIN, json={"notifier": False})
+    r = client.post("/api/emplois-du-temps/1/nouvelle-version", headers=ADMIN)
+    assert r.status_code == 201 and r.json()["version"] == 2
+    with psycopg.connect(config.DATABASE_URL) as c:
+        compte = lambda t, e: c.execute(f"SELECT count(*) FROM {t} WHERE id_edt = %s", (e,)).fetchone()[0]  # noqa: E731
+        v2 = r.json()["id_edt"]
+        assert compte("seance", v2) == compte("seance", 1) == r.json()["seances"] > 0
+        assert compte("contrainte", v2) == compte("contrainte", 1) == 21
+        assert c.execute("SELECT statut, id_ecole FROM emploi_du_temps WHERE id_edt = %s", (v2,)).fetchone() == ("brouillon", 1)
+    # Une seule version de travail à la fois
+    assert client.post("/api/emplois-du-temps/1/nouvelle-version", headers=ADMIN).status_code == 409

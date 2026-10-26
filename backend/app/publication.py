@@ -186,3 +186,33 @@ def publier(id_edt: int, p: Publication, conn: psycopg.Connection = Depends(conn
             planifier(messages)
             notification = {"statut": "en_cours", "destinataires": len(messages)}
     return {"id_edt": id_edt, "archive": id_precedent, "notification": notification}
+
+
+@routeur.post("/api/emplois-du-temps/{id_edt}/nouvelle-version", status_code=201)
+def nouvelle_version(id_edt: int, conn: psycopg.Connection = Depends(connexion),
+                     u: Utilisateur = Depends(utilisateur_courant)) -> dict:
+    """Version de travail (brouillon) copiée d'une version existante, publiée le plus souvent :
+    mêmes séances et mêmes contraintes. Invisible des invités jusqu'à sa publication."""
+    source = conn.execute("SELECT id_semestre, libelle FROM emploi_du_temps WHERE id_edt = %s", (id_edt,)).fetchone()
+    if source is None:
+        raise HTTPException(404, "Emploi du temps introuvable")
+    if conn.execute("SELECT 1 FROM emploi_du_temps WHERE id_semestre = %s AND statut IN ('brouillon', 'valide')",
+                    (source[0],)).fetchone():
+        raise HTTPException(409, "Une version de travail existe déjà pour ce semestre")
+    with conn.transaction():
+        nouvel, version = conn.execute(
+            "INSERT INTO emploi_du_temps (libelle, version, id_semestre, id_utilisateur) "
+            "SELECT %s, max(version) + 1, %s, %s FROM emploi_du_temps WHERE id_semestre = %s RETURNING id_edt, version",
+            (source[1], source[0], u.id_utilisateur, source[0]),
+        ).fetchone()
+        conn.execute(
+            "INSERT INTO contrainte (libelle, type_contrainte, nature, poids, valeur, est_active, id_edt) "
+            "SELECT libelle, type_contrainte, nature, poids, valeur, est_active, %s FROM contrainte WHERE id_edt = %s "
+            "ORDER BY id_contrainte", (nouvel, id_edt),
+        )
+        n = conn.execute(
+            "INSERT INTO seance (date_seance, heure_debut, heure_fin, statut, est_verrouillee, id_cours, id_salle, id_creneau, id_edt) "
+            "SELECT date_seance, heure_debut, heure_fin, statut, est_verrouillee, id_cours, id_salle, id_creneau, %s "
+            "FROM seance WHERE id_edt = %s ORDER BY date_seance, heure_debut", (nouvel, id_edt),
+        ).rowcount
+    return {"id_edt": nouvel, "version": version, "seances": n}

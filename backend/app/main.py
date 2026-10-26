@@ -12,6 +12,7 @@ from datetime import date, time
 import psycopg
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from pydantic import BaseModel, Field
 
 from ultraplanning_solver.base import verifier
@@ -29,6 +30,8 @@ app = FastAPI(title="UltraPlanning 2iE", version="0.1.0")
 app.add_middleware(
     CORSMiddleware, allow_origins=config.ORIGINES, allow_methods=["*"], allow_headers=["*"],
 )
+# Réponses compressées (JSON : environ 10 fois moins de données), pour les connexions lentes
+app.add_middleware(GZipMiddleware, minimum_size=1000, compresslevel=6)
 app.include_router(routeur_base)
 app.include_router(routeur_superadmin)
 app.include_router(routeur_comptes)
@@ -64,6 +67,8 @@ class DemandeGeneration(BaseModel):
     au: date | None = None
     minimiser_changements: bool = False
     garder_verrouillees: bool = True
+    # Compléter seulement : les séances existantes restent en place, seules les heures manquantes sont placées
+    completer: bool = False
 
 
 def _tache_json(t: generations.Tache) -> dict:
@@ -94,7 +99,7 @@ def lancer_generation(d: DemandeGeneration, conn: psycopg.Connection = Depends(c
     if len(filieres) != len(set(d.filieres)) or len(classes) != len(set(d.classes)):
         raise HTTPException(422, "Code de filière ou de classe inconnu")
     t = generations.lancer(d.id_edt, u.id_ecole, generations.construire_demande(filieres, classes, d.du, d.au, d.minimiser_changements,
-                                                                   d.garder_verrouillees))
+                                                                   d.garder_verrouillees, d.completer))
     return _tache_json(t)
 
 

@@ -89,3 +89,12 @@ def test_jours_feries_de_l_annee(client):
     assert feries()["2027-04-10"] == "Aïd el-Fitr"
     assert sync({"supprimer": [{"date_ferie": "2027-04-10"}]}).status_code == 200
     assert "2027-04-10" not in feries()
+
+
+def test_espace_invites_econome_en_donnees(client):
+    """Réponse compressée, et 304 sans contenu quand rien n'a changé depuis la dernière visite."""
+    r = client.get("/api/base/public?ecole=2IE", headers={"Accept-Encoding": "gzip"})
+    assert r.status_code == 200 and r.headers["content-encoding"] == "gzip" and r.headers["etag"]
+    assert r.json()["ecole"][0]["code_ecole"] == "2IE"
+    r2 = client.get("/api/base/public?ecole=2IE", headers={"If-None-Match": r.headers["etag"]})
+    assert r2.status_code == 304 and r2.content == b""

@@ -39,6 +39,8 @@ Le fichier `backend/.env` (ignoré par git) est lu au démarrage ; les variables
 | `ULTRAPLANNING_URL_INVITES` | Adresse de l'espace invités, pour le lien des e-mails (défaut `http://localhost:5173/`) |
 | `ULTRAPLANNING_AUTH_DEV` | `1` : accepte l'en-tête `X-Utilisateur` sans jeton. **Développement seulement** |
 
+Toutes les réponses de plus de 1 Ko sont compressées (gzip).
+
 ## Routes
 
 | Route | Rôle |
@@ -46,7 +48,7 @@ Le fichier `backend/.env` (ignoré par git) est lu au démarrage ; les variables
 | `GET /api/sante` | État du service |
 | `GET /api/base` | Image complète de la base pour la console (mots de passe jamais renvoyés) |
 | `GET /api/ecoles` | Écoles actives (choix de l'école dans l'espace invités) |
-| `GET /api/base/public?ecole=CODE` | Ce que voit un invité de cette école : référentiel, version publiée, enseignants sans coordonnées (sans `ecole` : la seule école active) |
+| `GET /api/base/public?ecole=CODE` | Ce que voit un invité de cette école : référentiel, version publiée, enseignants sans coordonnées (sans `ecole` : la seule école active). JSON compact avec `ETag` : « 304 » sans contenu si rien n'a changé |
 | `POST /api/demarrage` | Premier semestre et premier emploi du temps (avec ses 21 contraintes) d'une nouvelle école |
 | `POST /api/emplois-du-temps/{id}/publier` | Publie une version (la précédente est archivée) ; `notifier` : e-mail à chaque enseignant dont les séances changent (ajoutées, retirées, modifiées), avec le lien vers son emploi du temps |
 | `GET` · `POST /api/ecole/comptes` | Comptes de l'école (tous les gestionnaires) ; invitation d'un compte (administrateur de l'école) |
