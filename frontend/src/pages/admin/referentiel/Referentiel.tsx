@@ -26,13 +26,32 @@ function toForm(def: TableDef, db: Db, r: Row | null): FormValues {
   return v
 }
 
+/** Comparaison souple (fichiers de la scolarité) : sans accents, majuscules ni ponctuation */
+const normaliser = (s: string) =>
+  s.normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
+
+/** Colonne d'un fichier importé -> champ : nom technique (code_classe), libellé (« Code »),
+ *  ou nom sans « id_ » pour une référence (« Classe » pour id_classe) */
+function champDeColonne(def: TableDef, entete: string): FieldDef | undefined {
+  const n = normaliser(entete.replace(/\*$/, ''))
+  const champs = def.fields.filter((f) => f.type !== 'decoupage')
+  return champs.find((f) => normaliser(f.key) === n)
+    ?? champs.find((f) => normaliser(f.label) === n)
+    ?? champs.find((f) => f.key.startsWith('id_') && normaliser(f.key.slice(3)) === n)
+}
+
 function parseValue(f: FieldDef, raw: string | boolean, db: Db): unknown {
   if (f.type === 'bool') return typeof raw === 'boolean' ? raw : ['1', 'true', 'oui', 'vrai'].includes(String(raw).toLowerCase())
   const s = String(raw).trim()
   if (s === '') return null
   if (f.type === 'number') return Number(s.replace(',', '.'))
   if (f.type === 'select') {
-    const o = f.options!(db).find((x) => String(x.value) === s || x.label === s)
+    // Valeur exacte, libellé complet (« L2INFO · Licence 2… »), ou l'une de ses parties (« L2INFO »)
+    const n = normaliser(s)
+    const options = f.options!(db)
+    const o = options.find((x) => String(x.value) === s || x.label === s)
+      ?? options.find((x) => normaliser(x.label) === n)
+      ?? options.find((x) => x.label.split(' · ').some((partie) => normaliser(partie) === n))
     return o ? (o.value === '' ? null : o.value) : s
   }
   return s
@@ -91,7 +110,7 @@ export default function Referentiel() {
   const [values, setValues] = useState<FormValues>({})
   const [error, setError] = useState<string | null>(null)
   const [confirmDel, setConfirmDel] = useState<Row | null>(null)
-  const [rapport, setRapport] = useState<{ ok: number; erreurs: string[] } | null>(null)
+  const [rapport, setRapport] = useState<{ crees: number; majs: number; erreurs: string[]; ignorees: string[] } | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
 
   const rows = useMemo(() => {
@@ -145,30 +164,54 @@ export default function Referentiel() {
     toast.success('Ligne supprimée')
   }
 
+  // Import CSV : en-têtes souples ; une ligne déjà présente (même clé, config.cle) est mise à
+  // jour avec les cellules remplies, les autres sont créées. Mêmes contrôles qu'à la saisie.
   const importer = async (file: File) => {
     const [head, ...lines] = parseCsv(await file.text())
-    const champs = def.fields.filter((f) => f.type !== 'decoupage')
-    const manquants = champs.filter((f) => f.required && !head?.includes(f.key)).map((f) => f.key)
-    if (!head || manquants.length) {
-      setRapport({ ok: 0, erreurs: [`Colonnes obligatoires absentes : ${manquants.join(', ') || 'en-tête vide'}`] })
-      return
+    if (!head) return setRapport({ crees: 0, majs: 0, erreurs: ['Fichier vide'], ignorees: [] })
+    const colonnes = head.map((h) => champDeColonne(def, h))
+    const ignorees = head.filter((_, j) => !colonnes[j])
+    const presents = new Set(colonnes.filter(Boolean).map((f) => f!.key))
+    const cle = def.cle ?? def.fields.filter((f) => f.unique).slice(0, 1).map((f) => f.key)
+    const parCle = cle.length > 0 && cle.every((k) => presents.has(k))
+    const manquants = def.fields.filter((f) => f.required && f.type !== 'decoupage' && !presents.has(f.key)).map((f) => f.label)
+    if (manquants.length && !parCle) {
+      return setRapport({ crees: 0, majs: 0, erreurs: [`Colonnes obligatoires absentes : ${manquants.join(', ')}`], ignorees })
     }
+
     const erreurs: string[] = []
     const travail = structuredClone(db)
-    let ok = 0
+    const list = travail[def.table] as unknown as Row[]
+    let crees = 0, majs = 0
     lines.forEach((cells, i) => {
-      const vals: FormValues = {}
-      head.forEach((h, j) => { vals[h] = cells[j] ?? '' })
-      const { row, error: err } = build(def, travail, vals, null)
+      const lues: FormValues = {}
+      colonnes.forEach((f, j) => { if (f && (cells[j] ?? '') !== '') lues[f.key] = cells[j] })
+      const champsCle = cle.map((k) => def.fields.find((f) => f.key === k)!)
+      const existante = parCle
+        ? list.find((r) => champsCle.every((f) => {
+          const v = parseValue(f, lues[f.key] ?? '', travail)
+          // Codes et libellés : « tp-g1 » reconnaît « TP-G1 »
+          return typeof v === 'string' && typeof r[f.key] === 'string' ? normaliser(v) === normaliser(r[f.key] as string) : r[f.key] === v
+        }))
+        : undefined
+      // Mise à jour : les cellules vides et les champs de la clé gardent la valeur actuelle
+      const valeurs = existante
+        ? { ...toForm(def, travail, existante), ...Object.fromEntries(Object.entries(lues).filter(([k]) => !cle.includes(k))) }
+        : lues
+      const { row, error: err } = build(def, travail, valeurs, existante ?? null)
       if (err || !row) return erreurs.push(`Ligne ${i + 2} : ${err}`)
-      const list = travail[def.table] as unknown as Row[]
-      if (def.identity) row[def.pk] = nextId(list, def.pk)
-      list.push(row)
-      ok++
+      if (existante) {
+        Object.assign(existante, row)
+        majs++
+      } else {
+        if (def.table === 'cours') Object.assign(row, { priorite_suggeree: null, justification_priorite: null })
+        if (def.identity) row[def.pk] = nextId(list, def.pk)
+        list.push(row)
+        crees++
+      }
     })
-    const importees = travail[def.table]
-    if (ok) mutate((x) => { Object.assign(x, { [def.table]: importees }) })
-    setRapport({ ok, erreurs })
+    if (crees + majs) mutate((x) => { Object.assign(x, { [def.table]: list }) })
+    setRapport({ crees, majs, erreurs, ignorees })
   }
 
   const groupes = [...new Set(TABLES.map((t) => t.groupe))]
@@ -179,7 +222,7 @@ export default function Referentiel() {
     <div className="grid grid-cols-1 gap-6">
       <PageTitle visible eyebrow="Référentiel pédagogique et logistique" title={def.label}>
         {!comptes && <>
-        <Button variant="outline" onClick={() => download(`gabarit-${def.id}.csv`, def.fields.filter((f) => f.type !== 'decoupage').map((f) => f.key).join(';') + '\n', 'text/csv;charset=utf-8')}>
+        <Button variant="outline" onClick={() => download(`gabarit-${def.id}.csv`, '\uFEFF' + def.fields.filter((f) => f.type !== 'decoupage').map((f) => f.label).join(';') + '\n', 'text/csv;charset=utf-8')}>
           <Download />Gabarit CSV
         </Button>
         <Button variant="outline" onClick={() => fileRef.current?.click()}><Upload />Importer</Button>
@@ -315,7 +358,13 @@ export default function Referentiel() {
       <Dialog open={!!rapport} onClose={() => setRapport(null)} title="Rapport d'import" footer={<Button onClick={() => setRapport(null)}>Fermer</Button>}>
         {rapport && (
           <div className="space-y-3 text-sm">
-            <p><span className="font-semibold">{rapport.ok}</span> ligne(s) importée(s), <span className="font-semibold">{rapport.erreurs.length}</span> rejetée(s).</p>
+            <p>
+              <span className="font-semibold">{rapport.crees}</span> ligne(s) créée(s), <span className="font-semibold">{rapport.majs}</span> mise(s) à jour,{' '}
+              <span className="font-semibold">{rapport.erreurs.length}</span> rejetée(s).
+            </p>
+            {rapport.ignorees.length > 0 && (
+              <p className="rounded-3xl bg-highlight px-4 py-3">Colonnes non reconnues, ignorées : {rapport.ignorees.join(', ')}</p>
+            )}
             {rapport.erreurs.length > 0 && (
               <ul className="max-h-64 space-y-1 overflow-y-auto rounded-3xl bg-[#FEE2E2]/60 p-4 text-[#991B1B] scroll-thin">
                 {rapport.erreurs.map((e) => <li key={e}>{e}</li>)}

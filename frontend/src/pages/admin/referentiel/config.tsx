@@ -46,6 +46,9 @@ export interface TableDef {
   /** Suppressions en cascade */
   cascade?: (r: Row, db: Db) => void
   validate?: (r: Row, db: Db) => string | null
+  /** Import : champs qui reconnaissent une ligne existante (mise à jour au lieu d'un doublon).
+   *  Par défaut, le premier champ unique ; sans clé, chaque ligne importée est créée. */
+  cle?: string[]
 }
 
 const opt = {
@@ -110,6 +113,7 @@ export const TABLES: TableDef[] = [
   },
   {
     id: 'groupes', label: 'Groupes', singulier: 'groupe', groupe: 'Publics', table: 'groupe', pk: 'id_groupe', identity: true,
+    cle: ['id_classe', 'code_groupe'],
     columns: [
       { label: 'Classe', render: (r, db) => db.classe.find((c) => c.id_classe === r.id_classe)?.code_classe },
       { label: 'Code', render: (r) => <span className="font-mono text-xs">{r.code_groupe}</span> },
@@ -148,6 +152,7 @@ export const TABLES: TableDef[] = [
   },
   {
     id: 'programme', label: 'Programme', singulier: 'ligne de programme', groupe: 'Enseignement', table: 'programme', pk: 'id_programme', identity: true,
+    cle: ['id_classe', 'id_matiere', 'id_semestre'],
     columns: [
       { label: 'Classe', render: (r, db) => db.classe.find((c) => c.id_classe === r.id_classe)?.code_classe },
       { label: 'Matière', render: (r, db) => db.matiere.find((m) => m.id_matiere === r.id_matiere)?.libelle },
@@ -196,6 +201,7 @@ export const TABLES: TableDef[] = [
   },
   {
     id: 'cours', label: 'Cours', singulier: 'cours', groupe: 'Enseignement', table: 'cours', pk: 'id_cours', identity: true,
+    cle: ['id_classe', 'id_matiere', 'type_cours', 'id_groupe', 'id_semestre'],
     columns: [
       { label: 'Matière', render: (r, db) => db.matiere.find((m) => m.id_matiere === r.id_matiere)?.libelle },
       { label: 'Type', render: (r) => <Badge tone="navy">{r.type_cours}</Badge> },
@@ -290,6 +296,7 @@ export const TABLES: TableDef[] = [
   },
   {
     id: 'habilitations', label: 'Habilitations', singulier: 'habilitation', groupe: 'Enseignement', table: 'habilitation', pk: 'id_habilitation', identity: true,
+    cle: ['id_enseignant', 'id_matiere', 'type_cours'],
     columns: [
       { label: 'Enseignant', render: (r, db) => { const e = db.enseignant.find((x) => x.id_enseignant === r.id_enseignant); return e ? nomEnseignant(e) : '' } },
       { label: 'Matière', render: (r, db) => db.matiere.find((m) => m.id_matiere === r.id_matiere)?.libelle },
@@ -368,6 +375,7 @@ export const TABLES: TableDef[] = [
   },
   {
     id: 'semestres', label: 'Semestres', singulier: 'semestre', groupe: 'Calendrier', table: 'semestre', pk: 'id_semestre', identity: true,
+    cle: ['annee_academique', 'libelle'],
     columns: [
       { label: 'Libellé', render: (r) => r.libelle },
       { label: 'Année', render: (r) => r.annee_academique },
@@ -386,6 +394,7 @@ export const TABLES: TableDef[] = [
   },
   {
     id: 'creneaux', label: 'Créneaux', singulier: 'créneau', groupe: 'Calendrier', table: 'creneau', pk: 'id_creneau', identity: true,
+    cle: ['jour', 'heure_debut', 'heure_fin'],
     columns: [
       { label: 'Jour', render: (r) => r.jour },
       { label: 'Début', render: (r) => <span className="font-mono text-xs">{r.heure_debut}</span> },
@@ -405,6 +414,7 @@ export const TABLES: TableDef[] = [
   },
   {
     id: 'pauses', label: 'Pauses', singulier: 'pause', groupe: 'Calendrier', table: 'pause', pk: 'id_pause', identity: true,
+    cle: ['libelle'],
     columns: [
       { label: 'Libellé', render: (r) => r.libelle },
       { label: 'Début', render: (r) => <span className="font-mono text-xs">{r.heure_debut}</span> },
@@ -432,6 +442,7 @@ export const TABLES: TableDef[] = [
   },
   {
     id: 'conges', label: 'Congés', singulier: 'congé', groupe: 'Calendrier', table: 'conge', pk: 'id_conge', identity: true,
+    cle: ['libelle', 'date_debut'],
     columns: [
       { label: 'Libellé', render: (r) => r.libelle },
       { label: 'Type', render: (r) => <Badge tone={r.type_conge === 'examens' ? 'navy' : 'orange'}>{r.type_conge}</Badge> },
