@@ -74,6 +74,13 @@ export default function Generation() {
   const classesProposees = db.classe.filter((c) => !filiereChoisie || c.id_filiere === filiereChoisie.id_filiere)
   const fin = duree === -1 ? finChoisie : duree ? addDays(depart, 7 * duree - 2) : semestre.date_fin
   const finInvalide = duree === -1 && (!finChoisie || finChoisie < depart || finChoisie > semestre.date_fin)
+  // Matières au programme des classes du périmètre (pour ne programmer que certains modules)
+  const [matieresChoisies, setMatieresChoisies] = useState<string[]>([])
+  const idsPerimetre = new Set((classesChoisies.length ? db.classe.filter((c) => classesChoisies.includes(c.code_classe)) : classesProposees).map((c) => c.id_classe))
+  const matieresProposees = db.matiere.filter((m) =>
+    db.programme.some((p) => p.id_matiere === m.id_matiere && p.id_semestre === semestre.id_semestre && idsPerimetre.has(p.id_classe)))
+  const basculerMatiere = (code: string) =>
+    setMatieresChoisies((l) => (l.includes(code) ? l.filter((c) => c !== code) : [...l, code]))
   const basculerClasse = (code: string) =>
     setClassesChoisies((l) => (l.includes(code) ? l.filter((c) => c !== code) : [...l, code]))
   const [tache, setTache] = useState<TacheGeneration | null>(null)
@@ -91,6 +98,8 @@ export default function Generation() {
         id_edt: edt.id_edt,
         filieres: classesChoisies.length ? [] : perimetre ? [perimetre] : [],
         classes: classesChoisies,
+        // une matière choisie qui n'est plus proposée (périmètre changé) n'est pas envoyée
+        matieres: matieresChoisies.filter((c) => matieresProposees.some((m) => m.code_matiere === c)),
         du: depart,
         au: fin,
         minimiser_changements: false,
@@ -290,6 +299,27 @@ export default function Generation() {
                   </div>
                 </div>
               )}
+              {connecte && matieresProposees.length > 0 && (
+                <div className="flex flex-col gap-1.5 sm:col-span-2">
+                  <span className="pl-1 text-sm font-medium">Matières <span className="font-normal text-ink-2">(facultatif : seulement ces modules)</span></span>
+                  <div className="flex flex-wrap gap-1.5" role="group" aria-label="Matières à générer">
+                    {matieresProposees.map((m) => {
+                      const choisie = matieresChoisies.includes(m.code_matiere)
+                      return (
+                        <button key={m.id_matiere} type="button" aria-pressed={choisie} disabled={lecture} onClick={() => basculerMatiere(m.code_matiere)}
+                          title={m.code_matiere}
+                          className={cn('press h-8 rounded-full px-3 text-xs font-medium ring-1 disabled:opacity-50',
+                            choisie ? 'bg-orange text-navy ring-orange' : 'bg-white/80 text-ink-2 ring-line hover:text-ink')}>
+                          {m.libelle}
+                        </button>
+                      )
+                    })}
+                  </div>
+                  <span className="pl-1 text-xs text-ink-2">
+                    {matieresChoisies.length ? 'Les autres cours restent en place et comptent dans les contraintes.' : 'Aucune choisie : toutes les matières du périmètre.'}
+                  </span>
+                </div>
+              )}
               {connecte && (
                 <label className="flex flex-col gap-1.5">
                   <span className="pl-1 text-sm font-medium">Période</span>
@@ -384,6 +414,15 @@ export default function Generation() {
                   )}
                 </div>
               </div>
+
+              {!!tache?.avertissements?.length && connecte && (
+                <div className="mt-5 rounded-3xl bg-highlight p-4">
+                  <p className="flex items-center gap-2 font-medium"><AlertTriangle className="size-4 text-[#9A5B0B]" />Modules non programmés</p>
+                  <ul className="mt-2 list-disc space-y-1 pl-5 text-sm">
+                    {tache.avertissements.map((a) => <li key={a}>{a}</li>)}
+                  </ul>
+                </div>
+              )}
 
               {vue.nonPlaces.length > 0 && (
                 <div className="mt-5 rounded-3xl bg-highlight p-4">

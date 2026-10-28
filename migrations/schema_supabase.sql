@@ -2,7 +2,7 @@
 --  Système de planification des cours et de génération automatique
 --  des emplois du temps
 --  Script de création de la base de données — PostgreSQL / Supabase
---  VERSION 8
+--  VERSION 9
 --
 --  Utilisation : Supabase > SQL Editor > New query > coller > Run
 --  Source      : fichier.md (section 7 : modèle de données / MLD)
@@ -85,6 +85,12 @@
 --      par un déclencheur, consultable par le super admin seulement.
 --      Base existante en version 7 : migrations/008_journal_audit.sql.
 --
+--  Changements de la version 9
+--  27. Table PIECE_JOINTE : fichiers joints aux messages de l'assistant IA.
+--      PROPOSITION.nature ('seances' ou 'referentiel') et PROPOSITION.suite :
+--      l'assistant propose aussi des ajouts au référentiel, puis une génération.
+--      Base existante en version 8 : migrations/009_pieces_jointes.sql.
+--
 --  Hypothèses :
 --   * volume_horaire (COURS) et durées sont exprimés en HEURES.
 --   * La grille de base est de 1 h (modifiable : voir section 9).
@@ -96,7 +102,7 @@
 
 -- Nettoyage (permet de relancer le script à zéro) ---------------------
 DROP TABLE IF EXISTS
-    journal_seance, seance, prompt, conversation, contrainte, conge, indisponibilite, disponibilite,
+    journal_seance, seance, piece_jointe, prompt, conversation, contrainte, conge, indisponibilite, disponibilite,
     proposition, sejour_enseignant, absence_enseignant, habilitation, cours_seance_modele, cours, programme, groupe, classe,
     filiere, emploi_du_temps, utilisateur, semestre, salle, type_salle, creneau,
     pause, jour_ferie, matiere, enseignant, site, ecole
@@ -502,7 +508,26 @@ CREATE TABLE proposition (
                     ON UPDATE CASCADE ON DELETE CASCADE,
     id_utilisateur_decision BIGINT REFERENCES utilisateur(id_utilisateur)
                     ON UPDATE CASCADE ON DELETE RESTRICT,       -- DECIDER
+    -- seances : opérations sur des séances ; referentiel : lignes à ajouter
+    -- au référentiel (matières, programme, cours...), qui ne s'ajoutent qu'après
+    -- validation, puis suite (génération à lancer ensuite), facultative
+    nature          TEXT NOT NULL DEFAULT 'seances'
+                    CHECK (nature IN ('seances','referentiel')),
+    suite           JSONB,
     CHECK ((statut = 'en_attente') = (date_decision IS NULL))
+);
+
+-- Fichier joint à un message de l'assistant (CSV, Excel, PDF, image), lu par
+-- l'assistant à la demande. 5 Mo au plus.
+CREATE TABLE piece_jointe (
+    id_piece    BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    nom         TEXT NOT NULL,
+    type_mime   TEXT NOT NULL,
+    taille      INTEGER NOT NULL CHECK (taille BETWEEN 1 AND 5242880),
+    contenu     BYTEA NOT NULL,
+    date_ajout  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    id_prompt   BIGINT NOT NULL REFERENCES prompt(id_prompt)
+                ON UPDATE CASCADE ON DELETE CASCADE         -- JOINDRE
 );
 
 -- =====================================================================
@@ -559,6 +584,7 @@ CREATE INDEX ix_absence_enseignant ON absence_enseignant(id_enseignant, date_deb
 CREATE INDEX ix_sejour_enseignant  ON sejour_enseignant(id_enseignant, date_debut);
 CREATE INDEX ix_proposition_prompt ON proposition(id_prompt);
 CREATE INDEX ix_proposition_edt    ON proposition(id_edt, statut);
+CREATE INDEX ix_piece_jointe_prompt ON piece_jointe(id_prompt);
 CREATE INDEX ix_cours_matiere      ON cours(id_matiere);
 CREATE INDEX ix_cours_classe       ON cours(id_classe);
 CREATE INDEX ix_cours_groupe       ON cours(id_groupe);
@@ -1007,7 +1033,7 @@ DECLARE
         'site','type_salle','filiere','classe','groupe','matiere','enseignant','habilitation',
         'absence_enseignant','sejour_enseignant','creneau','pause','jour_ferie','conge','salle',
         'semestre','programme','cours','cours_seance_modele','disponibilite','emploi_du_temps',
-        'contrainte','conversation','prompt','proposition','seance'];
+        'contrainte','conversation','prompt','proposition','seance','piece_jointe'];
     t       TEXT;
     r       RECORD;
     v_nom   TEXT;
@@ -1223,7 +1249,7 @@ BEGIN
         'site','type_salle','filiere','classe','groupe','matiere','enseignant','habilitation',
         'absence_enseignant','sejour_enseignant','creneau','pause','jour_ferie','conge','salle',
         'semestre','programme','cours','cours_seance_modele','disponibilite','emploi_du_temps',
-        'contrainte','conversation','prompt','proposition','seance','utilisateur'
+        'contrainte','conversation','prompt','proposition','seance','piece_jointe','utilisateur'
     ] LOOP
         EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
         EXECUTE format('DROP POLICY IF EXISTS "ecole du compte" ON %I', t);

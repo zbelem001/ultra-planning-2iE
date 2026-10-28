@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field
 from ultraplanning_solver.base import verifier
 from ultraplanning_solver.donnees import Seance
 
-from . import agent, config, generations, propositions
+from . import agent, config, generations, outils, perimetre, pieces_jointes, propositions, publication
 from .base_api import routeur as routeur_base
 from .comptes import routeur as routeur_comptes
 from .publication import routeur as routeur_publication
@@ -36,6 +36,7 @@ journal = logging.getLogger("ultraplanning.api")
 app = FastAPI(title="UltraPlanning 2iE", version="0.1.0")
 app.add_middleware(
     CORSMiddleware, allow_origins=config.ORIGINES, allow_methods=["*"], allow_headers=["*"],
+    expose_headers=["ETag"],  # l'espace invités compare l'étiquette pour savoir si l'emploi du temps a changé
 )
 # Réponses compressées (JSON : environ 10 fois moins de données), pour les connexions lentes
 app.add_middleware(GZipMiddleware, minimum_size=1000, compresslevel=6)
@@ -74,6 +75,7 @@ class DemandeGeneration(BaseModel):
     id_edt: int
     filieres: list[str] = Field(default_factory=list, description="Codes de filières ; vide = tout l'établissement")
     classes: list[str] = Field(default_factory=list, description="Codes de classes")
+    matieres: list[str] = Field(default_factory=list, description="Codes ou noms de matières : seulement ces modules")
     du: date | None = None
     au: date | None = None
     minimiser_changements: bool = False
@@ -83,7 +85,7 @@ class DemandeGeneration(BaseModel):
 
 
 def _tache_json(t: generations.Tache) -> dict:
-    out = {"id": t.id, "id_edt": t.id_edt, "statut": t.statut, "erreur": t.erreur}
+    out = {"id": t.id, "id_edt": t.id_edt, "statut": t.statut, "erreur": t.erreur, "avertissements": t.avertissements}
     if t.resultat is not None:
         r = t.resultat
         out |= {
@@ -105,12 +107,17 @@ def _tache_json(t: generations.Tache) -> dict:
 def lancer_generation(d: DemandeGeneration, conn: psycopg.Connection = Depends(connexion),
                       u: Utilisateur = Depends(utilisateur_courant)) -> dict:
     _edt_modifiable(conn, d.id_edt)
-    filieres = {r[0] for r in conn.execute("SELECT id_filiere FROM filiere WHERE code_filiere = ANY(%s)", (d.filieres,))}
-    classes = {r[0] for r in conn.execute("SELECT id_classe FROM classe WHERE code_classe = ANY(%s)", (d.classes,))}
-    if len(filieres) != len(set(d.filieres)) or len(classes) != len(set(d.classes)):
-        raise HTTPException(422, "Code de filière ou de classe inconnu")
-    t = generations.lancer(d.id_edt, u.id_ecole, generations.construire_demande(filieres, classes, d.du, d.au, d.minimiser_changements,
-                                                                   d.garder_verrouillees, d.completer))
+    if d.matieres and not (d.classes or d.filieres):
+        raise HTTPException(422, "Choisissez la classe ou la filière des matières à programmer")
+    try:
+        selection = perimetre.resoudre(conn, d.id_edt, d.classes, d.filieres, d.matieres)
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from e
+    if selection.vide:
+        raise HTTPException(422, "Rien à générer : " + " ".join(selection.avertissements))
+    t = generations.lancer(d.id_edt, u.id_ecole, generations.construire_demande(
+        selection.perimetre, d.du, d.au, d.minimiser_changements, d.garder_verrouillees, d.completer))
+    t.avertissements = selection.avertissements
     return _tache_json(t)
 
 
@@ -163,10 +170,16 @@ def verifier_seance(s: SeanceAVerifier, conn: psycopg.Connection = Depends(conne
 
 # --- assistant IA (BF-29) ------------------------------------------------------------
 
+class PieceJointe(BaseModel):
+    nom: str = Field(min_length=1, max_length=200)
+    contenu: str = Field(max_length=7_100_000)  # base64 d'un fichier de 5 Mo au plus
+
+
 class Message(BaseModel):
     id_edt: int
     texte: str = Field(min_length=1, max_length=4000)
     id_conversation: int | None = None
+    piece_jointe: PieceJointe | None = None
 
 
 @app.post("/api/assistant/messages")
@@ -209,6 +222,14 @@ def message_assistant_flux(m: Message, u: Utilisateur = Depends(utilisateur_cour
 
 def _traiter_message(conn: psycopg.Connection, u: Utilisateur, m: Message, progres=None) -> dict:
     _edt(conn, m.id_edt)
+    fichier = None
+    if m.piece_jointe:  # contrôlé avant d'enregistrer quoi que ce soit
+        try:
+            type_mime = pieces_jointes.type_de(m.piece_jointe.nom)
+            contenu = pieces_jointes.decoder(m.piece_jointe.contenu)
+            fichier = (m.piece_jointe.nom, type_mime, contenu, pieces_jointes.lire(type_mime, contenu))
+        except pieces_jointes.FichierRefuse as e:
+            raise HTTPException(422, str(e)) from e
     if m.id_conversation is None:
         titre = m.texte if len(m.texte) <= 48 else m.texte[:47].rstrip() + "…"
         id_conv = conn.execute(
@@ -229,14 +250,26 @@ def _traiter_message(conn: psycopg.Connection, u: Utilisateur, m: Message, progr
             "SELECT texte, reponse FROM prompt WHERE id_conversation = %s ORDER BY date_prompt, id_prompt", (id_conv,)
         ).fetchall()
 
+    texte = m.texte + (f"\n[Pièce jointe : {fichier[0]}]" if fichier else "")
     id_prompt = conn.execute(
         "INSERT INTO prompt (texte, id_utilisateur, id_edt, id_conversation) VALUES (%s, %s, %s, %s) RETURNING id_prompt",
-        (m.texte, u.id_utilisateur, m.id_edt, id_conv),
+        (texte, u.id_utilisateur, m.id_edt, id_conv),
     ).fetchone()[0]
+    demande, visuels = m.texte, None
+    if fichier:
+        nom, type_mime, contenu, lecture = fichier
+        id_piece = conn.execute(
+            "INSERT INTO piece_jointe (nom, type_mime, taille, contenu, id_prompt) VALUES (%s, %s, %s, %s, %s) RETURNING id_piece",
+            (nom, type_mime, len(contenu), contenu, id_prompt),
+        ).fetchone()[0]
+        claude = "anthropic" in agent.fournisseurs()
+        demande += "\n\n" + pieces_jointes.annonce(id_piece, nom, lecture, claude)
+        if lecture.visuel and claude:
+            visuels = [pieces_jointes.bloc_claude(type_mime, contenu)]
     conn.commit()  # le message reste enregistré même si l'assistant échoue
 
     try:
-        r = agent.repondre(conn, m.id_edt, id_prompt, historique, m.texte, progres=progres)
+        r = agent.repondre(conn, m.id_edt, id_prompt, historique, demande, progres=progres, visuels=visuels)
     except agent.AgentIndisponible as e:
         conn.rollback()
         r = agent.Reponse(str(e), "erreur", [])
@@ -273,9 +306,27 @@ def appliquer_proposition(id_proposition: int, conn: psycopg.Connection = Depend
                           u: Utilisateur = Depends(utilisateur_courant)) -> dict:
     try:
         origine(conn, "assistant")
-        return propositions.appliquer(conn, id_proposition, u.id_utilisateur)
+        r = propositions.appliquer(conn, id_proposition, u.id_utilisateur)
     except propositions.PropositionRefusee as e:
         raise HTTPException(409, str(e)) from e
+    # Version publiée : déjà visible dans l'espace invités ; on prévient les enseignants concernés
+    notification = publication.notifier_modifications(conn, r["id_edt"], r["operations"]) if r["en_direct"] else None
+    suite = None
+    if r["suite"]:
+        # Ajouts au référentiel validés : la génération demandée au départ est lancée
+        conn.commit()  # les ajouts restent acquis même si la génération échoue
+        ctx = outils.Contexte(conn, r["id_edt"], r["id_prompt"], [])
+        s = r["suite"]
+        try:
+            texte = outils.proposer_generation(ctx, s["description"], s.get("classes"), s.get("filieres"),
+                                               s.get("du"), s.get("au"), s.get("matieres"))
+        except (ValueError, psycopg.Error) as e:
+            conn.rollback()
+            texte = f"Génération impossible : {e}"
+        suite = {"id_proposition": ctx.propositions_creees[0] if ctx.propositions_creees else None,
+                 "message": texte.splitlines()[0]}
+    return ({k: v for k, v in r.items() if k not in ("operations", "suite", "id_prompt")}
+            | {"notification": notification, "suite": suite})
 
 
 @app.post("/api/propositions/{id_proposition}/rejeter")

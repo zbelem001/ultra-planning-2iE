@@ -45,11 +45,14 @@ Bonnes pratiques (préférences, que l'on peut contourner en le disant) : CS-01 
 
 Comment travailler :
 - Appuie chaque affirmation sur les outils : lis l'emploi du temps ou le référentiel avant de répondre. N'invente jamais un identifiant, un code, une date ou une conséquence : récupère-les avec les outils.
-- Pour un déplacement ponctuel, teste-le avec verifier_seance. Pour toute autre modification, utilise proposer_replanification avec le périmètre le plus étroit (une classe, quelques cours) ; traduis la demande en contraintes imposer / interdire, chacune limitée par ses dates.
-- Pour programmer une classe ou une filière, utilise proposer_generation : sur tout le semestre (« génère le programme »), ou sur une ou deux semaines précises (« planifie la semaine du 2 novembre ») en donnant du et au. Sur une période courte, présente ce qui est placé et les heures reportées aux semaines suivantes. N'écris jamais toi-même un planning (jours, heures, salles) dans ta réponse : tout emploi du temps vient du solveur. Si l'outil n'est pas adapté, dis-le.
+- Pour des changements ponctuels de séances précises (déplacer une séance à une autre date ou heure, l'annuler, la rétablir, ajouter ou supprimer une séance), utilise proposer_modifications avec les identifiants lus dans l'emploi du temps : il vérifie tout dans la base. Pour libérer une journée, absorber une absence ou réorganiser une période, utilise proposer_replanification avec le périmètre le plus étroit (une classe, quelques cours) ; traduis la demande en contraintes imposer / interdire, chacune limitée par ses dates.
+- Pour programmer une classe ou une filière, utilise proposer_generation : sur tout le semestre (« génère le programme »), ou sur une ou deux semaines précises (« planifie la semaine du 2 novembre ») en donnant du et au. Pour seulement certains modules (« programme Big Data et Computer Vision pour la L3IA »), passe-les dans matieres. Si l'outil signale un module non prêt (matière inconnue, hors programme, sans cours), propose de compléter le référentiel toi-même (voir plus bas). Sur une période courte, présente ce qui est placé et les heures reportées aux semaines suivantes. N'écris jamais toi-même un planning (jours, heures, salles) dans ta réponse : tout emploi du temps vient du solveur. Si l'outil n'est pas adapté, dis-le.
+- Compléter le référentiel : quand il manque une matière, une ligne de programme, un cours, un enseignant, une salle ou une classe, demande au planificateur les informations manquantes en une seule question groupée (par exemple pour un cours : type CM/TD/TP, volume horaire, enseignant, durée des séances), ou lis-les dans le fichier joint. N'invente jamais un volume, un enseignant ni un code : ce que tu ne sais pas, tu le demandes. Ne demande que les valeurs obligatoires qui manquent : les facultatives (coefficient, nombre de séances par semaine, rythme maximal, groupe, type de salle) ont des valeurs par défaut ; si le fichier ou la demande donne tout l'obligatoire, propose les ajouts sans poser de question. Lis d'abord le référentiel pour réutiliser les codes existants. Puis utilise proposer_ajouts_referentiel, avec dans ensuite la génération demandée au départ : une fois les ajouts validés, elle est lancée automatiquement. Si la demande ou le fichier porte sur un module absent du référentiel, va directement aux ajouts : ne lance pas la génération avant, et ne lis que ce qui sert (matières, enseignants, programme). Présente la liste des lignes à ajouter.
+- Fichiers joints : quand un message signale une pièce jointe (y compris « [Pièce jointe : …] » dans un message précédent de la discussion), lis-la (en entier, par morceaux) avant d'en parler, et appuie-toi sur son contenu ; cite ce que tu en tires. Tu ne gardes pas son contenu d'un message à l'autre : relis-la si tu en as besoin. Si une valeur obligatoire manque ou est ambiguë dans le fichier, demande-la.
+- Dès que tu connais les valeurs obligatoires des ajouts, appelle proposer_ajouts_referentiel au lieu de les énumérer : la carte de la proposition montre les lignes au planificateur, qui la valide ou la rejette. N'énumère jamais les champs techniques à remplir.
 - Quand une demande appelle un outil, appelle-le directement : n'annonce jamais un appel d'outil sans le faire.
 - Tu ne modifies jamais l'emploi du temps toi-même : une proposition reste en attente jusqu'à ce qu'un planificateur l'applique dans l'interface. Donne son numéro ; n'écris jamais qu'une modification est faite.
-- Tu ne publies pas. Le circuit est : 1) le planificateur applique la proposition (bouton Appliquer, ici ou dans la page Publication) ; elle apparaît alors dans la page Planification ; 2) il publie la version dans la page Publication ; elle devient visible dans l'espace invité. Explique-le quand on te demande de publier.
+- Visibilité : si l'emploi du temps de travail est la version publiée (voir le contexte), une proposition appliquée est visible tout de suite dans l'espace invité et les enseignants concernés sont prévenus par e-mail. Si c'est un brouillon, elle ne sera visible qu'après publication dans la page Publication. Dis-le en présentant la proposition.
 
 Argumenter :
 - Demande impossible : si elle contredit une règle dure (par exemple un cours le samedi après-midi, 20 h d'un cours dans une semaine au rythme maximal de 15 h, une classe entière dans une salle trop petite, un externe hors de son séjour), refuse-la sans créer de proposition. Explique en une ou deux phrases quelle règle elle viole et pourquoi, chiffres à l'appui, puis propose une ou deux alternatives réalistes. Ne cite que les règles réellement violées : vérifie chaque motif sur les horaires et les chiffres (13h–15h ne touche pas la pause de 12h à 13h).
@@ -128,7 +131,7 @@ def contexte(id_edt: int, version: tuple, aujourd_hui: date | None = None) -> st
 # --- étapes affichées pendant le traitement (contextualisation, analyse...) ---------------
 
 Progres = Callable[[str, str], None]  # (étape, détail)
-_SUJETS = {"cours": "les cours", "classes": "les classes et groupes", "enseignants": "les enseignants",
+_SUJETS = {"cours": "les cours", "classes": "les classes et groupes", "matieres": "les matières", "enseignants": "les enseignants",
            "salles": "les salles", "programme": "le programme", "calendrier": "le calendrier"}
 
 
@@ -155,6 +158,12 @@ def etape_outil(nom: str, args: dict) -> tuple[str, str]:
         return "calcul", f"Le solveur génère l'emploi du temps de {portee}"
     if nom == "proposer_replanification":
         return "calcul", f"Le solveur replanifie du {_date(args.get('du'))} au {_date(args.get('au'))} en changeant le moins possible"
+    if nom == "lire_piece_jointe":
+        return "analyse", f"Lecture du fichier joint, à partir de la ligne {args.get('debut', 1)}"
+    if nom == "proposer_ajouts_referentiel":
+        return "verification", f"Vérification de {len(args.get('ajouts') or [])} ajout(s) au référentiel dans la base"
+    if nom == "proposer_modifications":
+        return "verification", f"Vérification de {len(args.get('operations') or [])} changement(s) de séances dans la base"
     if nom == "proposer_priorites":
         return "calcul", "Enregistrement des priorités suggérées"
     return "analyse", nom
@@ -187,10 +196,13 @@ def repondre(
     client: groq.Groq | None = None,
     client_anthropic=None,
     progres: Progres | None = None,
+    visuels: list[dict] | None = None,
 ) -> Reponse:
     """Répond à un message de la discussion. `historique` : couples (demande,
     réponse) des messages précédents, du plus ancien au plus récent.
-    `client` / `client_anthropic` : clients imposés (tests) ; seuls ceux-là sont alors essayés."""
+    `client` / `client_anthropic` : clients imposés (tests) ; seuls ceux-là sont alors essayés.
+    `visuels` : images et PDF scannés joints au message (blocs de l'API d'Anthropic) ; seul Claude
+    sait les lire, il passe donc en premier."""
     signaler: Progres = progres or (lambda etape, detail: None)
     ctx = Contexte(conn, id_edt, id_prompt, [])
     version = conn.execute("SELECT version, statut FROM emploi_du_temps WHERE id_edt = %s", (id_edt,)).fetchone()
@@ -231,6 +243,8 @@ def repondre(
         ordre = [f for f, c in (("groq", client), ("anthropic", client_anthropic)) if c is not None]
     else:
         ordre = fournisseurs()
+    if visuels and "anthropic" in ordre:
+        ordre = ["anthropic", *(f for f in ordre if f != "anthropic")]
     if not ordre:
         raise AgentIndisponible("Aucune clé d'assistant IA : renseignez GROQ_API_KEY ou ANTHROPIC_API_KEY dans backend/.env.")
 
@@ -242,7 +256,7 @@ def repondre(
                 modele = config.MODELE
             else:
                 texte_final, fini = llm_anthropic.boucle(SYSTEME, historique, demande, outils, executer,
-                                                         relancer_si_decrit, client_anthropic, reflechir)
+                                                         relancer_si_decrit, client_anthropic, reflechir, visuels)
                 modele = config.ANTHROPIC_MODEL
         except (AgentIndisponible, llm_anthropic.Indisponible) as e:
             journal.warning("assistant : %s indisponible (%s)", f, e)
@@ -319,6 +333,9 @@ def _boucle_groq(outils, historique, demande, executer, relancer_si_decrit, clie
     except groq.APIConnectionError as e:
         raise AgentIndisponible("Impossible de joindre l'API Groq.") from e
     except groq.APIStatusError as e:
+        if e.status_code == 413:
+            raise AgentIndisponible("Demande trop volumineuse pour l'offre gratuite de Groq (jetons par minute) : "
+                                    "découpez-la, ou utilisez Claude ou une offre Groq payante.") from e
         raise AgentIndisponible(f"Erreur de l'API Groq ({e.status_code}).") from e
     except groq.GroqError as e:  # ex. aucune clé configurée
         raise AgentIndisponible(f"Assistant indisponible : {e}") from e

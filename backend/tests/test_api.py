@@ -110,7 +110,7 @@ def test_assistant_discussion(client, monkeypatch):
     tour2 = factice.appels[1]["messages"]
     assert tour2[-2]["tool_calls"][0]["function"]["name"] == "lire_referentiel" and tour2[-1]["role"] == "tool"
     appel = factice.appels[0]
-    assert appel["model"] == config.MODELE and appel["tool_choice"] == "auto" and len(appel["tools"]) == 6
+    assert appel["model"] == config.MODELE and appel["tool_choice"] == "auto" and len(appel["tools"]) == 9
 
 
 def test_assistant_sans_cle(client, monkeypatch):
@@ -236,3 +236,10 @@ def test_phrases_des_etapes():
     assert agent.etape_outil("proposer_generation", {"classes": ["M1IA"]})[1] == "Le solveur génère l'emploi du temps de M1IA"
     assert agent.resultat_court("lire_referentiel", "salle 1 | …") is None
     assert agent.resultat_court("verifier_seance", "Refusée : CD-03 : la classe…\nsuite").startswith("Refusée : CD-03")
+
+
+def test_generation_par_matiere_refusee_si_rien_a_faire(client):
+    r = client.post("/api/generations", headers=ADMIN, json={"id_edt": 1, "classes": ["L2INFO"], "matieres": ["Big Data"]})
+    assert r.status_code == 422 and "introuvable" in r.json()["detail"]
+    r = client.post("/api/generations", headers=ADMIN, json={"id_edt": 1, "matieres": ["BD"]})
+    assert r.status_code == 422

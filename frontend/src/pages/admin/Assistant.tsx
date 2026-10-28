@@ -3,16 +3,16 @@
 // qui interroge le solveur et enregistre ses propositions. Mode simulé : on repère
 // jour, période, classe et enseignant, puis on décrit les séances concernées.
 
-import { ArrowUp, Bot, Brain, Compass, Cpu, History, Loader2, MessageSquarePlus, PenLine, Repeat, Search, ShieldCheck, Trash2, UserRound } from 'lucide-react'
+import { ArrowUp, Bot, Brain, Compass, Cpu, History, Loader2, MessageSquarePlus, Paperclip, PenLine, Repeat, Search, ShieldCheck, Trash2, UserRound, X } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { toast } from 'sonner'
 import { PropositionCarte } from '@/components/PropositionCarte'
 import { Badge, Button, Card, cn, Dialog, Input, PageTitle } from '@/components/ui'
-import { envoyerMessageFlux, type EtapeAssistant } from '@/lib/api'
+import { envoyerMessageFlux, FORMATS_PIECE_JOINTE, lirePieceJointe, TAILLE_MAX_PIECE_JOINTE, type EtapeAssistant } from '@/lib/api'
 import { useSession } from '@/lib/auth'
 import { enrichir, nomEnseignant, publicCours } from '@/lib/queries'
-import { edtTravail, nextId, useStore } from '@/lib/store'
+import { edtPublie, edtTravail, nextId, useStore } from '@/lib/store'
 import { useHauteurRestante } from '@/lib/hauteur'
 import { addDays, fmtDateHeure, fmtHeure, fmtJourCourt, fmtJourMois, jourOf, JOURS, mondayOf, todayIso, toIso, toMin } from '@/lib/time'
 import type { Conversation, Db, Prompt } from '@/types/db'
@@ -22,6 +22,30 @@ const SUGGESTIONS = [
   'Quelles séances a Ouédraogo le mardi ?',
   'Évite les cours de M1IA le jeudi matin.',
 ]
+
+/** Texte d'un message ; la dernière ligne « [Pièce jointe : nom] » (ajoutée par l'API) devient une étiquette */
+function TexteMessage({ texte }: { texte: string }) {
+  const m = texte.match(/\n\[Pièce jointe : (.+)\]$/)
+  return (
+    <>
+      <p className="whitespace-pre-line">{m ? texte.slice(0, m.index) : texte}</p>
+      {m && <PieceJointeEtiquette nom={m[1]} />}
+    </>
+  )
+}
+
+function PieceJointeEtiquette({ nom, taille, onRetirer }: { nom: string; taille?: number; onRetirer?: () => void }) {
+  return (
+    <span className={cn('mt-2 inline-flex max-w-full items-center gap-1.5 rounded-full px-3 py-1 text-xs', onRetirer ? 'bg-white ring-1 ring-line' : 'bg-white/15')}>
+      <Paperclip className="size-3.5 shrink-0" />
+      <span className="truncate">{nom}</span>
+      {taille !== undefined && <span className="shrink-0 text-ink-2">{(taille / 1024 / 1024).toFixed(1)} Mo</span>}
+      {onRetirer && (
+        <button type="button" onClick={onRetirer} className="press -mr-1 rounded-full p-0.5 hover:bg-line" aria-label="Retirer le fichier"><X className="size-3.5" /></button>
+      )}
+    </span>
+  )
+}
 
 const norm = (s: string) => s.normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase()
 
@@ -102,9 +126,12 @@ export default function Assistant() {
     return [...l, e]
   })
   const session = useSession()
-  const edt = edtTravail(db)
+  // L'assistant travaille en direct sur la version publiée : ce qu'on applique se voit tout de suite côté invités
+  const edt = edtPublie(db) ?? edtTravail(db)
   const [params, setParams] = useSearchParams()
   const [texte, setTexte] = useState('')
+  const [fichier, setFichier] = useState<File | null>(null)
+  const choixFichier = useRef<HTMLInputElement>(null)
   const [enCours, setEnCours] = useState<number | null>(null)
   const [q, setQ] = useState('')
   const [historiqueMobile, setHistoriqueMobile] = useState(false)
@@ -149,23 +176,27 @@ export default function Assistant() {
 
   const envoyerAuServeur = async (txt: string) => {
     const idConv = courante?.id_conversation ?? null
-    setEnvoi({ texte: txt, id_conversation: idConv })
+    const joint = fichier
+    setEnvoi({ texte: txt + (joint ? `\n[Pièce jointe : ${joint.name}]` : ''), id_conversation: idConv })
     setEtapes([])
     setTexte('')
+    setFichier(null)
     try {
-      const r = await envoyerMessageFlux(courante?.id_edt ?? edt.id_edt, txt, idConv, ajouterEtape)
+      const piece = joint ? await lirePieceJointe(joint) : undefined
+      const r = await envoyerMessageFlux(courante?.id_edt ?? edt.id_edt, txt, idConv, ajouterEtape, piece)
       await recharger()
       setParams({ c: String(r.id_conversation) }, { replace: true })
     } catch (e) {
       toast.error("L'assistant n'a pas pu répondre", { description: (e as Error).message })
       setTexte(txt)
+      setFichier(joint)
     } finally {
       setEnvoi(null)
     }
   }
 
   const envoyer = (t: string) => {
-    const txt = t.trim()
+    const txt = t.trim() || (fichier ? 'Voici le fichier joint.' : '')
     if (!txt || enCours !== null || envoi !== null) return
     if (connecte) return void envoyerAuServeur(txt)
     const now = new Date().toISOString()
@@ -268,7 +299,7 @@ export default function Assistant() {
             <div className="min-w-0 flex-1">
               <h2 className="truncate text-xl font-light">{courante?.titre ?? 'Nouvelle discussion'}</h2>
               <p className="text-xs text-ink-2">
-                {courante ? `Ouverte le ${fmtDateHeure(courante.date_creation)} · ` : ''}emploi du temps v{edtConv.version} ({edtConv.statut})
+                {courante ? `Ouverte le ${fmtDateHeure(courante.date_creation)} · ` : ''}emploi du temps v{edtConv.version} ({edtConv.statut === 'publie' ? 'publié : modifications visibles en direct' : edtConv.statut})
               </p>
             </div>
             <Badge tone="navy">{prompts.length} message{prompts.length > 1 ? 's' : ''}</Badge>
@@ -294,7 +325,7 @@ export default function Assistant() {
                 <div key={p.id_prompt} className="space-y-3">
                   <div className="flex justify-end gap-2">
                     <div className="max-w-[85%] rounded-3xl rounded-br-lg bg-navy px-4 py-3 text-sm text-white">
-                      <p>{p.texte}</p>
+                      <TexteMessage texte={p.texte} />
                       <p className="mt-1 text-[11px] text-on-navy-2">{u?.login} · {fmtDateHeure(p.date_prompt)}</p>
                     </div>
                     <span className="grid size-8 shrink-0 place-items-center rounded-full bg-white ring-1 ring-line"><UserRound className="size-4" /></span>
@@ -321,7 +352,7 @@ export default function Assistant() {
             {envoi && (envoi.id_conversation === (courante?.id_conversation ?? null)) && (
               <div className="space-y-3">
                 <div className="flex justify-end gap-2">
-                  <div className="max-w-[85%] rounded-3xl rounded-br-lg bg-navy px-4 py-3 text-sm text-white"><p>{envoi.texte}</p></div>
+                  <div className="max-w-[85%] rounded-3xl rounded-br-lg bg-navy px-4 py-3 text-sm text-white"><TexteMessage texte={envoi.texte} /></div>
                   <span className="grid size-8 shrink-0 place-items-center rounded-full bg-white ring-1 ring-line"><UserRound className="size-4" /></span>
                 </div>
                 <div className="flex gap-2">
@@ -336,7 +367,29 @@ export default function Assistant() {
           </div>
 
           <div className="border-t border-white/80 p-4 sm:p-5">
+            {fichier && <div className="mb-2"><PieceJointeEtiquette nom={fichier.name} taille={fichier.size} onRetirer={() => setFichier(null)} /></div>}
             <form className="flex items-end gap-2" onSubmit={(e) => { e.preventDefault(); envoyer(texte) }}>
+              {connecte && (
+                <>
+                  <input
+                    ref={choixFichier}
+                    type="file"
+                    accept={FORMATS_PIECE_JOINTE}
+                    className="hidden"
+                    onChange={(e) => {
+                      const f = e.target.files?.[0]
+                      e.target.value = ''
+                      if (!f) return
+                      if (f.size > TAILLE_MAX_PIECE_JOINTE) return void toast.error('Fichier trop lourd', { description: '5 Mo au plus.' })
+                      setFichier(f)
+                    }}
+                  />
+                  <Button type="button" variant="outline" size="icon" className="size-12" onClick={() => choixFichier.current?.click()}
+                    disabled={envoi !== null} aria-label="Joindre un fichier (CSV, Excel, PDF, image)" title="Joindre un fichier (CSV, Excel, PDF, image ; 5 Mo au plus)">
+                    <Paperclip />
+                  </Button>
+                </>
+              )}
               <textarea
                 ref={saisie}
                 value={texte}
@@ -347,7 +400,7 @@ export default function Assistant() {
                 aria-label="Demande à l'assistant"
                 className="max-h-40 min-h-12 flex-1 resize-none rounded-3xl border border-white bg-white/80 px-5 py-3 text-base outline-none focus:ring-2 focus:ring-navy/70 sm:text-sm"
               />
-              <Button type="submit" size="icon" className="size-12" disabled={!texte.trim() || enCours !== null || envoi !== null} aria-label="Envoyer">
+              <Button type="submit" size="icon" className="size-12" disabled={(!texte.trim() && !fichier) || enCours !== null || envoi !== null} aria-label="Envoyer">
                 <ArrowUp />
               </Button>
             </form>

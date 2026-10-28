@@ -39,9 +39,11 @@ def boucle(
     relancer_si_decrit: Callable[[str], str | None],
     client: anthropic.Anthropic | None = None,
     reflechir: Callable[[], None] = lambda: None,
+    visuels: list[dict] | None = None,
 ) -> tuple[str, bool]:
     """Fait répondre Claude ; renvoie (texte final, terminé). `terminé` est faux si la limite
-    d'étapes d'outils est atteinte ou si la demande est refusée par le modèle."""
+    d'étapes d'outils est atteinte ou si la demande est refusée par le modèle. `visuels` : blocs
+    image ou document (fichiers joints sans texte), placés avant la demande."""
     client = client or anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY, max_retries=3)
     # La consigne et les outils ne changent pas d'un message à l'autre : mis en cache
     systeme_bloc = [{"type": "text", "text": systeme, "cache_control": {"type": "ephemeral"}}]
@@ -49,7 +51,7 @@ def boucle(
     for d, r in historique:
         messages.append({"role": "user", "content": d})
         messages.append({"role": "assistant", "content": r or "(pas de réponse)"})
-    messages.append({"role": "user", "content": demande})
+    messages.append({"role": "user", "content": [*visuels, {"type": "text", "text": demande}] if visuels else demande})
 
     try:
         for _ in range(config.ITERATIONS_MAX_AGENT):

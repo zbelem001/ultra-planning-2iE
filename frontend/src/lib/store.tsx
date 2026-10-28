@@ -9,7 +9,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { toast } from 'sonner'
 import type { Db, EmploiDuTemps } from '@/types/db'
 import { useSession } from './auth'
-import { chargerBase, ErreurApi, MODE_CONNECTE, synchroniser, type Changements } from './api'
+import { actualiserPublic, chargerBase, ErreurApi, MODE_CONNECTE, synchroniser, type Changements } from './api'
 
 const STORAGE_KEY = 'ultraplanning-db-v9'
 
@@ -106,6 +106,38 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       setEtat('erreur')
     }
   }, [session, appliquer])
+
+  // Espace invités : l'emploi du temps suit les changements appliqués dans la console (assistant,
+  // planification) sans recharger la page. Toutes les minutes tant que la page est visible, et au
+  // retour sur l'onglet ; une réponse 304 (rien de nouveau) ne coûte presque aucune donnée.
+  const etiquette = useRef<string | null>(null)
+  useEffect(() => {
+    if (!MODE_CONNECTE || session !== null || etat !== 'pret' || ecoleAChoisir) return
+    let actif = true
+    const verifier = async () => {
+      if (document.visibilityState !== 'visible' || !navigator.onLine) return
+      try {
+        const premiere = etiquette.current === null
+        const r = await actualiserPublic(etiquette.current)
+        if (!actif) return
+        etiquette.current = r.etiquette
+        if (r.db && !premiere) {
+          appliquer(r.db)
+          toast.info('Emploi du temps mis à jour', { description: 'Des séances viennent de changer.' })
+        }
+      } catch {
+        /* hors connexion ou API indisponible : on réessaiera */
+      }
+    }
+    void verifier()
+    const minuterie = window.setInterval(verifier, 60_000)
+    document.addEventListener('visibilitychange', verifier)
+    return () => {
+      actif = false
+      window.clearInterval(minuterie)
+      document.removeEventListener('visibilitychange', verifier)
+    }
+  }, [session, etat, ecoleAChoisir, appliquer])
 
   // Mode simulé, première visite : jeu de test
   useEffect(() => {

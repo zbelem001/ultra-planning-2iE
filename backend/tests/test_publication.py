@@ -105,3 +105,41 @@ def test_nouvelle_version_de_travail(client):
         assert c.execute("SELECT statut, id_ecole FROM emploi_du_temps WHERE id_edt = %s", (v2,)).fetchone() == ("brouillon", 1)
     # Une seule version de travail à la fois
     assert client.post("/api/emplois-du-temps/1/nouvelle-version", headers=ADMIN).status_code == 409
+
+
+def test_modification_en_direct_de_la_version_publiee(client):
+    """Une proposition de l'assistant appliquée sur la version publiée : visible tout de suite par les
+    invités, enseignant prévenu."""
+    from datetime import timedelta
+
+    from app.db import entrer_ecole
+    from app.outils import Contexte, proposer_modifications
+
+    client.post("/api/emplois-du-temps/1/publier", headers=ADMIN, json={})
+    avant = client.get("/api/base/public?ecole=2IE")
+    with psycopg.connect(config.DATABASE_URL) as c:
+        entrer_ecole(c, 1)
+        id_conv = c.execute("INSERT INTO conversation (titre, id_utilisateur, id_edt) VALUES ('t', 2, 1) RETURNING id_conversation").fetchone()[0]
+        id_prompt = c.execute("INSERT INTO prompt (texte, id_utilisateur, id_edt, id_conversation) VALUES ('t', 2, 1, %s) "
+                              "RETURNING id_prompt", (id_conv,)).fetchone()[0]
+        ctx = Contexte(c, 1, id_prompt, [])
+        s = c.execute("SELECT id_seance, date_seance FROM seance WHERE id_edt = 1 ORDER BY date_seance, heure_debut LIMIT 1").fetchone()
+        for semaines in range(1, 10):
+            texte = proposer_modifications(ctx, "Report", [{"action": "deplacer", "id_seance": s[0],
+                                                           "date_seance": (s[1] + timedelta(weeks=semaines)).isoformat()}])
+            if texte.startswith("Proposition"):
+                break
+        assert "visible tout de suite dans l'espace invités" in texte
+        id_prop = ctx.propositions_creees[0]
+
+    client.envois.clear()
+    r = client.post(f"/api/propositions/{id_prop}/appliquer", headers=ADMIN).json()
+    assert r["en_direct"] is True and r["seances_modifiees"] == 1 and "operations" not in r
+    assert r["notification"] == {"statut": "en_cours", "destinataires": 1}
+    assert len(client.envois) == 1 and "→ Déplacée" in client.envois[0].texte
+    # L'espace invités voit le changement : nouvelle étiquette, nouvelle date
+    apres = client.get("/api/base/public?ecole=2IE", headers={"If-None-Match": avant.headers["ETag"]})
+    assert apres.status_code == 200 and apres.headers["ETag"] != avant.headers["ETag"]
+    seance = next(x for x in apres.json()["seance"] if x["id_seance"] == s[0])
+    assert seance["date_seance"] != s[1].isoformat()
+    assert client.get("/api/base/public?ecole=2IE", headers={"If-None-Match": apres.headers["ETag"]}).status_code == 304

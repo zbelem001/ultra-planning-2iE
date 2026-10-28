@@ -257,6 +257,10 @@ export interface Proposition {
   /** Conséquences calculées : heures perdues, enseignants à prévenir, cours décalés… */
   impact: ImpactProposition
   statut: StatutProposition
+  /** seances : opérations sur des séances ; referentiel : lignes à ajouter au référentiel */
+  nature?: 'seances' | 'referentiel'
+  /** Génération lancée une fois les ajouts au référentiel validés */
+  suite?: { description: string; classes?: string[]; filieres?: string[]; matieres?: string[]; du?: string; au?: string } | null
   date_creation: string
   date_decision: string | null
   id_prompt: number

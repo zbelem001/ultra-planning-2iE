@@ -66,8 +66,17 @@ const post = <T>(chemin: string, corps?: unknown) =>
 export const ECOLE_PUBLIQUE: string =
   new URLSearchParams(window.location.search).get('ecole') ?? (import.meta.env.VITE_ECOLE as string | undefined) ?? ''
 
-export const chargerBase = (complete: boolean) =>
-  appel<Db>(complete ? '/api/base' : `/api/base/public${ECOLE_PUBLIQUE ? `?ecole=${encodeURIComponent(ECOLE_PUBLIQUE)}` : ''}`)
+const CHEMIN_PUBLIC = `/api/base/public${ECOLE_PUBLIQUE ? `?ecole=${encodeURIComponent(ECOLE_PUBLIQUE)}` : ''}`
+
+export const chargerBase = (complete: boolean) => appel<Db>(complete ? '/api/base' : CHEMIN_PUBLIC)
+
+/** Image publique si elle a changé depuis l'étiquette `connue`, sinon null (réponse 304 : presque aucune donnée) */
+export async function actualiserPublic(connue: string | null): Promise<{ db: Db | null; etiquette: string | null }> {
+  const rep = await requete(CHEMIN_PUBLIC, { cache: 'no-cache' })
+  const etiquette = rep.headers.get('ETag')
+  if (etiquette && etiquette === connue) return { db: null, etiquette }
+  return { db: (await rep.json()) as Db, etiquette }
+}
 
 export type Changements = Record<string, { upsert: unknown[]; supprimer: Record<string, unknown>[] }>
 /** `identifiants` : nouvelles lignes renumérotées par l'API (numéro déjà pris par une autre école) */
@@ -139,13 +148,15 @@ export interface TacheGeneration {
   id: string
   statut: 'en_attente' | 'en_cours' | 'terminee' | 'appliquee' | 'erreur'
   erreur: string | null
+  /** Modules demandés mais pas prêts (matière inconnue, hors programme, sans cours) */
+  avertissements?: string[]
   statistiques?: { heures_demandees: number; heures_placees: number; heures_reportees?: number; duree_s: number; cours: number; semaines: number; iterations: number }
   non_places?: { id_cours: number; heures: number; code: string; raison: string }[]
   seances?: SeanceGeneree[]
   seances_remplacees?: number
 }
 
-export const lancerGeneration = (d: { id_edt: number; filieres: string[]; classes: string[]; du: string; au: string; minimiser_changements: boolean; garder_verrouillees: boolean; completer: boolean }) =>
+export const lancerGeneration = (d: { id_edt: number; filieres: string[]; classes: string[]; matieres: string[]; du: string; au: string; minimiser_changements: boolean; garder_verrouillees: boolean; completer: boolean }) =>
   post<TacheGeneration>('/api/generations', d)
 export const etatGeneration = (id: string) => appel<TacheGeneration>(`/api/generations/${id}`)
 export const appliquerGeneration = (id: string) => post<{ seances_enregistrees: number }>(`/api/generations/${id}/appliquer`)
@@ -169,11 +180,27 @@ export interface EtapeAssistant {
 }
 
 /** Envoie un message et reçoit les étapes au fur et à mesure (Server-Sent Events), puis la réponse */
+/** Fichier joint à un message : `contenu` en base64 (5 Mo au plus avant encodage) */
+export interface PieceJointe { nom: string; contenu: string }
+export const FORMATS_PIECE_JOINTE = '.csv,.xlsx,.pdf,.txt,.png,.jpg,.jpeg,.webp'
+export const TAILLE_MAX_PIECE_JOINTE = 5 * 1024 * 1024
+
+export async function lirePieceJointe(f: File): Promise<PieceJointe> {
+  const url = await new Promise<string>((ok, ko) => {
+    const r = new FileReader()
+    r.onload = () => ok(r.result as string)
+    r.onerror = () => ko(new Error('Fichier illisible'))
+    r.readAsDataURL(f)
+  })
+  return { nom: f.name, contenu: url.slice(url.indexOf(',') + 1) }
+}
+
 export async function envoyerMessageFlux(
   id_edt: number, texte: string, id_conversation: number | null, surEtape: (e: EtapeAssistant) => void,
+  piece_jointe?: PieceJointe,
 ): Promise<ReponseAssistant> {
   const rep = await requete('/api/assistant/messages/flux', {
-    method: 'POST', body: JSON.stringify({ id_edt, texte, id_conversation }),
+    method: 'POST', body: JSON.stringify({ id_edt, texte, id_conversation, piece_jointe }),
   })
   const lecteur = rep.body!.getReader()
   const decodeur = new TextDecoder()
@@ -198,6 +225,19 @@ export async function envoyerMessageFlux(
 
 export const envoyerMessage = (id_edt: number, texte: string, id_conversation: number | null) =>
   post<ReponseAssistant>('/api/assistant/messages', { id_edt, texte, id_conversation })
-export const appliquerProposition = (id: number) =>
-  post<{ seances_supprimees: number; seances_creees: number }>(`/api/propositions/${id}/appliquer`)
+export interface ResultatApplication {
+  seances_supprimees: number
+  seances_creees: number
+  seances_modifiees: number
+  /** Ajouts au référentiel */
+  nature: 'seances' | 'referentiel'
+  lignes_ajoutees?: number
+  lignes_deja_presentes?: number
+  /** Version publiée : le changement est déjà visible dans l'espace invités */
+  en_direct: boolean
+  notification: ResultatPublication['notification'] | null
+  /** Génération lancée après les ajouts au référentiel : nouvelle proposition de séances */
+  suite: { id_proposition: number | null; message: string } | null
+}
+export const appliquerProposition = (id: number) => post<ResultatApplication>(`/api/propositions/${id}/appliquer`)
 export const rejeterProposition = (id: number) => post<{ statut: string }>(`/api/propositions/${id}/rejeter`)

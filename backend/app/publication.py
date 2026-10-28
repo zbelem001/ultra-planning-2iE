@@ -21,6 +21,8 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from email.message import EmailMessage
 
+from datetime import date, time
+
 import psycopg
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -152,6 +154,73 @@ def messages_de_publication(conn: psycopg.Connection, id_edt: int, id_precedent:
         ])
         out.append(Message(email, f"Emploi du temps {semestre} : {len(lignes)} séance(s) vous concernent", texte))
     return out
+
+
+def messages_de_modifications(conn: psycopg.Connection, id_edt: int, ops: list[dict]) -> list[Message]:
+    """Modification en direct de la version publiée (proposition appliquée depuis l'assistant) :
+    un message par enseignant concerné, avec ce qui change pour lui."""
+    ids_cours = {(o.get("apres") or o.get("avant"))["id_cours"] for o in ops if o.get("apres") or o.get("avant")}
+    ids_salles = {x["id_salle"] for o in ops for x in (o.get("avant"), o.get("apres")) if x}
+    cours = {r[0]: r[1:] for r in conn.execute(
+        """SELECT c.id_cours, c.type_cours, c.id_enseignant, m.libelle, cl.code_classe || coalesce(' · ' || g.code_groupe, '')
+           FROM cours c JOIN matiere m USING (id_matiere, id_ecole) JOIN classe cl ON cl.id_classe = c.id_classe
+           LEFT JOIN groupe g ON g.id_groupe = c.id_groupe WHERE c.id_cours = ANY(%s)""", (list(ids_cours),))}
+    salles = dict(conn.execute("SELECT id_salle, nom_salle FROM salle WHERE id_salle = ANY(%s)", (list(ids_salles),)).fetchall())
+
+    def ligne(x: dict) -> str:
+        type_cours, _, matiere, classe = cours[x["id_cours"]]
+        return _ligne({"date_seance": date.fromisoformat(x["date_seance"]), "heure_debut": time.fromisoformat(x["heure_debut"]),
+                       "heure_fin": time.fromisoformat(x["heure_fin"]), "matiere": matiere, "type_cours": type_cours,
+                       "classe": classe, "salle": salles.get(x["id_salle"], "")})
+
+    changements: dict[int, list[str]] = defaultdict(list)
+    for o in ops:
+        a, b = o.get("avant"), o.get("apres")
+        ens = cours[(b or a)["id_cours"]][1]
+        if o["action"] == "creer":
+            changements[ens].append(f"+ Ajoutée : {ligne(b)}")
+        elif o["action"] == "supprimer":
+            changements[ens].append(f"- Retirée : {ligne(a)}")
+        elif b.get("statut") == "annulee" and a.get("statut") != "annulee":
+            changements[ens].append(f"× Annulée : {ligne(a)}")
+        elif a.get("statut") == "annulee" and b.get("statut") != "annulee":
+            changements[ens].append(f"+ Rétablie : {ligne(b)}")
+        else:
+            changements[ens].append(f"→ Déplacée : {ligne(a)}\n    devient : {ligne(b)}")
+    if not changements:
+        return []
+    ecole, semestre = conn.execute(
+        "SELECT ec.code_ecole, s.libelle || ' ' || s.annee_academique FROM emploi_du_temps e "
+        "JOIN semestre s USING (id_semestre, id_ecole) JOIN ecole ec USING (id_ecole) WHERE e.id_edt = %s", (id_edt,),
+    ).fetchone()
+    out = []
+    for id_ens, nom, email in conn.execute(
+            "SELECT id_enseignant, prenom || ' ' || nom, email FROM enseignant WHERE id_enseignant = ANY(%s)",
+            (list(changements),)).fetchall():
+        if not email:
+            continue
+        lignes = changements[id_ens]
+        texte = "\n".join([
+            f"Bonjour {nom},", "",
+            f"L'emploi du temps {semestre} vient d'être modifié :", "",
+            *lignes, "",
+            f"Votre emploi du temps à jour : {config.URL_INVITES}?ecole={ecole}&r=enseignant&id={id_ens}", "",
+            "La scolarité",
+        ])
+        out.append(Message(email, f"Emploi du temps {semestre} : {len(lignes)} séance(s) modifiée(s)", texte))
+    return out
+
+
+def notifier_modifications(conn: psycopg.Connection, id_edt: int, ops: list[dict]) -> dict:
+    """Après une modification en direct (déjà validée) : e-mails en tâche de fond."""
+    messages = messages_de_modifications(conn, id_edt, ops)
+    if not messages:
+        return {"statut": "personne", "destinataires": 0}
+    if not smtp_configure():
+        return {"statut": "smtp_non_configure", "destinataires": len(messages)}
+    conn.commit()  # la modification est acquise avant l'envoi
+    planifier(messages)
+    return {"statut": "en_cours", "destinataires": len(messages)}
 
 
 class Publication(BaseModel):

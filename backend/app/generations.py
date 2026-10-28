@@ -35,6 +35,7 @@ class Tache:
     cree_le: datetime = field(default_factory=datetime.now)
     resultat: Resultat | None = None
     erreur: str | None = None
+    avertissements: list[str] = field(default_factory=list)  # modules demandés mais pas prêts
 
 
 _taches: dict[str, Tache] = {}
@@ -78,10 +79,10 @@ def appliquer(conn: psycopg.Connection, t: Tache) -> int:
     return n
 
 
-def construire_demande(filieres: set[int], classes: set[int], du: date | None, au: date | None,
+def construire_demande(perimetre: Perimetre, du: date | None, au: date | None,
                        minimiser_changements: bool, garder_verrouillees: bool = True, completer: bool = False) -> Demande:
     return Demande(
-        perimetre=Perimetre(frozenset(filieres), frozenset(classes)),
+        perimetre=perimetre,
         du=du, au=au, minimiser_changements=minimiser_changements, garder_verrouillees=garder_verrouillees, completer=completer,
         temps_max_placement=5,
     )

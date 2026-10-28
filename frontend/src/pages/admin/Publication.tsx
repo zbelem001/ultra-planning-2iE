@@ -87,7 +87,7 @@ export default function Publication() {
   const nouvelleVersion = (source: EmploiDuTemps) => void creerVersionDeTravail(source, { db, mutate, connecte, recharger, session })
 
   const enAttente = db.proposition
-    .filter((p) => p.id_edt === travail.id_edt && p.statut === 'en_attente')
+    .filter((p) => (p.id_edt === travail.id_edt || p.id_edt === publie?.id_edt) && p.statut === 'en_attente')
     .sort((a, b) => b.date_creation.localeCompare(a.date_creation))
 
   const aUnBrouillon = db.emploi_du_temps.some((e) => e.statut === 'brouillon' || e.statut === 'valide')
@@ -121,7 +121,7 @@ export default function Publication() {
       {enAttente.length > 0 && (
         <Card className="p-5 sm:p-6">
           <SectionTitle eyebrow="Assistant IA" title={`Propositions à valider (${enAttente.length})`} />
-          <p className="mt-1 text-sm text-ink-2">Calculées par le solveur à la demande de l'assistant. Appliquer une proposition modifie la version {travail.version} ; la base revalide chaque séance.</p>
+          <p className="mt-1 text-sm text-ink-2">Calculées par le solveur à la demande de l'assistant. Appliquer une proposition modifie sa version (la base revalide chaque séance) ; sur la version publiée, le changement est visible tout de suite par les invités.</p>
           <div className="mt-4 grid gap-3 lg:grid-cols-2">
             {enAttente.map((p) => <PropositionCarte key={p.id_proposition} p={p} />)}
           </div>

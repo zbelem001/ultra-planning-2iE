@@ -5,7 +5,7 @@ import pytest
 from app import propositions
 from app.outils import (
     Contexte, construire_outils, lire_emploi_du_temps, lire_referentiel, proposer_priorites,
-    proposer_generation, proposer_replanification, verifier_seance,
+    proposer_generation, proposer_modifications, proposer_replanification, verifier_seance,
 )
 
 
@@ -41,7 +41,8 @@ def test_schemas_des_outils(ctx):
     outils = construire_outils(ctx)
     noms = [o.schema()["function"]["name"] for o in outils]
     assert noms == ["lire_emploi_du_temps", "lire_referentiel", "verifier_seance",
-                    "proposer_replanification", "proposer_generation", "proposer_priorites"]
+                    "proposer_replanification", "proposer_generation", "proposer_modifications",
+                    "lire_piece_jointe", "proposer_ajouts_referentiel", "proposer_priorites"]
     for o in outils:
         f = o.schema()["function"]
         assert f["description"] and f["parameters"]["type"] == "object"
@@ -174,3 +175,85 @@ def test_generation_d_une_semaine_reporte_le_reste(ctx, conn):
     ops = conn.execute("SELECT modifications FROM proposition WHERE id_proposition = %s",
                        (ctx.propositions_creees[0],)).fetchone()[0]
     assert ops and all("2026-11-02" <= o["apres"]["date_seance"] <= "2026-11-07" for o in ops)
+
+
+def test_generation_de_certains_modules(ctx, conn):
+    """« Programme Bases de données pour la L2INFO » : seuls les cours de cette matière."""
+    bd = {r[0] for r in conn.execute(
+        "SELECT id_cours FROM cours JOIN matiere USING (id_matiere) JOIN classe USING (id_classe) "
+        "WHERE code_matiere = 'BD' AND code_classe = 'L2INFO'")}
+    texte = proposer_generation(ctx, "BD de la L2INFO", classes=["L2INFO"], du="2026-11-02", au="2026-11-28",
+                                matieres=["bases de donnees"])
+    assert texte.startswith("Proposition"), texte
+    ops = conn.execute("SELECT modifications FROM proposition WHERE id_proposition = %s",
+                       (ctx.propositions_creees[0],)).fetchone()[0]
+    assert ops and {o.get("apres", o.get("avant"))["id_cours"] for o in ops} <= bd
+
+
+def test_modules_pas_prets(ctx):
+    # Matière inconnue : rien de créé, et la liste des matières de la classe
+    texte = proposer_generation(ctx, "x", classes=["L2INFO"], matieres=["Big Data"])
+    assert texte.startswith("Rien à générer") and "introuvable" in texte and "Algorithmique" in texte
+    assert ctx.propositions_creees == []
+    # Matière existante mais hors du programme de la classe (CD-07)
+    assert "n'est pas au programme de L2INFO" in proposer_generation(ctx, "x", classes=["L2INFO"], matieres=["WEB"])
+    # Au programme mais sans cours (M2IA : programme d'apprentissage automatique, aucun cours)
+    assert "n'a encore aucun cours" in proposer_generation(ctx, "x", classes=["M2IA"], matieres=["ML"])
+    # Un module prêt et un autre non : proposition pour le premier, explication pour le second
+    texte = proposer_generation(ctx, "x", classes=["L2INFO"], du="2026-11-02", au="2026-11-07", matieres=["BD", "Big Data"])
+    assert texte.startswith("Proposition") and "Modules non programmés" in texte and "Big Data" in texte
+
+
+def deplacer_quelque_part(ctx, s):
+    """Déplace la séance s à une semaine libre plus loin ; renvoie le texte de l'outil."""
+    for semaines in range(1, 10):
+        texte = proposer_modifications(ctx, "Report d'une séance", [
+            {"action": "deplacer", "id_seance": s[0], "date_seance": (s[2] + timedelta(weeks=semaines)).isoformat()}])
+        if texte.startswith("Proposition"):
+            return texte
+    pytest.fail(texte)
+
+
+def test_modifications_ponctuelles(ctx, conn):
+    s = premiere_seance(conn, "L2INFO")
+    texte = deplacer_quelque_part(ctx, s)
+    assert "déplacement : séance" in texte and "Version de travail" in texte
+    ops = conn.execute("SELECT modifications FROM proposition WHERE id_proposition = %s",
+                       (ctx.propositions_creees[0],)).fetchone()[0]
+    nouvelle_date = ops[0]["apres"]["date_seance"]
+    # Rien n'est écrit tant que la proposition n'est pas appliquée
+    assert conn.execute("SELECT date_seance FROM seance WHERE id_seance = %s", (s[0],)).fetchone()[0] == s[2]
+    r = propositions.appliquer(conn, ctx.propositions_creees[0], 1)
+    assert r["seances_modifiees"] == 1 and r["en_direct"] is False
+    ligne = conn.execute("SELECT date_seance, heure_debut, heure_fin FROM seance WHERE id_seance = %s", (s[0],)).fetchone()
+    assert (ligne[0].isoformat(), ligne[1], ligne[2]) == (nouvelle_date, s[3], s[4])  # même durée, mêmes heures
+
+    # Annuler puis rétablir
+    proposer_modifications(ctx, "Annulation", [{"action": "annuler", "id_seance": s[0]}])
+    propositions.appliquer(conn, ctx.propositions_creees[0], 1)
+    assert conn.execute("SELECT statut FROM seance WHERE id_seance = %s", (s[0],)).fetchone()[0] == "annulee"
+    impact = conn.execute("SELECT impact FROM proposition WHERE id_proposition = %s", (ctx.propositions_creees[0],)).fetchone()[0]
+    assert impact["seances_supprimees"] == 1 and impact["classes_concernees"] == ["L2INFO"]
+    proposer_modifications(ctx, "Rétablissement", [{"action": "retablir", "id_seance": s[0]}])
+    propositions.appliquer(conn, ctx.propositions_creees[0], 1)
+    assert conn.execute("SELECT statut FROM seance WHERE id_seance = %s", (s[0],)).fetchone()[0] == "planifiee"
+
+
+def test_modifications_refusees_par_la_base(ctx, conn):
+    s = premiere_seance(conn, "L2INFO")
+    # Ajouter une séance par-dessus une autre, dans la même salle : refusé, aucune proposition
+    texte = proposer_modifications(ctx, "Doublon", [{"action": "ajouter", "id_cours": s[1], "date_seance": s[2].isoformat(),
+                                                    "heure_debut": s[3].strftime("%H:%M"), "heure_fin": s[4].strftime("%H:%M"),
+                                                    "id_salle": s[5]}])
+    assert "Aucune proposition créée" in texte and ctx.propositions_creees == []
+    assert proposer_modifications(ctx, "x", [{"action": "annuler", "id_seance": 999999}]).startswith("Demande invalide")
+    assert "il manque" in proposer_modifications(ctx, "x", [{"action": "ajouter", "id_cours": s[1]}])
+    assert "rien ne change" in proposer_modifications(ctx, "x", [{"action": "deplacer", "id_seance": s[0]}])
+
+
+def test_modification_perimee(ctx, conn):
+    s = premiere_seance(conn, "L2INFO")
+    deplacer_quelque_part(ctx, s)
+    conn.execute("UPDATE seance SET statut = 'annulee' WHERE id_seance = %s", (s[0],))  # changée entre-temps
+    with pytest.raises(propositions.PropositionRefusee, match="périmée"):
+        propositions.appliquer(conn, ctx.propositions_creees[0], 1)

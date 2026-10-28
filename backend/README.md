@@ -59,7 +59,7 @@ Toutes les réponses de plus de 1 Ko sont compressées (gzip).
 | `POST /api/base/sync` | Ajouts, modifications, suppressions faits dans l'interface, en une transaction ; 409 avec le motif (CD-xx) si la base refuse |
 | `GET /api/moi` | Compte connecté et son école |
 | `GET /api/comptes?console=ecole\|superadmin` | Comptes pour l'écran de connexion de développement (`ULTRAPLANNING_AUTH_DEV=1`) |
-| `POST /api/generations` | Lance une génération (périmètre, période) en tâche de fond |
+| `POST /api/generations` | Lance une génération en tâche de fond : périmètre (classes ou filières, éventuellement réduites à certaines `matieres`, par code ou par nom), période, mode « compléter » ; les modules non prêts sont expliqués dans `avertissements` |
 | `GET /api/generations/{id}` | État et résultat (séances, heures non placées et leur motif) |
 | `POST /api/generations/{id}/appliquer` | Enregistre le résultat ; la base revalide chaque séance |
 | `POST /api/verifications` | Teste une séance contre les règles CD-01 à CD-14, sans rien écrire |
@@ -90,7 +90,7 @@ La RLS de chaque table (schéma, section 7) ne montre et ne laisse écrire à ce
 
 **Journal d'audit** : le déclencheur `journaliser_seance` inscrit chaque changement de séance dans `journal_seance`, avec le compte (`app.id_utilisateur`) et l'origine (`app.origine` : `console`, `generation`, `assistant`), que `db.entrer_ecole()` et les routes fixent. Hors API (ligne de commande du solveur), l'origine est `systeme`. Le rôle `ultraplanning_app` n'a aucun droit sur cette table.
 
-**Base existante en version 6** : exécuter `../migrations/007_isolation_ecoles.sql` (SQL Editor de Supabase). Toutes les données existantes sont rattachées à 2IE ; la migration est faite en une seule transaction. Puis, pour le journal d'audit, `../migrations/008_journal_audit.sql`.
+**Base existante en version 6** : exécuter `../migrations/007_isolation_ecoles.sql` (SQL Editor de Supabase). Toutes les données existantes sont rattachées à 2IE ; la migration est faite en une seule transaction. Puis, pour le journal d'audit, `../migrations/008_journal_audit.sql`, et pour les fichiers joints et les ajouts au référentiel de l'assistant, `../migrations/009_pieces_jointes.sql` (version 9).
 
 ## Authentification
 
@@ -121,7 +121,10 @@ L'agent (`app/agent.py`) dialogue avec le modèle, au choix par l'API « chat co
 | `lire_referentiel` | Cours, classes, enseignants, salles, programme, calendrier |
 | `verifier_seance` | Test d'une séance dans la base, sans écriture |
 | `proposer_replanification` | Appel du solveur en replanification minimale (semaines entières), avec contraintes « imposer / interdire » ; le résultat devient une `PROPOSITION` en attente |
-| `proposer_generation` | Génération complète d'une classe ou d'une filière (par défaut de la semaine prochaine à la fin du semestre) ; le résultat devient une `PROPOSITION` en attente |
+| `proposer_modifications` | Changements ponctuels de séances précises : déplacer (date, heures, salle), annuler, rétablir, ajouter, supprimer. Toutes les opérations sont essayées ensemble dans la base (puis annulées) avant d'être proposées ; un refus renvoie le motif et ne crée rien |
+| `lire_piece_jointe` | Lit un fichier joint à la discussion (CSV, Excel, PDF, texte), par morceaux de lignes numérotées |
+| `proposer_ajouts_referentiel` | Lignes à ajouter au référentiel (classes, matières, enseignants, salles, habilitations, programme, cours), désignées par leurs codes et vérifiées dans la base (insérées puis annulées). Seulement des ajouts ; l'habilitation d'un cours est ajoutée si elle manque. `ensuite` : la génération à lancer une fois les ajouts validés |
+| `proposer_generation` | Génération d'une classe ou d'une filière, éventuellement de certains modules seulement (`matieres`), par défaut de la semaine prochaine à la fin du semestre ; explique les modules non prêts (matière inconnue, hors programme, sans cours) ; le résultat devient une `PROPOSITION` en attente |
 | `proposer_priorites` | Priorités suggérées pour les cours, avec justification |
 
 ### Argumenter
@@ -134,6 +137,12 @@ Le modèle joue le rôle d'un conseiller, pas d'un exécutant (consigne `SYSTEME
 Le frontend affiche ces conséquences sur chaque proposition (Assistant IA et Publication), à côté des boutons Appliquer et Rejeter.
 
 L'agent ne modifie jamais les séances. Une seule proposition est gardée par message : une nouvelle tentative remplace la précédente. Seul un planificateur applique une proposition (`/api/propositions/{id}/appliquer`) ; l'application passe par les déclencheurs de la base, et une proposition périmée (emploi du temps modifié depuis) est refusée.
+
+**Compléter le référentiel.** Quand un module n'est pas prêt, l'assistant demande ce qui manque (type de cours, volume, enseignant…) ou le lit dans un fichier joint, puis propose les ajouts (`proposition.nature = 'referentiel'`). En les validant, le planificateur les écrit, et la génération demandée au départ (`proposition.suite`) est lancée tout de suite : elle produit une nouvelle proposition de séances, dans la même discussion. La réponse de `/appliquer` contient alors `suite` (`id_proposition`, `message`).
+
+**Fichiers joints.** `POST /api/assistant/messages` (et `/flux`) accepte `piece_jointe` : `{nom, contenu}` en base64, 5 Mo au plus ; CSV, Excel (.xlsx), PDF, texte, PNG, JPEG, WebP. Le fichier est gardé dans `piece_jointe` et lu sur le serveur, sans IA (`app/pieces_jointes.py`) ; l'assistant le lit par morceaux. Une image ou un PDF scanné n'a pas de texte : Claude le lit directement (il passe alors en premier) ; Groq ne sait pas, et l'assistant demande un autre format. Le contenu part chez le fournisseur du modèle, comme les messages.
+
+**En direct sur la version publiée.** L'assistant travaille par défaut sur la version publiée. Une proposition appliquée sur cette version est visible tout de suite dans l'espace invités, et les enseignants concernés reçoivent un e-mail des changements (si SMTP est configuré). La réponse de `/appliquer` contient `en_direct` et `notification`. Une version archivée ne se modifie plus. L'espace invités revérifie `/api/base/public` toutes les minutes et au retour sur l'onglet ; l'étiquette `ETag` (exposée par CORS) évite de retélécharger quand rien n'a changé.
 
 Essais réels sur le jeu de test (`openai/gpt-oss-120b`) : une question sur l'emploi du temps répond juste en 2 s ; « aucun cours pour la L2INFO le mardi 13 octobre » produit une proposition en 5 s, puis « élargis à la semaine suivante » une proposition qui replace toutes les heures.
 
