@@ -13,6 +13,7 @@ import { ListView } from '@/components/timetable/ListView'
 import { SeanceDetail } from '@/components/timetable/SeanceDetail'
 import { SemesterView } from '@/components/timetable/SemesterView'
 import { WeekGrid } from '@/components/timetable/WeekGrid'
+import { estEpreuve } from '@/lib/publics'
 import { WeekStrip } from '@/components/timetable/WeekStrip'
 import type { Champ } from '@/components/timetable/EventCard'
 import { ecoles as ecolesApi } from '@/lib/api'
@@ -180,8 +181,8 @@ function Contenu() {
   const toutes = useMemo(() => (edt ? enrichir(db, db.seance.filter((s) => s.id_edt === edt.id_edt)) : []), [db, edt])
   const ressource = useMemo(() => {
     if (id === null) return []
-    return filtrer(toutes, res, id, idGroupe).filter(
-      (s) => types.includes(s.cours.type_cours) && !(masquerAnnulees && s.statut === 'annulee'),
+    return filtrer(toutes, res, id, idGroupe, db.groupe).filter(
+      (s) => (estEpreuve(s) || types.includes(s.cours.type_cours)) && !(masquerAnnulees && s.statut === 'annulee'),
     )
   }, [toutes, res, id, idGroupe, types, masquerAnnulees])
   const semaineList = ressource.filter((s) => s.date_seance >= semaine && s.date_seance <= addDays(semaine, 6))

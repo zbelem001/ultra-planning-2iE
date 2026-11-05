@@ -2,7 +2,9 @@
 
 Génère et replanifie les emplois du temps avec Google OR-Tools (CP-SAT), selon les règles de `../fichier.md` (§4) et le schéma `../migrations/schema_supabase.sql`.
 
-Fonctionnement détaillé (modèles des deux étages, objectifs, exemple, limites) : [`fichier.md`](fichier.md).
+Deux moteurs derrière la même fonction `generer()` :
+- **v3** (par défaut), de Soraya Pitroipa : glouton multi-essais puis CP-SAT par promotion et par semaine, règles 2iE (sites, options, cours mutualisés, salles réservées, trajets, règles du planificateur). Voir [`ultraplanning_solver/v3/README.md`](ultraplanning_solver/v3/README.md).
+- **cpsat** : l'ancien moteur à deux étages, gardé pour comparer (`Demande(moteur="cpsat")`, `--moteur cpsat`). Fonctionnement détaillé : [`fichier.md`](fichier.md).
 
 ```bash
 python3 -m venv .venv

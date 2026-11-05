@@ -3,7 +3,7 @@ schema_supabase.sql (DATABASE_URL). ATTENTION : ils vident et régénèrent les
 séances, propositions et discussions ; ne jamais les lancer en production."""
 
 import os
-from datetime import timedelta
+from datetime import date, timedelta
 
 import psycopg
 import pytest
@@ -37,6 +37,48 @@ def base_generee():
                                temps_max_placement=3))
         enregistrer(conn, 1, r)
     return True
+
+
+@pytest.fixture(autouse=True)
+def aujourdhui_fixe(monkeypatch):
+    """Les dates des tests sont fixes : « aujourd'hui » aussi, sinon leur résultat dépend du jour où ils tournent
+    (l'assistant ne programme jamais dans le passé)."""
+    class Jour(date):
+        @classmethod
+        def today(cls):
+            return date(2026, 11, 1)
+    monkeypatch.setattr("app.outils.date", Jour)
+
+
+@pytest.fixture(autouse=True)
+def pas_d_envoi_reel(monkeypatch):
+    """Aucun test n'envoie de vrai e-mail, même si backend/.env configure un serveur SMTP."""
+    from app import publication
+    monkeypatch.setattr(publication, "planifier", lambda messages: None)
+
+
+_COLONNES_SEANCE = ("id_seance, date_seance, heure_debut, heure_fin, statut, est_verrouillee, id_cours, id_enseignant, "
+                    "id_salle, id_creneau, id_edt, id_ecole")
+
+
+@pytest.fixture
+def edt_a_remettre(base_generee):
+    """Pour un test qui écrit par l'API : remet ensuite l'emploi du temps 1 comme avant (ses séances, son
+    statut), sans version publiée ni publication."""
+    with psycopg.connect(DSN) as c:
+        seances = c.execute(f"SELECT {_COLONNES_SEANCE} FROM seance WHERE id_edt = 1").fetchall()
+    yield
+    with psycopg.connect(DSN) as c:
+        c.execute("DELETE FROM publication_edt; DELETE FROM proposition; DELETE FROM seance WHERE id_edt <> 1; "
+                  "DELETE FROM contrainte WHERE id_edt <> 1")
+        c.execute("DELETE FROM emploi_du_temps WHERE id_edt <> 1")
+        c.execute("UPDATE emploi_du_temps SET statut = 'brouillon', date_publication = NULL WHERE id_edt = 1")
+        c.execute("ALTER TABLE seance DISABLE TRIGGER trg_verifier_seance")
+        c.execute("DELETE FROM seance WHERE id_edt = 1")
+        with c.cursor() as cur:
+            cur.executemany(f"INSERT INTO seance ({_COLONNES_SEANCE}) OVERRIDING SYSTEM VALUE "
+                            f"VALUES ({', '.join(['%s'] * 12)})", seances)
+        c.execute("ALTER TABLE seance ENABLE TRIGGER trg_verifier_seance")
 
 
 @pytest.fixture

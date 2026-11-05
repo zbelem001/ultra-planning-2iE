@@ -6,15 +6,17 @@ séance ; si l'emploi du temps a changé depuis, la proposition est refusée.
 
 Opérations (PROPOSITION.modifications) :
 - {"action": "supprimer", "id_seance", "avant"} et {"action": "creer", "apres"} (solveur, ajouts) ;
-- {"action": "modifier", "id_seance", "avant", "apres"} : déplacement, annulation ou
-  rétablissement d'une séance existante (date, heures, salle, statut).
+- {"action": "modifier", "id_seance", "avant", "apres"} : déplacement, annulation,
+  rétablissement ou changement d'enseignant d'une séance existante (date, heures, salle,
+  statut, id_enseignant).
+Une séance créée sans id_enseignant reçoit l'enseignant prévu de son cours.
 
-Proposition de nature « referentiel » : lignes à ajouter au référentiel (referentiel_ajouts.py),
-puis éventuellement une génération à lancer (PROPOSITION.suite).
+Proposition de nature « referentiel » : lignes du référentiel, du calendrier ou des enseignants
+à ajouter, modifier ou supprimer (referentiel_changements.py), puis éventuellement une génération
+ou une replanification à lancer (PROPOSITION.suite).
 
-Une proposition peut s'appliquer à la version publiée : la modification est alors
-visible tout de suite dans l'espace invités (« en direct »). Une version archivée,
-elle, ne se modifie plus.
+Une proposition de séances s'applique à la version à jour, seule modifiable : les invités
+la voient une fois cette version publiée.
 """
 
 from __future__ import annotations
@@ -74,29 +76,29 @@ def executer_operations(conn: psycopg.Connection, ops: list[dict], id_edt: int, 
     le motif de la base si l'une d'elles est refusée ou si l'emploi du temps a changé depuis."""
     compte = {"seances_supprimees": 0, "seances_creees": 0, "seances_modifiees": 0}
     try:
-        for op in ops:
-            if op["action"] == "supprimer":
-                n = conn.execute(
-                    "DELETE FROM seance WHERE id_seance = %s AND id_edt = %s", (op["id_seance"], id_edt)
-                ).rowcount
-                if n != 1:
-                    raise PropositionRefusee("Proposition périmée : l'emploi du temps a changé depuis son calcul")
-                compte["seances_supprimees"] += 1
+        a_supprimer = [op["id_seance"] for op in ops if op["action"] == "supprimer"]
+        if a_supprimer:  # en une fois : une suppression peut toucher des centaines de séances
+            n = conn.execute("DELETE FROM seance WHERE id_seance = ANY(%s) AND id_edt = %s", (a_supprimer, id_edt)).rowcount
+            if n != len(a_supprimer):
+                raise PropositionRefusee("Proposition périmée : l'emploi du temps a changé depuis son calcul")
+            compte["seances_supprimees"] = n
         for op in ops:
             if op["action"] == "modifier":
                 a, s = op["avant"], op["apres"]
                 actuelle = conn.execute(
-                    "SELECT date_seance, to_char(heure_debut, 'HH24:MI'), to_char(heure_fin, 'HH24:MI'), id_salle, statut "
-                    "FROM seance WHERE id_seance = %s AND id_edt = %s", (op["id_seance"], id_edt),
+                    "SELECT date_seance, to_char(heure_debut, 'HH24:MI'), to_char(heure_fin, 'HH24:MI'), id_salle, statut, "
+                    "id_enseignant FROM seance WHERE id_seance = %s AND id_edt = %s", (op["id_seance"], id_edt),
                 ).fetchone()
-                if actuelle is None or (actuelle[0].isoformat(), *actuelle[1:]) != (
-                        a["date_seance"], a["heure_debut"], a["heure_fin"], a["id_salle"], a["statut"]):
+                # propositions antérieures à l'enseignant par séance : pas d'id_enseignant, non comparé
+                if actuelle is None or (actuelle[0].isoformat(), *actuelle[1:5]) != (
+                        a["date_seance"], a["heure_debut"], a["heure_fin"], a["id_salle"], a["statut"]) \
+                        or ("id_enseignant" in a and actuelle[5] != a["id_enseignant"]):
                     raise PropositionRefusee(f"Proposition périmée : la séance {op['id_seance']} a changé depuis son calcul")
                 d, debut, fin, id_creneau = _creneau(conn, ecole, s)
                 conn.execute(
                     "UPDATE seance SET date_seance = %s, heure_debut = %s, heure_fin = %s, id_salle = %s, "
-                    "id_creneau = %s, statut = %s WHERE id_seance = %s",
-                    (d, debut, fin, s["id_salle"], id_creneau, s["statut"], op["id_seance"]),
+                    "id_creneau = %s, statut = %s, id_enseignant = %s WHERE id_seance = %s",
+                    (d, debut, fin, s["id_salle"], id_creneau, s["statut"], s.get("id_enseignant", actuelle[5]), op["id_seance"]),
                 )
                 compte["seances_modifiees"] += 1
         for op in ops:
@@ -104,9 +106,11 @@ def executer_operations(conn: psycopg.Connection, ops: list[dict], id_edt: int, 
                 s = op["apres"]
                 d, debut, fin, id_creneau = _creneau(conn, ecole, s)
                 conn.execute(
-                    "INSERT INTO seance (date_seance, heure_debut, heure_fin, id_cours, id_salle, id_creneau, id_edt, id_ecole) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
-                    (d, debut, fin, s["id_cours"], s["id_salle"], id_creneau, id_edt, ecole),
+                    "INSERT INTO seance (date_seance, heure_debut, heure_fin, id_cours, id_enseignant, id_salle, id_creneau, nature, id_edt, id_ecole) "
+                    "SELECT %s, %s, %s, %s, CASE WHEN %s THEN %s ELSE c.id_enseignant END, %s, %s, %s, %s, %s "
+                    "FROM cours c WHERE c.id_cours = %s",
+                    (d, debut, fin, s["id_cours"], "id_enseignant" in s, s.get("id_enseignant"), s["id_salle"], id_creneau,
+                     s.get("nature", "cours"), id_edt, ecole, s["id_cours"]),
                 )
                 compte["seances_creees"] += 1
     except (psycopg.errors.CheckViolation, psycopg.errors.ExclusionViolation) as e:
@@ -120,34 +124,35 @@ def executer_operations(conn: psycopg.Connection, ops: list[dict], id_edt: int, 
 def appliquer(conn: psycopg.Connection, id_proposition: int, id_utilisateur: int) -> dict:
     with conn.transaction():
         row = conn.execute(
-            "SELECT p.statut, p.modifications, p.id_edt, e.statut, p.id_ecole, p.nature, p.suite, p.id_prompt FROM proposition p "
+            "SELECT p.statut, p.modifications, p.id_edt, e.statut, p.id_ecole, p.nature, p.suite, p.id_prompt, p.description "
+            "FROM proposition p "
             "JOIN emploi_du_temps e USING (id_edt, id_ecole) WHERE p.id_proposition = %s FOR UPDATE OF p",
             (id_proposition,),
         ).fetchone()
         if row is None:
             raise PropositionRefusee("Proposition introuvable")
-        statut, ops, id_edt, statut_edt, ecole, nature, suite, id_prompt = row
+        statut, ops, id_edt, statut_edt, ecole, nature, suite, id_prompt, description = row
         if statut != "en_attente":
             raise PropositionRefusee(f"Proposition déjà {'appliquée' if statut == 'appliquee' else 'rejetée'}")
-        if statut_edt == "archive" and nature == "seances":
-            raise PropositionRefusee("Cette version est archivée : elle ne se modifie plus")
+        if statut_edt in ("publie", "archive") and nature == "seances":
+            raise PropositionRefusee("La version publiée ne se modifie pas : seule la version à jour accepte une proposition")
         if isinstance(ops, str):
             ops = json.loads(ops)
         if nature == "referentiel":
-            from . import referentiel_ajouts
+            from . import referentiel_changements
 
-            compte = referentiel_ajouts.executer(conn, ops, id_edt)
+            compte = referentiel_changements.executer(conn, ops, id_edt)
         else:
+            # Le motif accompagne le changement dans l'historique
+            conn.execute("SELECT set_config('app.note', %s, true)", (f"Assistant IA : {description}",))
             compte = executer_operations(conn, ops, id_edt, ecole)
         conn.execute(
             "UPDATE proposition SET statut = 'appliquee', date_decision = now(), id_utilisateur_decision = %s "
             "WHERE id_proposition = %s",
             (id_utilisateur, id_proposition),
         )
-    # en_direct : version publiée, la modification est déjà visible des invités
-    return {"id_proposition": id_proposition, "nature": nature, **compte,
-            "en_direct": nature == "seances" and statut_edt == "publie", "id_edt": id_edt, "id_prompt": id_prompt,
-            "suite": suite, "operations": ops}
+    return {"id_proposition": id_proposition, "nature": nature, **compte, "id_edt": id_edt, "id_prompt": id_prompt,
+            "suite": suite}
 
 
 def rejeter(conn: psycopg.Connection, id_proposition: int, id_utilisateur: int) -> None:

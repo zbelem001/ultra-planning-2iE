@@ -23,13 +23,14 @@ from pydantic import BaseModel, Field
 from ultraplanning_solver.base import verifier
 from ultraplanning_solver.donnees import Seance
 
-from . import agent, config, generations, outils, perimetre, pieces_jointes, propositions, publication
+from . import agent, config, generations, outils, perimetre, pieces_jointes, propositions
 from .base_api import routeur as routeur_base
 from .comptes import routeur as routeur_comptes
+from .historique import routeur as routeur_historique
 from .publication import routeur as routeur_publication
 from .superadmin_api import routeur as routeur_superadmin
 from .auth import Utilisateur, utilisateur_courant
-from .db import connexion, entrer_ecole, origine
+from .db import connexion, entrer_ecole, origine, ouvrir
 
 journal = logging.getLogger("ultraplanning.api")
 
@@ -44,6 +45,7 @@ app.include_router(routeur_base)
 app.include_router(routeur_superadmin)
 app.include_router(routeur_comptes)
 app.include_router(routeur_publication)
+app.include_router(routeur_historique)
 
 
 def _edt(conn: psycopg.Connection, id_edt: int) -> str:
@@ -56,7 +58,7 @@ def _edt(conn: psycopg.Connection, id_edt: int) -> str:
 
 def _edt_modifiable(conn: psycopg.Connection, id_edt: int) -> None:
     if _edt(conn, id_edt) in ("publie", "archive"):
-        raise HTTPException(409, "Emploi du temps publié : créez une nouvelle version pour le modifier")
+        raise HTTPException(409, "La version publiée ne se modifie pas : modifiez la version à jour, puis publiez-la")
 
 
 @app.get("/api/sante")
@@ -95,7 +97,7 @@ def _tache_json(t: generations.Tache) -> dict:
             ],
             "seances": [
                 {"id_cours": s.id_cours, "date_seance": s.date_seance, "heure_debut": s.heure_debut.strftime("%H:%M"),
-                 "heure_fin": s.heure_fin.strftime("%H:%M"), "id_salle": s.id_salle}
+                 "heure_fin": s.heure_fin.strftime("%H:%M"), "id_salle": s.id_salle, "id_enseignant": s.id_enseignant}
                 for s in r.seances
             ],
             "seances_remplacees": len(r.remplacees),
@@ -190,17 +192,19 @@ def message_assistant(m: Message, conn: psycopg.Connection = Depends(connexion),
 
 @app.post("/api/assistant/messages/flux")
 def message_assistant_flux(m: Message, u: Utilisateur = Depends(utilisateur_courant)) -> StreamingResponse:
-    """Même traitement, avec les étapes envoyées au fur et à mesure (Server-Sent Events) :
-    contextualisation, analyse, vérification, calcul, réflexion, rédaction ; puis « fin »
-    avec la réponse (mêmes champs que /api/assistant/messages) ou « erreur »."""
+    """Même traitement, envoyé au fur et à mesure (Server-Sent Events) : « etape » quand un outil
+    travaille (lecture, vérification, solveur), « texte » pendant que la réponse s'écrit, « efface »
+    si ce texte n'était pas la réponse ; puis « fin » avec la réponse (mêmes champs que
+    /api/assistant/messages) ou « erreur »."""
     file: queue.Queue = queue.Queue()
 
     def travail() -> None:
         try:
             # Connexion propre au fil, cantonnée à l'école du compte comme celle des requêtes
-            with psycopg.connect(config.DATABASE_URL) as c:
+            with ouvrir() as c:
                 entrer_ecole(c, u.id_ecole, u.id_utilisateur)
-                fin = _traiter_message(c, u, m, lambda etape, detail: file.put({"type": "etape", "etape": etape, "detail": detail}))
+                fin = _traiter_message(c, u, m, lambda etape, detail: file.put({"type": "etape", "etape": etape, "detail": detail}),
+                                       lambda morceau: file.put({"type": "efface"} if morceau is None else {"type": "texte", "morceau": morceau}))
             file.put({"type": "fin", **fin})
         except HTTPException as e:
             file.put({"type": "erreur", "detail": e.detail})
@@ -220,8 +224,8 @@ def message_assistant_flux(m: Message, u: Utilisateur = Depends(utilisateur_cour
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
-def _traiter_message(conn: psycopg.Connection, u: Utilisateur, m: Message, progres=None) -> dict:
-    _edt(conn, m.id_edt)
+def _traiter_message(conn: psycopg.Connection, u: Utilisateur, m: Message, progres=None, sur_texte=None) -> dict:
+    _edt_modifiable(conn, m.id_edt)  # l'assistant ne travaille que sur la version à jour
     fichier = None
     if m.piece_jointe:  # contrôlé avant d'enregistrer quoi que ce soit
         try:
@@ -269,7 +273,7 @@ def _traiter_message(conn: psycopg.Connection, u: Utilisateur, m: Message, progr
     conn.commit()  # le message reste enregistré même si l'assistant échoue
 
     try:
-        r = agent.repondre(conn, m.id_edt, id_prompt, historique, demande, progres=progres, visuels=visuels)
+        r = agent.repondre(conn, m.id_edt, id_prompt, historique, demande, progres=progres, visuels=visuels, sur_texte=sur_texte)
     except agent.AgentIndisponible as e:
         conn.rollback()
         r = agent.Reponse(str(e), "erreur", [])
@@ -309,24 +313,27 @@ def appliquer_proposition(id_proposition: int, conn: psycopg.Connection = Depend
         r = propositions.appliquer(conn, id_proposition, u.id_utilisateur)
     except propositions.PropositionRefusee as e:
         raise HTTPException(409, str(e)) from e
-    # Version publiée : déjà visible dans l'espace invités ; on prévient les enseignants concernés
-    notification = publication.notifier_modifications(conn, r["id_edt"], r["operations"]) if r["en_direct"] else None
     suite = None
     if r["suite"]:
-        # Ajouts au référentiel validés : la génération demandée au départ est lancée
-        conn.commit()  # les ajouts restent acquis même si la génération échoue
+        # Changements du référentiel validés : la génération (ou la replanification) demandée est lancée
+        conn.commit()  # les changements restent acquis même si le calcul échoue
         ctx = outils.Contexte(conn, r["id_edt"], r["id_prompt"], [])
         s = r["suite"]
+        application = None
         try:
-            texte = outils.proposer_generation(ctx, s["description"], s.get("classes"), s.get("filieres"),
-                                               s.get("du"), s.get("au"), s.get("matieres"))
+            if s.get("mode") == "replanifier":
+                texte = outils.proposer_replanification(ctx, s["description"], s["du"], s["au"],
+                                                        s.get("classes"), s.get("filieres"))
+            else:
+                texte = outils.proposer_generation(ctx, s["description"], s.get("classes"), s.get("filieres"),
+                                                   s.get("du"), s.get("au"), s.get("matieres"))
+            application = outils.appliquer_si_possible(ctx)
         except (ValueError, psycopg.Error) as e:
             conn.rollback()
             texte = f"Génération impossible : {e}"
         suite = {"id_proposition": ctx.propositions_creees[0] if ctx.propositions_creees else None,
-                 "message": texte.splitlines()[0]}
-    return ({k: v for k, v in r.items() if k not in ("operations", "suite", "id_prompt")}
-            | {"notification": notification, "suite": suite})
+                 "message": application or texte.splitlines()[0]}
+    return {k: v for k, v in r.items() if k not in ("suite", "id_prompt")} | {"suite": suite}
 
 
 @app.post("/api/propositions/{id_proposition}/rejeter")

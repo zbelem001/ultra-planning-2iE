@@ -1,11 +1,11 @@
-"""Publication d'un emploi du temps et notification des enseignants (BF-19, BF-20).
+"""Publication de l'emploi du temps et notification des enseignants (BF-19, BF-20).
 
-La publication rend la version visible dans l'espace invités ; la version publiée
-précédente est archivée. Les enseignants dont les séances changent par rapport à
-cette version précédente (toutes leurs séances pour une première publication)
-reçoivent un e-mail : séances ajoutées, retirées ou modifiées, et le lien vers leur
-emploi du temps. Les étudiants n'ont pas d'adresse dans la base : ils consultent
-l'espace invités.
+Chaque semestre a une version à jour, seule modifiable, et une copie publiée, celle que
+voient les invités. Publier reporte sur cette copie les différences avec la version à jour.
+Seuls les enseignants concernés par un changement reçoivent un e-mail : leurs séances
+ajoutées, annulées, retirées ou mises à jour, et le lien vers leur emploi du temps (toutes
+leurs séances pour une première publication). Les étudiants n'ont pas d'adresse dans la
+base : ils consultent l'espace invités.
 
 Les e-mails partent en tâche de fond par le serveur SMTP configuré (config.SMTP_*),
 après la validation de la publication.
@@ -21,15 +21,12 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from email.message import EmailMessage
 
-from datetime import date, time
-
 import psycopg
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
 
 from . import config
 from .auth import Utilisateur, utilisateur_courant
-from .db import connexion
+from .db import connexion, origine
 
 routeur = APIRouter()
 journal = logging.getLogger("ultraplanning.notifications")
@@ -92,41 +89,100 @@ def _ligne(s) -> str:
             f"{s['matiere']} ({s['type_cours']}) · {s['classe']} · {s['salle']}")
 
 
-def _seances(conn: psycopg.Connection, id_edt: int | None) -> dict[tuple, dict]:
+def _seances(conn: psycopg.Connection, id_edt: int | None) -> list[dict]:
+    """Séances d'un emploi du temps, avec ce qu'il faut pour les comparer et les décrire."""
     if id_edt is None:
-        return {}
+        return []
     rows = conn.execute(
-        """SELECT s.id_cours, s.date_seance, s.heure_debut, s.heure_fin, s.id_salle, s.statut,
-                  c.type_cours, c.id_enseignant, m.libelle, cl.code_classe || coalesce(' · ' || g.code_groupe, ''), sa.nom_salle
+        """SELECT s.id_seance, s.id_cours, s.date_seance, s.heure_debut, s.heure_fin, s.id_salle, s.statut,
+                  c.type_cours, s.id_enseignant, m.libelle, cl.code_classe || coalesce(' · ' || g.code_groupe, ''), sa.nom_salle, s.nature
            FROM seance s JOIN cours c USING (id_cours, id_ecole) JOIN matiere m USING (id_matiere, id_ecole)
            JOIN classe cl ON cl.id_classe = c.id_classe JOIN salle sa ON sa.id_salle = s.id_salle
            LEFT JOIN groupe g ON g.id_groupe = c.id_groupe
-           WHERE s.id_edt = %s ORDER BY s.date_seance, s.heure_debut""", (id_edt,),
+           WHERE s.id_edt = %s ORDER BY s.date_seance, s.heure_debut, s.id_seance""", (id_edt,),
     ).fetchall()
-    cles = ("id_cours", "date_seance", "heure_debut", "heure_fin", "id_salle", "statut",
-            "type_cours", "id_enseignant", "matiere", "classe", "salle")
-    return {(r[0], r[1], r[2]): dict(zip(cles, r)) for r in rows}
+    cles = ("id_seance", "id_cours", "date_seance", "heure_debut", "heure_fin", "id_salle", "statut",
+            "type_cours", "id_enseignant", "matiere", "classe", "salle", "nature")
+    return [dict(zip(cles, r)) for r in rows]
 
 
-def messages_de_publication(conn: psycopg.Connection, id_edt: int, id_precedent: int | None) -> list[Message]:
-    """Un message par enseignant dont les séances changent (avec une adresse e-mail)."""
-    avant, apres = _seances(conn, id_precedent), _seances(conn, id_edt)
+# Ce que voient les invités : le verrouillage, propre au travail de planification, n'en fait pas partie
+_VISIBLE = ("id_cours", "date_seance", "heure_debut", "heure_fin", "statut", "id_enseignant", "id_salle", "nature")
+_ENDROIT = ("date_seance", "heure_debut", "heure_fin", "id_salle")
+
+
+@dataclass
+class Differences:
+    ajoutees: list[dict]
+    retirees: list[dict]
+    modifiees: list[tuple[dict, dict]]  # (avant, après)
+
+    @property
+    def vide(self) -> bool:
+        return not (self.ajoutees or self.retirees or self.modifiees)
+
+
+def comparer(avant: list[dict], apres: list[dict]) -> Differences:
+    """Ce qui change entre deux états. Une séance retirée et une séance ajoutée du même cours sont
+    une même séance modifiée : d'abord celles du même créneau, puis dans l'ordre chronologique."""
+    identiques: dict[tuple, list[dict]] = defaultdict(list)
+    for s in avant:
+        identiques[tuple(s[k] for k in _VISIBLE)].append(s)
+    ajoutees = []
+    for s in apres:
+        pareilles = identiques.get(tuple(s[k] for k in _VISIBLE))
+        if pareilles:
+            pareilles.pop()
+        else:
+            ajoutees.append(s)
+    retirees = [s for reste in identiques.values() for s in reste]
+
+    modifiees = []
+    for par_creneau in (True, False):
+        for b in list(ajoutees):
+            a = next((x for x in retirees if x["id_cours"] == b["id_cours"] and x["nature"] == b["nature"] and (
+                not par_creneau or (x["date_seance"], x["heure_debut"]) == (b["date_seance"], b["heure_debut"]))), None)
+            if a is not None:
+                modifiees.append((a, b))
+                retirees.remove(a)
+                ajoutees.remove(b)
+    return Differences(ajoutees, retirees, modifiees)
+
+
+def _changements_par_enseignant(d: Differences) -> dict[int, list[str]]:
+    """Pour chaque enseignant concerné : ses séances ajoutées, annulées, retirées ou mises à jour."""
     changements: dict[int, list[str]] = defaultdict(list)
-    for k, s in apres.items():
-        a = avant.get(k)
-        if a is None:
+    annulee = lambda s: s["statut"] == "annulee"  # noqa: E731
+    for s in d.ajoutees:
+        if not annulee(s):
             changements[s["id_enseignant"]].append(f"+ Ajoutée : {_ligne(s)}")
-        elif (a["id_salle"], a["heure_fin"], a["statut"] == "annulee") != (s["id_salle"], s["heure_fin"], s["statut"] == "annulee"):
-            quoi = "Annulée" if s["statut"] == "annulee" else "Modifiée"
-            changements[s["id_enseignant"]].append(f"~ {quoi} : {_ligne(s)}")
-    for k, a in avant.items():
-        if k not in apres:
+    for a in d.retirees:
+        if not annulee(a):
             changements[a["id_enseignant"]].append(f"- Retirée : {_ligne(a)}")
-    if not changements:
-        return []
+    for a, b in d.modifiees:
+        if a["id_enseignant"] != b["id_enseignant"]:  # l'ancien et le nouvel enseignant sont prévenus
+            if not annulee(a):
+                changements[a["id_enseignant"]].append(f"- Retirée : {_ligne(a)}")
+            if not annulee(b):
+                changements[b["id_enseignant"]].append(f"+ Ajoutée : {_ligne(b)}")
+        elif annulee(b) and not annulee(a):
+            changements[b["id_enseignant"]].append(f"× Annulée : {_ligne(a)}")
+        elif annulee(a) and not annulee(b):
+            changements[b["id_enseignant"]].append(f"+ Rétablie : {_ligne(b)}")
+        elif not annulee(b) and any(a[k] != b[k] for k in _ENDROIT):
+            changements[b["id_enseignant"]].append(f"→ Modifiée : {_ligne(a)}\n    devient : {_ligne(b)}")
+    changements.pop(None, None)  # séances sans enseignant : personne à prévenir
+    return changements
 
-    ecole, semestre, version = conn.execute(
-        "SELECT ec.code_ecole, s.libelle || ' ' || s.annee_academique, e.version FROM emploi_du_temps e "
+
+def messages_de_publication(conn: psycopg.Connection, id_edt: int, d: Differences, premiere: bool) -> tuple[list[Message], int]:
+    """Un message par enseignant concerné par un changement ; renvoie aussi le nombre de ceux qui
+    n'ont pas d'adresse e-mail."""
+    changements = _changements_par_enseignant(d)
+    if not changements:
+        return [], 0
+    ecole, semestre = conn.execute(
+        "SELECT ec.code_ecole, s.libelle || ' ' || s.annee_academique FROM emploi_du_temps e "
         "JOIN semestre s USING (id_semestre, id_ecole) JOIN ecole ec USING (id_ecole) WHERE e.id_edt = %s", (id_edt,),
     ).fetchone()
     enseignants = conn.execute(
@@ -141,8 +197,8 @@ def messages_de_publication(conn: psycopg.Connection, id_edt: int, id_precedent:
         texte = "\n".join([
             f"Bonjour {nom},",
             "",
-            f"L'emploi du temps {semestre} a été publié (version {version}). "
-            + ("Vos séances :" if id_precedent is None else "Changements dans vos séances :"),
+            f"L'emploi du temps {semestre} a été publié. Vos séances :" if premiere
+            else f"L'emploi du temps {semestre} a été mis à jour. Changements dans vos séances :",
             "",
             *lignes[:40],
             *([f"… et {len(lignes) - 40} autre(s)"] if len(lignes) > 40 else []),
@@ -153,135 +209,103 @@ def messages_de_publication(conn: psycopg.Connection, id_edt: int, id_precedent:
             "La scolarité",
         ])
         out.append(Message(email, f"Emploi du temps {semestre} : {len(lignes)} séance(s) vous concernent", texte))
-    return out
+    return out, len(enseignants) - len(out)
 
 
-def messages_de_modifications(conn: psycopg.Connection, id_edt: int, ops: list[dict]) -> list[Message]:
-    """Modification en direct de la version publiée (proposition appliquée depuis l'assistant) :
-    un message par enseignant concerné, avec ce qui change pour lui."""
-    ids_cours = {(o.get("apres") or o.get("avant"))["id_cours"] for o in ops if o.get("apres") or o.get("avant")}
-    ids_salles = {x["id_salle"] for o in ops for x in (o.get("avant"), o.get("apres")) if x}
-    cours = {r[0]: r[1:] for r in conn.execute(
-        """SELECT c.id_cours, c.type_cours, c.id_enseignant, m.libelle, cl.code_classe || coalesce(' · ' || g.code_groupe, '')
-           FROM cours c JOIN matiere m USING (id_matiere, id_ecole) JOIN classe cl ON cl.id_classe = c.id_classe
-           LEFT JOIN groupe g ON g.id_groupe = c.id_groupe WHERE c.id_cours = ANY(%s)""", (list(ids_cours),))}
-    salles = dict(conn.execute("SELECT id_salle, nom_salle FROM salle WHERE id_salle = ANY(%s)", (list(ids_salles),)).fetchall())
-
-    def ligne(x: dict) -> str:
-        type_cours, _, matiere, classe = cours[x["id_cours"]]
-        return _ligne({"date_seance": date.fromisoformat(x["date_seance"]), "heure_debut": time.fromisoformat(x["heure_debut"]),
-                       "heure_fin": time.fromisoformat(x["heure_fin"]), "matiere": matiere, "type_cours": type_cours,
-                       "classe": classe, "salle": salles.get(x["id_salle"], "")})
-
-    changements: dict[int, list[str]] = defaultdict(list)
-    for o in ops:
-        a, b = o.get("avant"), o.get("apres")
-        ens = cours[(b or a)["id_cours"]][1]
-        if o["action"] == "creer":
-            changements[ens].append(f"+ Ajoutée : {ligne(b)}")
-        elif o["action"] == "supprimer":
-            changements[ens].append(f"- Retirée : {ligne(a)}")
-        elif b.get("statut") == "annulee" and a.get("statut") != "annulee":
-            changements[ens].append(f"× Annulée : {ligne(a)}")
-        elif a.get("statut") == "annulee" and b.get("statut") != "annulee":
-            changements[ens].append(f"+ Rétablie : {ligne(b)}")
-        else:
-            changements[ens].append(f"→ Déplacée : {ligne(a)}\n    devient : {ligne(b)}")
-    if not changements:
-        return []
-    ecole, semestre = conn.execute(
-        "SELECT ec.code_ecole, s.libelle || ' ' || s.annee_academique FROM emploi_du_temps e "
-        "JOIN semestre s USING (id_semestre, id_ecole) JOIN ecole ec USING (id_ecole) WHERE e.id_edt = %s", (id_edt,),
-    ).fetchone()
-    out = []
-    for id_ens, nom, email in conn.execute(
-            "SELECT id_enseignant, prenom || ' ' || nom, email FROM enseignant WHERE id_enseignant = ANY(%s)",
-            (list(changements),)).fetchall():
-        if not email:
-            continue
-        lignes = changements[id_ens]
-        texte = "\n".join([
-            f"Bonjour {nom},", "",
-            f"L'emploi du temps {semestre} vient d'être modifié :", "",
-            *lignes, "",
-            f"Votre emploi du temps à jour : {config.URL_INVITES}?ecole={ecole}&r=enseignant&id={id_ens}", "",
-            "La scolarité",
-        ])
-        out.append(Message(email, f"Emploi du temps {semestre} : {len(lignes)} séance(s) modifiée(s)", texte))
-    return out
+_INSERER_COPIE = (
+    "INSERT INTO seance (date_seance, heure_debut, heure_fin, statut, est_verrouillee, id_cours, id_enseignant, "
+    "id_salle, id_creneau, nature, id_edt) "
+    "SELECT date_seance, heure_debut, heure_fin, statut, FALSE, id_cours, id_enseignant, id_salle, id_creneau, nature, %s "
+    "FROM seance WHERE id_seance = ANY(%s) ORDER BY date_seance, heure_debut"
+)
+_REFUS = (psycopg.errors.IntegrityError, psycopg.errors.RaiseException, psycopg.errors.DataError)
 
 
-def notifier_modifications(conn: psycopg.Connection, id_edt: int, ops: list[dict]) -> dict:
-    """Après une modification en direct (déjà validée) : e-mails en tâche de fond."""
-    messages = messages_de_modifications(conn, id_edt, ops)
-    if not messages:
-        return {"statut": "personne", "destinataires": 0}
-    if not smtp_configure():
-        return {"statut": "smtp_non_configure", "destinataires": len(messages)}
-    conn.commit()  # la modification est acquise avant l'envoi
-    planifier(messages)
-    return {"statut": "en_cours", "destinataires": len(messages)}
+def _motif(e: psycopg.Error) -> str:
+    if isinstance(e, psycopg.errors.ExclusionViolation):
+        return "CD-01 : la salle est déjà occupée sur cette plage horaire"
+    return e.diag.message_primary or str(e)
 
 
-class Publication(BaseModel):
-    notifier: bool = True
+def _copier_seances(conn: psycopg.Connection, id_copie: int, ajoutees: list[dict]) -> None:
+    """Toutes d'un coup (la base revalide chacune) ; en cas de refus, une par une pour nommer la
+    séance en cause."""
+    ids = [s["id_seance"] for s in ajoutees]
+    try:
+        with conn.transaction():
+            conn.execute(_INSERER_COPIE, (id_copie, ids))
+        return
+    except _REFUS as e:
+        motif = _motif(e)
+    for s in ajoutees:
+        try:
+            with conn.transaction():
+                conn.execute(_INSERER_COPIE, (id_copie, [s["id_seance"]]))
+        except _REFUS as e:
+            raise HTTPException(409, f"Publication refusée, {_ligne(s)} : {_motif(e)}") from e
+    raise HTTPException(409, f"Publication refusée : {motif}")
 
 
 @routeur.post("/api/emplois-du-temps/{id_edt}/publier")
-def publier(id_edt: int, p: Publication, conn: psycopg.Connection = Depends(connexion),
-            _: Utilisateur = Depends(utilisateur_courant)) -> dict:
-    row = conn.execute("SELECT statut, id_semestre FROM emploi_du_temps WHERE id_edt = %s", (id_edt,)).fetchone()
+def publier(id_edt: int, conn: psycopg.Connection = Depends(connexion), u: Utilisateur = Depends(utilisateur_courant)) -> dict:
+    """Publie la version à jour : sa copie publiée, celle que lisent les invités, reçoit ses
+    différences en une seule transaction. Tout ou rien : un refus de la base ne change rien pour
+    les invités. Seuls les enseignants concernés par un changement sont prévenus."""
+    row = conn.execute("SELECT statut, id_semestre, libelle, mode_generation FROM emploi_du_temps WHERE id_edt = %s", (id_edt,)).fetchone()
     if row is None:
         raise HTTPException(404, "Emploi du temps introuvable")
-    if row[0] == "publie":
-        raise HTTPException(409, "Cette version est déjà publiée")
-    precedent = conn.execute(
-        "SELECT id_edt FROM emploi_du_temps WHERE statut = 'publie' ORDER BY version DESC LIMIT 1"
-    ).fetchone()
-    id_precedent = precedent[0] if precedent else None
+    statut, id_semestre, libelle, mode = row
+    if statut not in ("brouillon", "valide"):
+        raise HTTPException(409, "Seule la version à jour se publie")
     with conn.transaction():
-        conn.execute("UPDATE emploi_du_temps SET statut = 'archive' WHERE statut = 'publie'")
-        conn.execute("UPDATE emploi_du_temps SET statut = 'publie', date_publication = now() WHERE id_edt = %s", (id_edt,))
-
-    notification: dict = {"statut": "desactivee"}
-    if p.notifier:
-        messages = messages_de_publication(conn, id_edt, id_precedent)
-        if not messages:
-            notification = {"statut": "personne", "destinataires": 0}
-        elif not smtp_configure():
-            notification = {"statut": "smtp_non_configure", "destinataires": len(messages)}
-        else:
-            conn.commit()  # la publication est acquise avant l'envoi
-            planifier(messages)
-            notification = {"statut": "en_cours", "destinataires": len(messages)}
-    return {"id_edt": id_edt, "archive": id_precedent, "notification": notification}
-
-
-@routeur.post("/api/emplois-du-temps/{id_edt}/nouvelle-version", status_code=201)
-def nouvelle_version(id_edt: int, conn: psycopg.Connection = Depends(connexion),
-                     u: Utilisateur = Depends(utilisateur_courant)) -> dict:
-    """Version de travail (brouillon) copiée d'une version existante, publiée le plus souvent :
-    mêmes séances et mêmes contraintes. Invisible des invités jusqu'à sa publication."""
-    source = conn.execute("SELECT id_semestre, libelle FROM emploi_du_temps WHERE id_edt = %s", (id_edt,)).fetchone()
-    if source is None:
-        raise HTTPException(404, "Emploi du temps introuvable")
-    if conn.execute("SELECT 1 FROM emploi_du_temps WHERE id_semestre = %s AND statut IN ('brouillon', 'valide')",
-                    (source[0],)).fetchone():
-        raise HTTPException(409, "Une version de travail existe déjà pour ce semestre")
-    with conn.transaction():
-        nouvel, version = conn.execute(
-            "INSERT INTO emploi_du_temps (libelle, version, id_semestre, id_utilisateur) "
-            "SELECT %s, max(version) + 1, %s, %s FROM emploi_du_temps WHERE id_semestre = %s RETURNING id_edt, version",
-            (source[1], source[0], u.id_utilisateur, source[0]),
+        conn.execute("SELECT pg_advisory_xact_lock(%s)", (id_edt,))
+        copie = conn.execute(
+            "SELECT id_edt, statut FROM emploi_du_temps WHERE id_semestre = %s AND statut IN ('publie', 'archive') "
+            "ORDER BY statut = 'publie' DESC, version DESC LIMIT 1", (id_semestre,),
         ).fetchone()
+        avant = _seances(conn, copie[0] if copie else None)
+        d = comparer(avant, _seances(conn, id_edt))
+        if d.vide and (copie is None or copie[1] == "publie"):
+            raise HTTPException(409, "Rien à publier : les invités voient déjà cette version")
+
+        origine(conn, "publication")  # seule une publication peut changer la copie publiée
+        if copie is None:
+            id_copie = conn.execute(
+                "INSERT INTO emploi_du_temps (libelle, version, mode_generation, id_semestre, id_utilisateur) "
+                "SELECT %s, max(version) + 1, %s, %s, %s FROM emploi_du_temps WHERE id_semestre = %s RETURNING id_edt",
+                (libelle, mode, id_semestre, u.id_utilisateur, id_semestre),
+            ).fetchone()[0]
+        else:
+            id_copie = copie[0]
+        # Les contraintes de la version à jour valent pour la copie (la base s'en sert pour la contrôler)
+        conn.execute("DELETE FROM contrainte WHERE id_edt = %s", (id_copie,))
         conn.execute(
-            "INSERT INTO contrainte (libelle, type_contrainte, nature, poids, valeur, est_active, id_edt) "
-            "SELECT libelle, type_contrainte, nature, poids, valeur, est_active, %s FROM contrainte WHERE id_edt = %s "
-            "ORDER BY id_contrainte", (nouvel, id_edt),
+            "INSERT INTO contrainte (libelle, type_contrainte, nature, poids, valeur, est_active, parametres, date_debut, "
+            "date_fin, id_edt) "
+            "SELECT libelle, type_contrainte, nature, poids, valeur, est_active, parametres, date_debut, date_fin, %s "
+            "FROM contrainte WHERE id_edt = %s ORDER BY id_contrainte", (id_copie, id_edt),
         )
-        n = conn.execute(
-            "INSERT INTO seance (date_seance, heure_debut, heure_fin, statut, est_verrouillee, id_cours, id_salle, id_creneau, id_edt) "
-            "SELECT date_seance, heure_debut, heure_fin, statut, est_verrouillee, id_cours, id_salle, id_creneau, %s "
-            "FROM seance WHERE id_edt = %s ORDER BY date_seance, heure_debut", (nouvel, id_edt),
-        ).rowcount
-    return {"id_edt": nouvel, "version": version, "seances": n}
+        a_retirer = [s["id_seance"] for s in d.retirees] + [a["id_seance"] for a, _ in d.modifiees]
+        conn.execute("DELETE FROM seance WHERE id_seance = ANY(%s)", (a_retirer,))
+        _copier_seances(conn, id_copie, sorted(d.ajoutees + [b for _, b in d.modifiees],
+                                               key=lambda s: (s["date_seance"], s["heure_debut"], s["id_seance"])))
+        conn.execute("UPDATE emploi_du_temps SET statut = 'archive' WHERE statut = 'publie' AND id_edt <> %s", (id_copie,))
+        conn.execute("UPDATE emploi_du_temps SET statut = 'publie', date_publication = now() WHERE id_edt = %s", (id_copie,))
+        conn.execute(
+            "INSERT INTO publication_edt (id_edt, date_version, ajoutees, retirees, modifiees, id_utilisateur) "
+            "SELECT %s, (SELECT max(date_version) FROM versions_edt(%s)), %s, %s, %s, %s",
+            (id_edt, id_edt, len(d.ajoutees), len(d.retirees), len(d.modifiees), u.id_utilisateur),
+        )
+    origine(conn, "console")
+
+    messages, sans_adresse = messages_de_publication(conn, id_edt, d, not avant)
+    if not messages:
+        notification = {"statut": "personne", "destinataires": 0, "sans_adresse": sans_adresse}
+    elif not smtp_configure():
+        notification = {"statut": "smtp_non_configure", "destinataires": len(messages), "sans_adresse": sans_adresse}
+    else:
+        conn.commit()  # la publication est acquise avant l'envoi
+        planifier(messages)
+        notification = {"statut": "en_cours", "destinataires": len(messages), "sans_adresse": sans_adresse}
+    return {"id_edt": id_edt, "id_publie": id_copie, "ajoutees": len(d.ajoutees), "retirees": len(d.retirees),
+            "modifiees": len(d.modifiees), "notification": notification}

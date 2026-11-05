@@ -24,6 +24,8 @@ def main() -> None:
     p.add_argument("--du", type=date.fromisoformat, help="Début de la période (AAAA-MM-JJ)")
     p.add_argument("--au", type=date.fromisoformat, help="Fin de la période (AAAA-MM-JJ)")
     p.add_argument("--minimiser-changements", action="store_true", help="Replanification : changer le moins possible")
+    p.add_argument("--moteur", choices=["v3", "cpsat"], default="v3",
+                   help="v3 : glouton multi-essais puis CP-SAT (défaut) ; cpsat : ancien moteur à deux étages")
     p.add_argument("--ecrire", action="store_true", help="Enregistrer le résultat dans la base")
     p.add_argument("--json", action="store_true", help="Sortie JSON")
     a = p.parse_args()
@@ -39,7 +41,7 @@ def main() -> None:
             "SELECT id_classe FROM classe WHERE id_ecole = %s AND code_classe = ANY(%s)", (d.id_ecole, a.classe))}
         demande = Demande(
             perimetre=Perimetre(frozenset(filieres), frozenset(classes)),
-            du=a.du, au=a.au, minimiser_changements=a.minimiser_changements,
+            du=a.du, au=a.au, minimiser_changements=a.minimiser_changements, moteur=a.moteur,
         )
         r = generer(d, demande)
         ecrites = enregistrer(conn, a.edt, r) if a.ecrire else 0

@@ -3,6 +3,7 @@
 // (exceljs) n'est chargée qu'au moment de l'export.
 
 import type { SeanceVue } from './queries'
+import { estEpreuve, LIBELLE_NATURE } from './publics'
 import { nomEnseignant } from './queries'
 import { isoWeek, jourOf, parseDate } from './time'
 
@@ -35,8 +36,8 @@ export async function exporterExcel(seances: SeanceVue[], titre: string, nomFich
     f.addRow({
       date: parseDate(s.date_seance), jour: jourOf(s.date_seance), semaine: isoWeek(s.date_seance),
       debut: s.heure_debut, fin: s.heure_fin, duree: s.duree,
-      matiere: s.matiere.libelle, type: s.cours.type_cours, classe: s.classe.code_classe,
-      groupe: s.groupe?.code_groupe ?? '', enseignant: nomEnseignant(s.enseignant),
+      matiere: s.matiere.libelle, type: estEpreuve(s) ? LIBELLE_NATURE[s.nature!] : s.cours.type_cours, classe: s.publics.length > 1 ? s.public_affiche : s.classe.code_classe,
+      groupe: s.groupe?.code_groupe ?? '', enseignant: estEpreuve(s) ? '' : nomEnseignant(s.enseignant),
       salle: s.salle.nom_salle, site: s.site?.nom_site ?? '', statut: s.statut === 'annulee' ? 'Annulée' : 'Prévue',
     })
   }
@@ -52,7 +53,7 @@ export async function exporterExcel(seances: SeanceVue[], titre: string, nomFich
   titreRecap.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: NAVY } }
   const heures = new Map<string, Record<string, number>>()
   for (const s of liste) {
-    if (s.statut === 'annulee') continue
+    if (s.statut === 'annulee' || estEpreuve(s)) continue
     const h = heures.get(s.matiere.libelle) ?? { CM: 0, TD: 0, TP: 0 }
     h[s.cours.type_cours] += s.duree
     heures.set(s.matiere.libelle, h)

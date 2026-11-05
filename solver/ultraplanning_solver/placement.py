@@ -100,7 +100,8 @@ def placer_semaine(
             continue
         for sl in _slots(minutes(s.heure_debut), minutes(s.heure_fin)):
             occ_salle.add((s.id_salle, s.date_seance, sl))
-            occ_ens.add((c.id_enseignant, s.date_seance, sl))
+            if s.id_enseignant is not None:  # l'enseignant de la séance, pas forcément celui du cours
+                occ_ens.add((s.id_enseignant, s.date_seance, sl))
             occ_classe[c.id_classe, s.date_seance, sl].append(c)
 
     def compatible_classe(c: Cours, j: date, sl: int) -> bool:
@@ -197,12 +198,14 @@ def placer_semaine(
             jour = jour_de(p.jour_date)
             for sl in _slots(p.debut, p.fin):
                 par_salle[p.id_salle, p.jour_date, sl].append(v)
-                par_ens[c.id_enseignant, p.jour_date, sl].append(v)
+                if c.id_enseignant is not None:
+                    par_ens[c.id_enseignant, p.jour_date, sl].append(v)
                 if c.id_groupe is None:
                     entier[c.id_classe, p.jour_date, sl].append(v)
                 else:
                     par_groupe[c.id_classe, p.jour_date, sl, c.id_groupe].append(v)
-            heures_ens_jour[c.id_enseignant, p.jour_date].append(duree * v)
+            if c.id_enseignant is not None:
+                heures_ens_jour[c.id_enseignant, p.jour_date].append(duree * v)
             classe_jour[c.id_classe, p.jour_date].append(v)
             classe_site_jour[c.id_classe, p.jour_date, d.salles[p.id_salle].id_site].append(v)
             cout = (p.debut - 7 * 60) // 60  # légère préférence pour le matin
@@ -299,5 +302,6 @@ def placer_semaine(
         if choisi is None:
             non_places.append(NonPlace(c.id_cours, duree, raisons[i].split(" : ")[0], raisons[i], lundi))
             continue
-        resultat.append(Seance(c.id_cours, choisi.jour_date, _heure(choisi.debut), _heure(choisi.fin), choisi.id_salle))
+        resultat.append(Seance(c.id_cours, choisi.jour_date, _heure(choisi.debut), _heure(choisi.fin), choisi.id_salle,
+                               id_enseignant=c.id_enseignant))
     return ResultatSemaine(resultat, non_places, nom)

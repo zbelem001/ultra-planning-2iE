@@ -110,10 +110,12 @@ def planifier_semaines(
             continue
         w = lundi_de(s.date_seance)
         fixe_cours[s.id_cours, w] += s.duree
-        fixe_ens_semaine[c.id_enseignant, w] += s.duree
+        if s.id_enseignant is not None:
+            fixe_ens_semaine[s.id_enseignant, w] += s.duree
         fixe_matieres[c.id_classe, w].add(c.id_matiere)
         if du <= s.date_seance <= au:
-            fixe_ens[c.id_enseignant, w] += s.duree
+            if s.id_enseignant is not None:
+                fixe_ens[s.id_enseignant, w] += s.duree
             fixe_classe[c.id_classe, w] += s.duree
             fixe_type[d.salles[s.id_salle].id_type_salle, w] += s.duree
 
@@ -154,7 +156,7 @@ def planifier_semaines(
         # CS-04 : selon le statut de l'enseignant
         w4 = poids.get("CS-04", 0)
         if w4:
-            statut = d.enseignants[c.id_enseignant].statut
+            statut = d.enseignants[c.id_enseignant].statut if c.id_enseignant is not None else None
             if statut == "externe":
                 obj.append(3 * w4 * sum(actives))  # le moins de semaines possible
             debuts = []
@@ -205,7 +207,8 @@ def planifier_semaines(
         # Enseignant : plafond hebdomadaire et heures disponibles
         par_ens: dict[int, list] = defaultdict(list)
         for c in cours_actifs:
-            par_ens[c.id_enseignant].append(h[c.id_cours, w])
+            if c.id_enseignant is not None:
+                par_ens[c.id_enseignant].append(h[c.id_cours, w])
         for e, hs in par_ens.items():
             plafond = d.enseignants[e].nb_heures_max_semaine
             libre = int(demande.marge_enseignant * max(heures_ouvertes_enseignant(d, e, w, demande) - fixe_ens[e, w], 0))
@@ -236,7 +239,7 @@ def planifier_semaines(
                     # des groupes qui partagent un enseignant ne sont pas en parallèle
                     par_ens_type: dict[int, list] = defaultdict(list)
                     for c in liste:
-                        if c.id_groupe is not None and d.groupes[c.id_groupe].type_groupe == t:
+                        if c.id_groupe is not None and d.groupes[c.id_groupe].type_groupe == t and c.id_enseignant is not None:
                             par_ens_type[c.id_enseignant].append(h[c.id_cours, w])
                     for hs in par_ens_type.values():
                         if len(hs) > 1:

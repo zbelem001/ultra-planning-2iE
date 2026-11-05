@@ -1,7 +1,8 @@
 import { Lock } from 'lucide-react'
 import { Badge, cn } from '@/components/ui'
-import { couleurMatiere, nomEnseignant, publicCours, type SeanceVue } from '@/lib/queries'
+import { couleurMatiere, nomEnseignant, type SeanceVue } from '@/lib/queries'
 import { fmtHeure, fmtJourLong } from '@/lib/time'
+import { estEpreuve, LIBELLE_NATURE } from '@/lib/publics'
 import { TypeChip } from './EventCard'
 
 /** Vue « en liste » : séances regroupées par jour */
@@ -36,11 +37,11 @@ export function ListView({ seances, onSelect }: { seances: SeanceVue[]; onSelect
                     <span className="flex min-w-0 items-center gap-2">
                       <span className="size-2.5 shrink-0 rounded-full" style={{ backgroundColor: couleurMatiere(s.matiere.id_matiere) }} />
                       <span className={cn('truncate font-medium', annulee && 'line-through')}>{s.matiere.libelle}</span>
-                      <TypeChip type={s.cours.type_cours} />
+                      <TypeChip type={estEpreuve(s) ? LIBELLE_NATURE[s.nature!] : s.cours.type_cours} />
                       {s.est_verrouillee && <Lock className="size-3.5 text-navy" aria-label="Verrouillée" />}
                     </span>
-                    <span className="truncate text-ink-2">{nomEnseignant(s.enseignant)}</span>
-                    <span className="truncate text-ink-2">{publicCours(s.classe, s.groupe)}</span>
+                    <span className="truncate text-ink-2">{estEpreuve(s) ? '' : nomEnseignant(s.enseignant)}</span>
+                    <span className="truncate text-ink-2">{s.public_affiche}</span>
                     <span className="truncate text-ink-2">{s.salle.nom_salle}</span>
                     <span className="sm:justify-self-end">
                       {annulee ? <Badge tone="danger" dot>Annulée</Badge> : s.statut === 'validee' ? <Badge tone="success" dot>Effectuée</Badge> : <Badge tone="navy" dot>Prévue</Badge>}

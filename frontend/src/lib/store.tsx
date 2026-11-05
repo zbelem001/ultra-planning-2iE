@@ -9,9 +9,9 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { toast } from 'sonner'
 import type { Db, EmploiDuTemps } from '@/types/db'
 import { useSession } from './auth'
-import { actualiserPublic, chargerBase, ErreurApi, MODE_CONNECTE, synchroniser, type Changements } from './api'
+import { chargerBase, ErreurApi, MODE_CONNECTE, synchroniser, type Changements } from './api'
 
-const STORAGE_KEY = 'ultraplanning-db-v9'
+const STORAGE_KEY = 'ultraplanning-db-v11'
 
 type Etat = 'pret' | 'chargement' | 'erreur'
 
@@ -32,10 +32,12 @@ const Ctx = createContext<Store | null>(null)
 /** Clé primaire de chaque table (mêmes colonnes que schema_supabase.sql) */
 const CLES: Record<Exclude<keyof Db, 'ecole'>, string[]> = {
   site: ['id_site'], filiere: ['id_filiere'], classe: ['id_classe'], groupe: ['id_groupe'], matiere: ['id_matiere'],
-  enseignant: ['id_enseignant'], habilitation: ['id_habilitation'], absence_enseignant: ['id_absence'],
+  enseignant: ['id_enseignant'], absence_enseignant: ['id_absence'],
   sejour_enseignant: ['id_sejour'], creneau: ['id_creneau'], pause: ['id_pause'], jour_ferie: ['date_ferie'],
   conge: ['id_conge'], type_salle: ['id_type_salle'], salle: ['id_salle'], semestre: ['id_semestre'],
+  salle_reservation: ['id_salle_reservation'], site_trajet: ['id_site_trajet'],
   utilisateur: ['id_utilisateur'], programme: ['id_programme'], cours: ['id_cours'],
+  cours_public: ['id_cours_public'], cours_type_salle: ['id_cours_type_salle'],
   cours_seance_modele: ['id_cours', 'rang'], disponibilite: ['id_enseignant', 'id_creneau'],
   emploi_du_temps: ['id_edt'], contrainte: ['id_contrainte'], conversation: ['id_conversation'],
   prompt: ['id_prompt'], proposition: ['id_proposition'], seance: ['id_seance'],
@@ -81,8 +83,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [ecoleAChoisir, setEcoleAChoisir] = useState(false)
   const courant = useRef(db)
   const file = useRef<Promise<unknown>>(Promise.resolve())
+  const etiquette = useRef<string | null>(null) // ETag de la dernière image reçue
+  const envois = useRef(0) // synchronisations de cet onglet en cours
+  const modifieIci = useRef(false) // modification faite dans cet onglet depuis la dernière image
 
-  const appliquer = useCallback((suivant: Db) => {
+  const appliquer = useCallback((recu: Db) => {
+    const suivant = { ...vide(), ...recu } // table absente (API plus ancienne) : vide plutôt qu'une erreur
     courant.current = suivant
     setDb(suivant)
   }, [])
@@ -90,7 +96,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const recharger = useCallback(async () => {
     if (!MODE_CONNECTE) return
     try {
-      appliquer(await chargerBase(session !== null))
+      const r = await chargerBase(session !== null)
+      appliquer(r.db!)
+      etiquette.current = r.etiquette
+      modifieIci.current = false
       setEcoleAChoisir(false)
       setEtat('pret')
     } catch (e) {
@@ -107,29 +116,32 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     }
   }, [session, appliquer])
 
-  // Espace invités : l'emploi du temps suit les changements appliqués dans la console (assistant,
-  // planification) sans recharger la page. Toutes les minutes tant que la page est visible, et au
-  // retour sur l'onglet ; une réponse 304 (rien de nouveau) ne coûte presque aucune donnée.
-  const etiquette = useRef<string | null>(null)
+  // Console et espace invités suivent les changements faits ailleurs (assistant, autre planificateur,
+  // autre onglet) sans recharger la page : toutes les minutes tant que la page est visible, et au
+  // retour sur l'onglet. Une réponse 304 (rien de nouveau) ne coûte presque aucune donnée.
   useEffect(() => {
-    if (!MODE_CONNECTE || session !== null || etat !== 'pret' || ecoleAChoisir) return
+    if (!MODE_CONNECTE || etat !== 'pret' || ecoleAChoisir) return
     let actif = true
     const verifier = async () => {
-      if (document.visibilityState !== 'visible' || !navigator.onLine) return
+      // Pas pendant l'envoi de modifications de cet onglet : l'image reçue serait déjà dépassée
+      if (document.visibilityState !== 'visible' || !navigator.onLine || envois.current > 0) return
       try {
-        const premiere = etiquette.current === null
-        const r = await actualiserPublic(etiquette.current)
-        if (!actif) return
+        const r = await chargerBase(session !== null, etiquette.current)
+        if (!actif || envois.current > 0) return
         etiquette.current = r.etiquette
-        if (r.db && !premiere) {
-          appliquer(r.db)
-          toast.info('Emploi du temps mis à jour', { description: 'Des séances viennent de changer.' })
+        if (!r.db) return
+        const ailleurs = !modifieIci.current // sinon, c'est l'écho de nos propres modifications
+        modifieIci.current = false
+        appliquer(r.db)
+        if (ailleurs) {
+          toast.info(session === null ? 'Emploi du temps mis à jour' : 'Données mises à jour', {
+            description: session === null ? 'Des séances viennent de changer.' : "Changements faits ailleurs (assistant, autre planificateur ou autre onglet).",
+          })
         }
       } catch {
         /* hors connexion ou API indisponible : on réessaiera */
       }
     }
-    void verifier()
     const minuterie = window.setInterval(verifier, 60_000)
     document.addEventListener('visibilitychange', verifier)
     return () => {
@@ -169,6 +181,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     if (!MODE_CONNECTE) return
     const changements = difference(avant, apres)
     if (!changements) return
+    modifieIci.current = true
+    envois.current++
     // Envois dans l'ordre des modifications ; un refus annule l'affichage et recharge l'état réel
     file.current = file.current.then(() =>
       synchroniser(changements)
@@ -177,7 +191,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         .catch(async (e: Error) => {
           toast.error('Modification refusée par la base', { description: e.message })
           await recharger()
-        }),
+        })
+        .finally(() => { envois.current-- }),
     )
   }, [appliquer, recharger])
 

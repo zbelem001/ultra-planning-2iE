@@ -1,7 +1,7 @@
 // Client de l'API (backend FastAPI). Mode connecté seulement si VITE_API_URL est défini ;
 // sinon l'application fonctionne sur son jeu de données simulé.
 
-import type { Db } from '@/types/db'
+import type { Db, Seance } from '@/types/db'
 import { logout, sessionCourante } from './auth'
 import { obtenirSupabase, sessionSupabasePresente, SUPABASE_ACTIF } from './supabase'
 
@@ -40,7 +40,7 @@ async function requete(chemin: string, options: RequestInit = {}): Promise<Respo
   }
   // Session Supabase expirée ou compte désactivé : retour à l'espace invités
   if (rep.status === 401 && SUPABASE_ACTIF && sessionCourante() !== null) logout()
-  if (!rep.ok) {
+  if (!rep.ok && rep.status !== 304) { // 304 : rien de nouveau depuis l'étiquette envoyée (If-None-Match)
     let message = `Erreur ${rep.status}`
     try {
       const corps = await rep.json()
@@ -68,13 +68,12 @@ export const ECOLE_PUBLIQUE: string =
 
 const CHEMIN_PUBLIC = `/api/base/public${ECOLE_PUBLIQUE ? `?ecole=${encodeURIComponent(ECOLE_PUBLIQUE)}` : ''}`
 
-export const chargerBase = (complete: boolean) => appel<Db>(complete ? '/api/base' : CHEMIN_PUBLIC)
-
-/** Image publique si elle a changé depuis l'étiquette `connue`, sinon null (réponse 304 : presque aucune donnée) */
-export async function actualiserPublic(connue: string | null): Promise<{ db: Db | null; etiquette: string | null }> {
-  const rep = await requete(CHEMIN_PUBLIC, { cache: 'no-cache' })
+/** Image de la base (console : complète ; invités : publique) et son étiquette ETag. Avec `connue`
+ *  (étiquette déjà en main), db vaut null si rien n'a changé : réponse 304, presque aucune donnée. */
+export async function chargerBase(complete: boolean, connue: string | null = null): Promise<{ db: Db | null; etiquette: string | null }> {
+  const rep = await requete(complete ? '/api/base' : CHEMIN_PUBLIC, connue ? { headers: { 'If-None-Match': connue } } : {})
   const etiquette = rep.headers.get('ETag')
-  if (etiquette && etiquette === connue) return { db: null, etiquette }
+  if (rep.status === 304 || (connue !== null && etiquette === connue)) return { db: null, etiquette: etiquette ?? connue }
   return { db: (await rep.json()) as Db, etiquette }
 }
 
@@ -85,12 +84,50 @@ export const synchroniser = (tables: Changements) =>
 
 export interface ResultatPublication {
   id_edt: number
-  archive: number | null
-  notification: { statut: 'desactivee' | 'personne' | 'smtp_non_configure' | 'en_cours'; destinataires?: number }
+  id_publie: number
+  ajoutees: number
+  retirees: number
+  modifiees: number
+  notification: { statut: 'personne' | 'smtp_non_configure' | 'en_cours'; destinataires: number; sans_adresse: number }
 }
-/** Publie une version (la précédente est archivée) et prévient par e-mail les enseignants concernés */
-export const publierEdt = (id_edt: number, notifier: boolean) =>
-  post<ResultatPublication>(`/api/emplois-du-temps/${id_edt}/publier`, { notifier })
+/** Publie la version à jour et prévient par e-mail les seuls enseignants concernés par un changement */
+export const publierEdt = (id_edt: number) => post<ResultatPublication>(`/api/emplois-du-temps/${id_edt}/publier`)
+
+// --- historique de la version à jour ------------------------------------------------
+
+export interface VersionEdt {
+  numero: number
+  date: string
+  origine: string
+  origine_libelle: string
+  auteur: string | null
+  titre: string
+  ajoutees: number
+  retirees: number
+  modifiees: number
+  /** Date de sa dernière publication, si elle a été publiée */
+  publiee_le: string | null
+  /** C'est la version que voient les invités */
+  en_ligne: boolean
+}
+export interface ResultatRestauration {
+  numero: number
+  date: string
+  ajoutees: number
+  retirees: number
+  modifiees: number
+  inchangees: number
+  refusees: number
+  exemples: { seance: string; motif: string }[]
+  appliquee: boolean
+}
+export const versionsEdt = (id_edt: number, avant?: number) =>
+  appel<{ total: number; versions: VersionEdt[] }>(`/api/emplois-du-temps/${id_edt}/versions?limite=100${avant ? `&avant=${avant}` : ''}`)
+export const seancesVersion = (id_edt: number, numero: number) =>
+  appel<{ numero: number; date: string; seances: Seance[]; hors_referentiel: number }>(`/api/emplois-du-temps/${id_edt}/versions/${numero}`)
+/** appliquer faux : aperçu, rien n'est écrit */
+export const restaurerVersion = (id_edt: number, numero: number, appliquer: boolean) =>
+  post<ResultatRestauration>(`/api/emplois-du-temps/${id_edt}/versions/${numero}/restaurer`, { appliquer })
 
 // --- comptes de l'école (invitations par l'administrateur) --------------------------
 
@@ -111,10 +148,6 @@ export const comptesEcole = {
   modifier: (id: number, c: Partial<Pick<CompteEcole, 'email' | 'login' | 'role' | 'est_actif'>>) =>
     patch<CompteEcole & { envoi: 'invitation' | null }>(`/api/ecole/comptes/${id}`, c),
 }
-
-/** Version de travail (brouillon) copiée d'une version publiée ou archivée */
-export const nouvelleVersion = (id_edt: number) =>
-  post<{ id_edt: number; version: number; seances: number }>(`/api/emplois-du-temps/${id_edt}/nouvelle-version`)
 
 /** Écoles actives (espace invités : choix de l'école quand l'adresse ne la précise pas) */
 export const ecoles = () => appel<{ code_ecole: string; nom: string; ville: string | null }[]>('/api/ecoles')
@@ -142,6 +175,7 @@ export interface SeanceGeneree {
   heure_debut: string
   heure_fin: string
   id_salle: number
+  id_enseignant: number | null
 }
 
 export interface TacheGeneration {
@@ -197,7 +231,7 @@ export async function lirePieceJointe(f: File): Promise<PieceJointe> {
 
 export async function envoyerMessageFlux(
   id_edt: number, texte: string, id_conversation: number | null, surEtape: (e: EtapeAssistant) => void,
-  piece_jointe?: PieceJointe,
+  piece_jointe?: PieceJointe, surTexte?: (morceau: string | null) => void,
 ): Promise<ReponseAssistant> {
   const rep = await requete('/api/assistant/messages/flux', {
     method: 'POST', body: JSON.stringify({ id_edt, texte, id_conversation, piece_jointe }),
@@ -216,6 +250,8 @@ export async function envoyerMessageFlux(
       if (!bloc.startsWith('data: ')) continue
       const ev = JSON.parse(bloc.slice(6))
       if (ev.type === 'etape') surEtape({ etape: ev.etape, detail: ev.detail })
+      else if (ev.type === 'texte') surTexte?.(ev.morceau)
+      else if (ev.type === 'efface') surTexte?.(null) // ce texte n'était pas la réponse
       else if (ev.type === 'erreur') throw new ErreurApi(0, ev.detail)
       else if (ev.type === 'fin') return ev as ReponseAssistant
     }
@@ -229,14 +265,13 @@ export interface ResultatApplication {
   seances_supprimees: number
   seances_creees: number
   seances_modifiees: number
-  /** Ajouts au référentiel */
+  /** Changements du référentiel */
   nature: 'seances' | 'referentiel'
   lignes_ajoutees?: number
+  lignes_modifiees?: number
+  lignes_supprimees?: number
   lignes_deja_presentes?: number
-  /** Version publiée : le changement est déjà visible dans l'espace invités */
-  en_direct: boolean
-  notification: ResultatPublication['notification'] | null
-  /** Génération lancée après les ajouts au référentiel : nouvelle proposition de séances */
+  /** Génération ou replanification lancée après les changements du référentiel : nouvelle proposition de séances */
   suite: { id_proposition: number | null; message: string } | null
 }
 export const appliquerProposition = (id: number) => post<ResultatApplication>(`/api/propositions/${id}/appliquer`)

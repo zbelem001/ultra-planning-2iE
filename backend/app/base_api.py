@@ -5,7 +5,7 @@ Le frontend manipule la base comme un objet { table: lignes[] } (types/db.ts).
 - GET /api/base/public?ecole=CODE : ce que voit un invité de cette école ;
 - POST /api/base/sync : ajouts, modifications et suppressions faits dans
   l'interface, appliqués dans une transaction. Les déclencheurs de la base
-  revalident chaque ligne (CD-01 à CD-14, programme, habilitations...) : une
+  revalident chaque ligne (CD-01 à CD-14, programme...) : une
   modification refusée renvoie 409 avec le motif, et rien n'est écrit.
 
 Les noms de tables et de colonnes sont contrôlés à partir du catalogue de la
@@ -39,9 +39,11 @@ routeur = APIRouter()
 
 # Ordre compatible avec les clés étrangères (on supprime dans l'ordre inverse)
 TABLES = [
-    "site", "type_salle", "filiere", "classe", "groupe", "matiere", "enseignant", "habilitation",
+    "site", "type_salle", "filiere", "classe", "groupe", "matiere", "enseignant",
     "absence_enseignant", "sejour_enseignant", "creneau", "pause", "jour_ferie", "conge", "salle",
-    "semestre", "utilisateur", "programme", "cours", "cours_seance_modele", "disponibilite",
+    "salle_reservation", "site_trajet",
+    "semestre", "utilisateur", "programme", "cours", "cours_public", "cours_type_salle", "cours_seance_modele",
+    "disponibilite",
     "emploi_du_temps", "contrainte", "conversation", "prompt", "proposition", "seance",
 ]
 CLES = {
@@ -54,7 +56,7 @@ CLES = {
     "emploi_du_temps": ["id_edt"],
 }
 PUBLIQUES = {"site", "type_salle", "filiere", "classe", "groupe", "matiere", "creneau", "pause", "jour_ferie",
-             "conge", "salle", "semestre", "programme", "cours", "cours_seance_modele"}
+             "conge", "salle", "semestre", "programme", "cours", "cours_public", "cours_seance_modele"}
 
 
 def cle(table: str) -> list[str]:
@@ -85,24 +87,54 @@ def _colonnes(conn: psycopg.Connection) -> dict[str, list[str]]:
     return out
 
 
-def _lire(conn: psycopg.Connection, table: str, colonnes: list[str], ou: sql.Composable | None = None, params=()) -> list[dict]:
+def _lecture(table: str, colonnes: list[str], ou: sql.Composable | None = None) -> sql.Composable:
     requete = sql.SQL("SELECT {} FROM {}").format(sql.SQL(", ").join(map(sql.Identifier, colonnes)), sql.Identifier(table))
     if ou is not None:
         requete += sql.SQL(" WHERE ") + ou
-    requete += sql.SQL(" ORDER BY ") + sql.SQL(", ").join(map(sql.Identifier, cle(table)))
-    cur = conn.execute(requete, params)
+    return requete + sql.SQL(" ORDER BY ") + sql.SQL(", ").join(map(sql.Identifier, cle(table)))
+
+
+def _lignes(cur: psycopg.Cursor, colonnes: list[str]) -> list[dict]:
     return [dict(zip(colonnes, map(_json, r))) for r in cur.fetchall()]
 
 
+def _lire(conn: psycopg.Connection, table: str, colonnes: list[str], ou: sql.Composable | None = None, params=()) -> list[dict]:
+    return _lignes(conn.execute(_lecture(table, colonnes, ou), params), colonnes)
+
+
+def _lire_plusieurs(conn: psycopg.Connection, demandes: dict[str, tuple]) -> dict[str, list[dict]]:
+    """Plusieurs lectures en un seul aller-retour : sur un réseau lent, ce sont les allers-retours
+    qui coûtent. demandes : {clé: (table, colonnes, condition, paramètres)}."""
+    with conn.pipeline():
+        curseurs = {k: (conn.execute(_lecture(t, cols, ou), params), cols) for k, (t, cols, ou, params) in demandes.items()}
+    return {k: _lignes(cur, cols) for k, (cur, cols) in curseurs.items()}
+
+
+def _etiquetee(request: Request, image: dict, cache: str) -> Response:
+    """JSON compact avec étiquette ETag : 304 vide si le client a déjà cette image (If-None-Match).
+    La console et l'espace invités revérifient ainsi toutes les minutes pour presque rien."""
+    contenu = json.dumps(image, ensure_ascii=False, separators=(",", ":")).encode()
+    etiquette = '"' + hashlib.sha256(contenu).hexdigest()[:20] + '"'
+    entetes = {"ETag": etiquette, "Cache-Control": cache}
+    if etiquette in request.headers.get("if-none-match", ""):
+        return Response(status_code=304, headers=entetes)
+    return Response(contenu, media_type="application/json", headers=entetes)
+
+
 @routeur.get("/api/base")
-def base_complete(conn: psycopg.Connection = Depends(connexion), u: Utilisateur = Depends(utilisateur_courant)) -> dict:
+def base_complete(request: Request, conn: psycopg.Connection = Depends(connexion),
+                  u: Utilisateur = Depends(utilisateur_courant)) -> Response:
+    return _etiquetee(request, _image_complete(conn, u), "private, no-cache")  # propre au compte
+
+
+def _image_complete(conn: psycopg.Connection, u: Utilisateur) -> dict:
     cols = _colonnes(conn)
-    out = {t: _lire(conn, t, cols[t]) for t in TABLES if t != "utilisateur"}
+    out = _lire_plusieurs(conn, {
+        t: (t, cols[t], sql.SQL("id_ecole = %s"), (u.id_ecole,)) if t == "utilisateur" else (t, cols[t], None, ())
+        for t in TABLES
+    })
     # Seulement les comptes de l'école, sans mot de passe ni lien d'authentification
-    out["utilisateur"] = [
-        {**x, "mot_de_passe": None, "auth_id": None}
-        for x in _lire(conn, "utilisateur", cols["utilisateur"], sql.SQL("id_ecole = %s"), (u.id_ecole,))
-    ]
+    out["utilisateur"] = [{**x, "mot_de_passe": None, "auth_id": None} for x in out["utilisateur"]]
     return {t: out[t] for t in TABLES} | {"ecole": _ecole_courante(conn)}
 
 
@@ -133,27 +165,20 @@ def base_publique(request: Request, ecole: str | None = None, conn: psycopg.Conn
     Économe en données : JSON compact, compressé (GZipMiddleware), et étiquette ETag. Le navigateur
     la renvoie à la visite suivante ; tant que rien n'a été publié ou modifié, la réponse est un
     304 vide et il réutilise sa copie."""
-    contenu = json.dumps(_image_publique(conn, ecole), ensure_ascii=False, separators=(",", ":")).encode()
-    etiquette = '"' + hashlib.sha256(contenu).hexdigest()[:20] + '"'
-    entetes = {"ETag": etiquette, "Cache-Control": "no-cache"}  # toujours revalider, jamais tout retélécharger
-    if etiquette in request.headers.get("if-none-match", ""):
-        return Response(status_code=304, headers=entetes)
-    return Response(contenu, media_type="application/json", headers=entetes)
+    return _etiquetee(request, _image_publique(conn, ecole), "no-cache")  # toujours revalider
 
 
 def _image_publique(conn: psycopg.Connection, ecole: str | None) -> dict:
     entrer_ecole(conn, _ecole_publique(conn, ecole))
     cols = _colonnes(conn)
-    out: dict[str, list] = {t: (_lire(conn, t, cols[t]) if t in PUBLIQUES else []) for t in TABLES}
-    out["enseignant"] = [
-        {**e, "email": None, "telephone": None, "nb_heures_max_semaine": None}
-        for e in _lire(conn, "enseignant", cols["enseignant"])
-    ]
-    out["emploi_du_temps"] = _lire(conn, "emploi_du_temps", cols["emploi_du_temps"], sql.SQL("statut = 'publie'"))
-    out["seance"] = _lire(
-        conn, "seance", cols["seance"],
-        sql.SQL("id_edt IN (SELECT id_edt FROM emploi_du_temps WHERE statut = 'publie')"),
-    )
+    lu = _lire_plusieurs(conn, {
+        **{t: (t, cols[t], None, ()) for t in PUBLIQUES},
+        "enseignant": ("enseignant", cols["enseignant"], None, ()),
+        "emploi_du_temps": ("emploi_du_temps", cols["emploi_du_temps"], sql.SQL("statut = 'publie'"), ()),
+        "seance": ("seance", cols["seance"], sql.SQL("id_edt IN (SELECT id_edt FROM emploi_du_temps WHERE statut = 'publie')"), ()),
+    })
+    out: dict[str, list] = {t: lu.get(t, []) for t in TABLES}
+    out["enseignant"] = [{**e, "email": None, "telephone": None, "nb_heures_max_semaine": None} for e in lu["enseignant"]]
     out["ecole"] = _ecole_courante(conn)
     return out
 
@@ -228,6 +253,9 @@ def synchroniser(s: Synchronisation, conn: psycopg.Connection = Depends(connexio
                         if ligne.get(col) in renumerotes[ref]:
                             ligne[col] = renumerotes[ref][ligne[col]]
                     ligne["id_ecole"] = u.id_ecole
+                    if t == "emploi_du_temps":  # seul POST .../publier publie
+                        ligne.pop("statut", None)
+                        ligne.pop("date_publication", None)
                     champs = [c for c in cols[t] if c in ligne]
                     pk = cle(t)
                     if t in identites and _identifiant_d_une_autre_ecole(conn, t, pk[0], ligne.get(pk[0])):

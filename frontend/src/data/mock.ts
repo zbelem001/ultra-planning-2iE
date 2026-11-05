@@ -4,7 +4,7 @@
 
 import type {
   AbsenceEnseignant, Classe, Conge, Contrainte, Conversation, Cours, CoursSeanceModele, Creneau, Db, Disponibilite, EmploiDuTemps,
-  Enseignant, Filiere, Groupe, Habilitation, Jour, JourFerie, Matiere, Pause, Programme, Prompt, Salle, Seance,
+  Enseignant, Filiere, Groupe, Jour, JourFerie, Matiere, Pause, Programme, Prompt, Salle, Seance,
   SejourEnseignant, Semestre, Site, TypeSalle, Utilisateur,
 } from '@/types/db'
 import { expandWeek } from '@/lib/generator'
@@ -122,16 +122,6 @@ const enseignant: Enseignant[] = (
   id_site: matricule === 'ENS-008' ? SI.ouaga : SI.kamb,
 }))
 
-// Habilitations : enseignant, matière, type de cours (CD-06)
-// matières : 1 ALGO, 2 BD, 3 RES, 4 WEB, 5 SE, 6 PROBA, 7 ML, 8 ANG
-const habilitation: Habilitation[] = (
-  [
-    [1, 1, 'CM'], [1, 5, 'CM'], [2, 1, 'TD'], [2, 1, 'TP'], [3, 3, 'TP'], [3, 3, 'CM'],
-    [4, 2, 'CM'], [4, 2, 'TD'], [5, 4, 'CM'], [6, 7, 'CM'], [6, 7, 'TP'], [6, 6, 'CM'],
-    [7, 3, 'TP'], [7, 8, 'CM'], [8, 3, 'TP'], [8, 6, 'TD'], [9, 7, 'CM'], [9, 7, 'TP'],
-  ] as const
-).map(([id_enseignant, id_matiere, type_cours], i) => ({ id_habilitation: i + 1, id_enseignant, id_matiere, type_cours }))
-
 // Séjours des intervenants externes (CD-06)
 const sejour_enseignant: SejourEnseignant[] = [
   { id_sejour: 1, id_enseignant: 9, date_debut: '2026-11-09', date_fin: '2026-11-28', commentaire: "Mission d'enseignement, M2IA" },
@@ -214,7 +204,7 @@ const CONTRAINTES_TYPE: Omit<Contrainte, 'id_contrainte' | 'id_edt'>[] = (
     ['CD-03', 'dure', 0, null, 'Une classe suit une seule séance à la fois (sauf groupes du même type)'],
     ['CD-04', 'dure', 0, null, 'Capacité de la salle ≥ effectif'],
     ['CD-05', 'dure', 0, null, 'Type de salle conforme au type exigé'],
-    ['CD-06', 'dure', 0, null, 'Enseignant habilité, présent et disponible'],
+    ['CD-06', 'dure', 0, null, 'Enseignant présent et disponible'],
     ['CD-07', 'dure', 0, null, 'Cours conforme au programme de la classe'],
     ['CD-08', 'dure', 0, null, 'Volume horaire du cours non dépassé'],
     ['CD-09', 'dure', 0, null, 'Date dans le semestre, hors jours fériés et congés'],
@@ -307,6 +297,7 @@ function buildSeances(db: Db): Seance[] {
       statut: 'planifiee',
       est_verrouillee: false,
       id_cours,
+      id_enseignant: cours.find((c) => c.id_cours === id_cours)!.id_enseignant,
       id_salle,
       id_creneau: cr(jour, debut),
       id_edt,
@@ -328,7 +319,8 @@ function buildSeances(db: Db): Seance[] {
 
 export function createMockDb(): Db {
   const db: Db = {
-    site, filiere, classe, groupe, matiere, enseignant, habilitation, absence_enseignant, sejour_enseignant, creneau, pause, jour_ferie, conge, type_salle, salle,
+    site, filiere, classe, groupe, matiere, enseignant, absence_enseignant, sejour_enseignant, creneau, pause, jour_ferie, conge, type_salle, salle,
+    salle_reservation: [], site_trajet: [], cours_public: [], cours_type_salle: [],
     semestre, utilisateur, programme, cours, cours_seance_modele, disponibilite, emploi_du_temps, contrainte, conversation, prompt, proposition: [],
     seance: [],
   }

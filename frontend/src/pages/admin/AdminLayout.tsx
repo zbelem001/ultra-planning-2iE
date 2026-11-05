@@ -1,5 +1,5 @@
 import {
-  CalendarCog, CalendarRange, Database, Eye, LayoutDashboard, LogOut, MessageSquareText, RotateCcw, Send, Sparkles, UserRoundCheck,
+  CalendarCog, CalendarRange, Database, Eye, LayoutDashboard, LogOut, MessageSquareText, RotateCcw, Sparkles, UserRoundCheck,
 } from 'lucide-react'
 import { useState } from 'react'
 import { Link, Navigate, NavLink, Outlet, useLocation } from 'react-router-dom'
@@ -7,6 +7,7 @@ import { toast } from 'sonner'
 import { Badge, Button, cn, Dialog, Logo } from '@/components/ui'
 import { logout, useSession } from '@/lib/auth'
 import { ecoleCourante, edtTravail, useStore } from '@/lib/store'
+import { aPublier } from '@/lib/versions'
 import Demarrage from './Demarrage'
 
 const NAV = [
@@ -15,16 +16,8 @@ const NAV = [
   { to: '/admin/disponibilites', label: 'Disponibilités', icon: <UserRoundCheck /> },
   { to: '/admin/generation', label: 'Génération', icon: <Sparkles /> },
   { to: '/admin/assistant', label: 'Assistant IA', icon: <MessageSquareText /> },
-  { to: '/admin/publication', label: 'Publication', icon: <Send /> },
   { to: '/admin/referentiel', label: 'Référentiel', icon: <Database /> },
 ]
-
-export const STATUT_EDT: Record<string, { label: string; tone: 'neutral' | 'navy' | 'success' | 'warning' }> = {
-  brouillon: { label: 'Brouillon', tone: 'warning' },
-  valide: { label: 'Validé', tone: 'navy' },
-  publie: { label: 'Publié', tone: 'success' },
-  archive: { label: 'Archivé', tone: 'neutral' },
-}
 
 export default function AdminLayout() {
   const session = useSession()
@@ -37,7 +30,7 @@ export default function AdminLayout() {
   const edt = edtTravail(db)
   // Nouvelle école : ni semestre ni emploi du temps encore
   if (!edt) return <Demarrage />
-  const st = STATUT_EDT[edt.statut]
+  const nonPubliees = aPublier(db, edt).total
 
   return (
     <div className="flex min-h-dvh w-full flex-col px-4 sm:px-8">
@@ -67,10 +60,11 @@ export default function AdminLayout() {
           </ul>
         </nav>
         <div className="ml-auto flex items-center gap-2">
-          <Link to="/admin/publication" className="hidden items-center gap-2 rounded-full bg-white/70 py-1 pr-1 pl-3 text-xs ring-1 ring-white sm:flex" title="Emploi du temps de travail">
+          <Link to="/admin/planification" className="hidden items-center gap-2 rounded-full bg-white/70 py-1 pr-1 pl-3 text-xs ring-1 ring-white sm:flex" title="Version à jour : publier depuis la page Planification">
             <CalendarCog className="size-4 text-navy" />
-            <span className="font-medium">v{edt.version}</span>
-            <Badge tone={st.tone} dot>{st.label}</Badge>
+            {nonPubliees
+              ? <Badge tone="warning" dot>{nonPubliees} à publier</Badge>
+              : <Badge tone="success" dot>Publié</Badge>}
           </Link>
           <Link to="/" className="press grid size-10 place-items-center rounded-full bg-white/80 ring-1 ring-line hover:bg-white" title="Voir l'espace invités" aria-label="Voir l'espace invités">
             <Eye className="size-4" />

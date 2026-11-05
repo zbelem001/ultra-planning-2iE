@@ -1,0 +1,416 @@
+-- =====================================================================
+--  Migration 12 -> 13 : examens et rattrapages.
+--  À exécuter une fois sur une base en version 12 (Supabase > SQL Editor),
+--  après migrations/012_versions_edt.sql. Sans danger si on la relance.
+--
+--   * SEANCE.nature : cours (toutes les séances existantes), examen, rattrapage ;
+--   * une épreuve dure de 2 h à 3 h, sans enseignant ; elle ne compte ni dans le
+--     volume ni dans le rythme du cours ni dans les matières de la semaine ;
+--   * elle concerne toute la classe et peut avoir lieu pendant un congé de type
+--     « examens » ; plusieurs épreuves peuvent partager une salle assez grande ;
+--   * dans un module, le rattrapage vient toujours après l'examen.
+-- =====================================================================
+
+BEGIN;
+SET LOCAL search_path = public, extensions;
+
+ALTER TABLE seance ADD COLUMN IF NOT EXISTS nature TEXT NOT NULL DEFAULT 'cours';
+ALTER TABLE seance DROP CONSTRAINT IF EXISTS seance_nature_check;
+ALTER TABLE seance ADD CONSTRAINT seance_nature_check CHECK (nature IN ('cours','examen','rattrapage'));
+ALTER TABLE seance DROP CONSTRAINT IF EXISTS ck_seance_epreuve_duree;
+ALTER TABLE seance ADD CONSTRAINT ck_seance_epreuve_duree
+    CHECK (nature = 'cours' OR heure_fin - heure_debut <= INTERVAL '3 hours');
+ALTER TABLE seance DROP CONSTRAINT IF EXISTS ck_seance_epreuve_sans_enseignant;
+ALTER TABLE seance ADD CONSTRAINT ck_seance_epreuve_sans_enseignant
+    CHECK (nature = 'cours' OR id_enseignant IS NULL);
+
+-- Une salle : un cours à la fois ; jamais un cours et une épreuve ; des épreuves peuvent la partager
+ALTER TABLE seance DROP CONSTRAINT IF EXISTS ex_seance_salle;
+ALTER TABLE seance ADD CONSTRAINT ex_seance_salle
+    EXCLUDE USING gist (id_edt WITH =, id_salle WITH =, plage WITH &&)
+    WHERE (statut <> 'annulee' AND nature = 'cours');
+ALTER TABLE seance DROP CONSTRAINT IF EXISTS ex_seance_salle_epreuve;
+ALTER TABLE seance ADD CONSTRAINT ex_seance_salle_epreuve
+    EXCLUDE USING gist (id_edt WITH =, id_salle WITH =, plage WITH &&,
+                        (CASE WHEN nature = 'cours' THEN 1 ELSE 0 END) WITH <>)
+    WHERE (statut <> 'annulee');
+
+CREATE OR REPLACE FUNCTION publics_seance(p_id_cours BIGINT, p_nature TEXT)
+RETURNS TABLE (id_classe BIGINT, id_groupe BIGINT)
+LANGUAGE sql STABLE
+SET search_path = public
+AS $$
+    SELECT DISTINCT p.id_classe, CASE WHEN p_nature = 'cours' THEN p.id_groupe END
+    FROM publics_du_cours(p_id_cours) p
+$$;
+
+CREATE OR REPLACE FUNCTION garder_examen(p_id_edt BIGINT, p_id_seance BIGINT, p_id_cours BIGINT)
+RETURNS VOID
+LANGUAGE plpgsql
+SET search_path = public
+AS $$
+BEGIN
+    IF current_user <> 'ultraplanning_app'
+       OR coalesce(current_setting('app.origine', true), '') IN ('publication', 'restauration') THEN
+        RETURN;
+    END IF;
+    IF EXISTS (SELECT 1 FROM seance r JOIN cours cr ON cr.id_cours = r.id_cours JOIN cours c ON c.id_cours = p_id_cours
+               WHERE r.id_edt = p_id_edt AND r.nature = 'rattrapage' AND r.statut <> 'annulee'
+                 AND cr.id_matiere = c.id_matiere AND cr.id_classe = c.id_classe)
+       AND NOT EXISTS (SELECT 1 FROM seance x JOIN cours cx ON cx.id_cours = x.id_cours JOIN cours c ON c.id_cours = p_id_cours
+                       WHERE x.id_edt = p_id_edt AND x.nature = 'examen' AND x.statut <> 'annulee' AND x.id_seance <> p_id_seance
+                         AND cx.id_matiere = c.id_matiere AND cx.id_classe = c.id_classe) THEN
+        RAISE EXCEPTION 'Ce module a un rattrapage : retirez-le avant son examen'
+            USING ERRCODE = 'check_violation';
+    END IF;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION verifier_seance()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SET search_path = public
+AS $$
+DECLARE
+    v_cours     cours%ROWTYPE;
+    v_classe    classe%ROWTYPE;
+    v_salle     salle%ROWTYPE;
+    v_creneau   creneau%ROWTYPE;
+    v_semestre  semestre%ROWTYPE;
+    v_effectif  INTEGER;
+    v_deja      NUMERIC;
+    v_duree     NUMERIC;
+    v_plage     TSRANGE;
+    v_classe_pub BIGINT;
+    v_max_mat   NUMERIC;
+    v_nb_mat    INTEGER;
+    v_semaine   NUMERIC;
+BEGIN
+    -- Une séance annulée n'est soumise à aucun contrôle.
+    IF NEW.statut = 'annulee' THEN
+        IF TG_OP = 'UPDATE' AND OLD.nature = 'examen' AND OLD.statut <> 'annulee' THEN
+            PERFORM garder_examen(OLD.id_edt, OLD.id_seance, OLD.id_cours);
+        END IF;
+        RETURN NEW;
+    END IF;
+
+    -- Un seul enregistrement à la fois par emploi du temps : sans ce verrou,
+    -- deux transactions simultanées ne verraient pas leurs séances
+    -- respectives et pourraient contourner CD-02 / CD-03.
+    PERFORM pg_advisory_xact_lock(NEW.id_edt);
+
+    SELECT * INTO v_cours    FROM cours    WHERE id_cours    = NEW.id_cours;
+    SELECT * INTO v_classe   FROM classe   WHERE id_classe   = v_cours.id_classe;
+    SELECT * INTO v_salle    FROM salle    WHERE id_salle    = NEW.id_salle;
+    SELECT * INTO v_creneau  FROM creneau  WHERE id_creneau  = NEW.id_creneau;
+    SELECT * INTO v_semestre FROM semestre WHERE id_semestre = v_cours.id_semestre;
+
+    v_duree := EXTRACT(EPOCH FROM (NEW.heure_fin - NEW.heure_debut)) / 3600;
+    v_plage := tsrange(NEW.date_seance + NEW.heure_debut,
+                       NEW.date_seance + NEW.heure_fin);
+
+    -- CD-10 : la séance est alignée sur la grille de créneaux
+    IF NEW.heure_debut <> v_creneau.heure_debut THEN
+        RAISE EXCEPTION 'CD-10 : l''heure de début (%) ne correspond pas au créneau de début choisi (%)',
+            NEW.heure_debut, v_creneau.heure_debut
+            USING ERRCODE = 'check_violation';
+    END IF;
+
+    IF NOT EXISTS (SELECT 1 FROM creneau c
+                   WHERE c.jour = v_creneau.jour AND c.heure_fin = NEW.heure_fin) THEN
+        RAISE EXCEPTION 'CD-10 : l''heure de fin (%) ne correspond à aucun créneau de la grille', NEW.heure_fin
+            USING ERRCODE = 'check_violation';
+    END IF;
+
+    -- CD-11 : une séance ne peut pas chevaucher une pause (déjeuner)
+    IF EXISTS (SELECT 1 FROM pause p
+               WHERE NEW.heure_debut < p.heure_fin
+                 AND NEW.heure_fin   > p.heure_debut) THEN
+        RAISE EXCEPTION 'CD-11 : la séance chevauche la pause (%)',
+            (SELECT p.libelle FROM pause p
+             WHERE NEW.heure_debut < p.heure_fin AND NEW.heure_fin > p.heure_debut
+             LIMIT 1)
+            USING ERRCODE = 'check_violation';
+    END IF;
+
+    -- CD-12 : la salle n'est pas marquée indisponible
+    IF NOT v_salle.est_disponible THEN
+        RAISE EXCEPTION 'CD-12 : la salle % est marquée indisponible', v_salle.nom_salle
+            USING ERRCODE = 'check_violation';
+    END IF;
+
+    -- CD-09 : le cours appartient au semestre de l'emploi du temps
+    IF v_cours.id_semestre <> (SELECT e.id_semestre FROM emploi_du_temps e WHERE e.id_edt = NEW.id_edt) THEN
+        RAISE EXCEPTION 'CD-09 : le cours n''appartient pas au semestre de cet emploi du temps'
+            USING ERRCODE = 'check_violation';
+    END IF;
+
+    -- CD-09 : date dans le semestre, bon jour de la semaine, jour non férié
+    IF NEW.date_seance NOT BETWEEN v_semestre.date_debut AND v_semestre.date_fin THEN
+        RAISE EXCEPTION 'CD-09 : la date est en dehors des dates du semestre'
+            USING ERRCODE = 'check_violation';
+    END IF;
+
+    IF v_creneau.jour <> (ARRAY['Lundi','Mardi','Mercredi','Jeudi',
+                                'Vendredi','Samedi','Dimanche'])
+                         [EXTRACT(ISODOW FROM NEW.date_seance)::INT] THEN
+        RAISE EXCEPTION 'CD-09 : la date ne correspond pas au jour du créneau (%)', v_creneau.jour
+            USING ERRCODE = 'check_violation';
+    END IF;
+
+    IF EXISTS (SELECT 1 FROM jour_ferie f WHERE f.date_ferie = NEW.date_seance) THEN
+        RAISE EXCEPTION 'CD-09 : le % est un jour férié (%)', NEW.date_seance,
+            (SELECT f.libelle FROM jour_ferie f WHERE f.date_ferie = NEW.date_seance)
+            USING ERRCODE = 'check_violation';
+    END IF;
+
+    -- Une période d'examens est fermée aux cours, pas aux épreuves
+    IF EXISTS (SELECT 1 FROM conge g
+               WHERE NEW.date_seance BETWEEN g.date_debut AND g.date_fin
+                 AND (g.id_classe IS NULL OR g.id_classe = v_cours.id_classe)
+                 AND NOT (NEW.nature <> 'cours' AND g.type_conge = 'examens')) THEN
+        RAISE EXCEPTION 'CD-09 : le % tombe pendant un congé (%)', NEW.date_seance,
+            (SELECT g.libelle FROM conge g
+             WHERE NEW.date_seance BETWEEN g.date_debut AND g.date_fin
+               AND (g.id_classe IS NULL OR g.id_classe = v_cours.id_classe)
+               AND NOT (NEW.nature <> 'cours' AND g.type_conge = 'examens')
+             LIMIT 1)
+            USING ERRCODE = 'check_violation';
+    END IF;
+
+    -- CD-02 : un enseignant ne peut pas animer deux séances qui se chevauchent
+    -- (séance sans enseignant : aucun contrôle d'enseignant, ici et pour CD-06)
+    IF NEW.id_enseignant IS NOT NULL AND EXISTS (
+        SELECT 1
+        FROM seance s
+        WHERE s.id_edt  = NEW.id_edt
+          AND s.statut <> 'annulee'
+          AND s.id_enseignant = NEW.id_enseignant
+          AND s.plage && v_plage
+          AND s.id_seance IS DISTINCT FROM NEW.id_seance
+    ) THEN
+        RAISE EXCEPTION 'CD-02 : l''enseignant a déjà une séance qui chevauche cette plage horaire'
+            USING ERRCODE = 'check_violation';
+    END IF;
+
+    -- CD-03 : pas deux séances en même temps pour des étudiants communs. Les
+    -- publics d'un cours sont son public principal et ceux d'un cours mutualisé
+    -- (COURS_PUBLIC) ; deux publics d'une classe ne sont compatibles que s'ils se
+    -- séparent sur deux groupes frères du même type (voir publics_en_conflit).
+    -- Salle et enseignant différents sont déjà imposés par CD-01 et CD-02.
+    IF EXISTS (
+        SELECT 1
+        FROM seance s
+        CROSS JOIN LATERAL publics_seance(s.id_cours, s.nature) ps
+        JOIN publics_seance(NEW.id_cours, NEW.nature) pn ON pn.id_classe = ps.id_classe
+        WHERE s.id_edt  = NEW.id_edt
+          AND s.statut <> 'annulee'
+          AND s.plage && v_plage
+          AND s.id_seance IS DISTINCT FROM NEW.id_seance
+          AND publics_en_conflit(pn.id_classe, pn.id_groupe, ps.id_classe, ps.id_groupe)
+    ) THEN
+        RAISE EXCEPTION 'CD-03 : la classe a déjà une séance qui chevauche cette plage horaire (seuls deux groupes différents du même type peuvent être en parallèle)'
+            USING ERRCODE = 'check_violation';
+    END IF;
+
+    -- CD-04 : capacité de la salle >= effectif de tous les publics (groupe ciblé,
+    -- sinon classe entière ; cours mutualisé : la somme). Épreuves dans la même salle :
+    -- la somme de toutes celles qui se chevauchent.
+    SELECT coalesce(sum(x.effectif), 0)
+    INTO v_effectif
+    FROM (
+        SELECT coalesce(g.effectif, cl.effectif) AS effectif
+        FROM publics_seance(NEW.id_cours, NEW.nature) p
+        JOIN classe cl ON cl.id_classe = p.id_classe
+        LEFT JOIN groupe g ON g.id_groupe = p.id_groupe
+        UNION ALL
+        SELECT cl.effectif
+        FROM seance s
+        CROSS JOIN LATERAL publics_seance(s.id_cours, s.nature) p
+        JOIN classe cl ON cl.id_classe = p.id_classe
+        WHERE NEW.nature <> 'cours' AND s.nature <> 'cours' AND s.id_edt = NEW.id_edt
+          AND s.id_salle = NEW.id_salle AND s.statut <> 'annulee' AND s.plage && v_plage
+          AND s.id_seance IS DISTINCT FROM NEW.id_seance
+    ) x;
+
+    IF v_salle.capacite < v_effectif THEN
+        RAISE EXCEPTION 'CD-04 : capacité de la salle (%) inférieure à l''effectif à accueillir (%)',
+            v_salle.capacite, v_effectif
+            USING ERRCODE = 'check_violation';
+    END IF;
+
+    -- CD-05 : type de salle exigé par le cours, ou l'un des types acceptés (COURS_TYPE_SALLE)
+    IF NEW.nature = 'cours'
+       AND (v_cours.id_type_salle IS NOT NULL
+            OR EXISTS (SELECT 1 FROM cours_type_salle t WHERE t.id_cours = NEW.id_cours))
+       AND v_salle.id_type_salle IS DISTINCT FROM v_cours.id_type_salle
+       AND NOT EXISTS (SELECT 1 FROM cours_type_salle t
+                       WHERE t.id_cours = NEW.id_cours AND t.id_type_salle = v_salle.id_type_salle) THEN
+        RAISE EXCEPTION 'CD-05 : le type de la salle ne correspond pas au type exigé par le cours'
+            USING ERRCODE = 'check_violation';
+    END IF;
+
+    -- Site : la salle est sur le site de chaque promotion du cours (classe.id_site, s'il est fixé).
+    -- Le campus d'une épreuve se choisit à sa programmation.
+    IF NEW.nature = 'cours'
+       AND EXISTS (SELECT 1 FROM publics_du_cours(NEW.id_cours) p JOIN classe cl ON cl.id_classe = p.id_classe
+                   WHERE cl.id_site IS NOT NULL AND cl.id_site <> v_salle.id_site) THEN
+        RAISE EXCEPTION 'SITE : la salle % n''est pas sur le site de la promotion', v_salle.nom_salle
+            USING ERRCODE = 'check_violation';
+    END IF;
+
+    -- CD-12 : salle réservée à certaines formations (SALLE_RESERVATION)
+    IF EXISTS (SELECT 1 FROM salle_reservation r WHERE r.id_salle = NEW.id_salle)
+       AND NOT EXISTS (SELECT 1 FROM salle_reservation r JOIN publics_du_cours(NEW.id_cours) p
+                       ON p.id_classe = r.id_classe WHERE r.id_salle = NEW.id_salle) THEN
+        RAISE EXCEPTION 'CD-12 : la salle % est réservée à d''autres formations', v_salle.nom_salle
+            USING ERRCODE = 'check_violation';
+    END IF;
+
+    -- CD-06 : enseignant absent à cette date (mission, congé...)
+    IF NEW.id_enseignant IS NOT NULL AND EXISTS (SELECT 1 FROM absence_enseignant a
+               WHERE a.id_enseignant = NEW.id_enseignant
+                 AND NEW.date_seance BETWEEN a.date_debut AND a.date_fin) THEN
+        RAISE EXCEPTION 'CD-06 : l''enseignant est absent le % (%)', NEW.date_seance,
+            (SELECT a.motif FROM absence_enseignant a
+             WHERE a.id_enseignant = NEW.id_enseignant
+               AND NEW.date_seance BETWEEN a.date_debut AND a.date_fin LIMIT 1)
+            USING ERRCODE = 'check_violation';
+    END IF;
+
+    -- CD-06 : un intervenant externe n'enseigne que pendant ses séjours prévus
+    IF (SELECT e.statut FROM enseignant e WHERE e.id_enseignant = NEW.id_enseignant) = 'externe'
+       AND NOT EXISTS (SELECT 1 FROM sejour_enseignant j
+                       WHERE j.id_enseignant = NEW.id_enseignant
+                         AND NEW.date_seance BETWEEN j.date_debut AND j.date_fin) THEN
+        RAISE EXCEPTION 'CD-06 : intervenant externe, le % est en dehors de ses séjours prévus', NEW.date_seance
+            USING ERRCODE = 'check_violation';
+    END IF;
+
+    -- CD-06 : aucun créneau de la séance ne doit être déclaré « indisponible »
+    -- dans la semaine type de l'enseignant
+    IF NEW.id_enseignant IS NOT NULL AND EXISTS (
+        SELECT 1
+        FROM disponibilite d
+        JOIN creneau c ON c.id_creneau = d.id_creneau
+        WHERE d.id_enseignant = NEW.id_enseignant
+          AND d.niveau        = 'indisponible'
+          AND c.jour          = v_creneau.jour
+          AND c.heure_debut   < NEW.heure_fin
+          AND c.heure_fin     > NEW.heure_debut
+    ) THEN
+        RAISE EXCEPTION 'CD-06 : l''enseignant est indisponible sur au moins un créneau de cette séance'
+            USING ERRCODE = 'check_violation';
+    END IF;
+
+    -- Une épreuve ne compte ni dans le volume, ni dans le rythme, ni dans les matières de la semaine
+    IF NEW.nature = 'cours' THEN
+        -- CD-08 : le cumul des durées des séances ne dépasse pas le volume horaire
+        SELECT COALESCE(SUM(EXTRACT(EPOCH FROM (s.heure_fin - s.heure_debut)) / 3600), 0)
+        INTO v_deja
+        FROM seance s
+        WHERE s.id_cours = NEW.id_cours
+          AND s.id_edt   = NEW.id_edt
+          AND s.statut  <> 'annulee'
+          AND s.nature   = 'cours'
+          AND s.id_seance IS DISTINCT FROM NEW.id_seance;
+
+        IF v_deja + v_duree > v_cours.volume_horaire THEN
+            RAISE EXCEPTION 'CD-08 : le volume horaire prévu (% h) serait dépassé (% h déjà planifiées + % h)',
+                v_cours.volume_horaire, v_deja, v_duree
+                USING ERRCODE = 'check_violation';
+        END IF;
+
+        -- CD-14 : rythme hebdomadaire maximal du cours (semaine ISO)
+        SELECT COALESCE(SUM(EXTRACT(EPOCH FROM (s.heure_fin - s.heure_debut)) / 3600), 0)
+        INTO v_semaine
+        FROM seance s
+        WHERE s.id_cours = NEW.id_cours
+          AND s.id_edt   = NEW.id_edt
+          AND s.statut  <> 'annulee'
+          AND s.nature   = 'cours'
+          AND date_trunc('week', s.date_seance::timestamp) = date_trunc('week', NEW.date_seance::timestamp)
+          AND s.id_seance IS DISTINCT FROM NEW.id_seance;
+
+        IF v_semaine + v_duree > v_cours.heures_semaine_max THEN
+            RAISE EXCEPTION 'CD-14 : le cours dépasserait % h dans la semaine (maximum % h)',
+                round(v_semaine + v_duree, 1), round(v_cours.heures_semaine_max, 1)
+                USING ERRCODE = 'check_violation';
+        END IF;
+
+        -- CD-13 : au plus N matières différentes par classe et par semaine, pour
+        -- chaque promotion du cours (N = valeur de la contrainte CD-13 de l'emploi
+        -- du temps, 3 par défaut)
+        SELECT CASE WHEN COUNT(*) = 0 THEN 3
+                    WHEN BOOL_OR(k.est_active) THEN MAX(k.valeur) END
+        INTO v_max_mat
+        FROM contrainte k
+        WHERE k.id_edt = NEW.id_edt AND k.type_contrainte = 'CD-13';
+
+        IF v_max_mat IS NOT NULL THEN
+            FOR v_classe_pub IN SELECT DISTINCT p.id_classe FROM publics_du_cours(NEW.id_cours) p LOOP
+                SELECT COUNT(DISTINCT m.id_matiere) INTO v_nb_mat
+                FROM (
+                    SELECT c.id_matiere
+                    FROM seance s JOIN cours c ON c.id_cours = s.id_cours
+                    WHERE s.id_edt  = NEW.id_edt
+                      AND s.statut <> 'annulee'
+                      AND s.nature  = 'cours'
+                      AND date_trunc('week', s.date_seance::timestamp) = date_trunc('week', NEW.date_seance::timestamp)
+                      AND s.id_seance IS DISTINCT FROM NEW.id_seance
+                      AND EXISTS (SELECT 1 FROM publics_du_cours(s.id_cours) p WHERE p.id_classe = v_classe_pub)
+                    UNION ALL
+                    SELECT v_cours.id_matiere
+                ) m;
+
+                IF v_nb_mat > v_max_mat THEN
+                    RAISE EXCEPTION 'CD-13 : la classe % aurait % matières différentes cette semaine (maximum %)',
+                        (SELECT code_classe FROM classe WHERE id_classe = v_classe_pub), v_nb_mat, trunc(v_max_mat)::int
+                        USING ERRCODE = 'check_violation';
+                END IF;
+            END LOOP;
+        END IF;
+    END IF;
+
+    -- Dans un module (matière d'une classe), le rattrapage vient après l'examen
+    IF NEW.nature = 'rattrapage' AND NOT EXISTS (
+        SELECT 1 FROM seance s JOIN cours c ON c.id_cours = s.id_cours
+        WHERE s.id_edt = NEW.id_edt AND s.nature = 'examen' AND s.statut <> 'annulee'
+          AND c.id_matiere = v_cours.id_matiere AND c.id_classe = v_cours.id_classe
+          AND s.date_seance + s.heure_fin <= NEW.date_seance + NEW.heure_debut
+    ) THEN
+        RAISE EXCEPTION 'EXAMEN : un rattrapage vient après l''examen de son module : programmez d''abord l''examen, à une date antérieure'
+            USING ERRCODE = 'check_violation';
+    END IF;
+    IF NEW.nature = 'examen' AND EXISTS (
+        SELECT 1 FROM seance s JOIN cours c ON c.id_cours = s.id_cours
+        WHERE s.id_edt = NEW.id_edt AND s.nature = 'rattrapage' AND s.statut <> 'annulee'
+          AND c.id_matiere = v_cours.id_matiere AND c.id_classe = v_cours.id_classe
+          AND s.date_seance + s.heure_debut < NEW.date_seance + NEW.heure_fin
+    ) THEN
+        RAISE EXCEPTION 'EXAMEN : l''examen d''un module vient avant son rattrapage'
+            USING ERRCODE = 'check_violation';
+    END IF;
+
+    RETURN NEW;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION examen_avec_rattrapage()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SET search_path = public
+AS $$
+BEGIN
+    IF OLD.statut <> 'annulee' THEN
+        PERFORM garder_examen(OLD.id_edt, OLD.id_seance, OLD.id_cours);
+    END IF;
+    RETURN OLD;
+END;
+$$;
+DROP TRIGGER IF EXISTS trg_examen_avec_rattrapage ON seance;
+CREATE TRIGGER trg_examen_avec_rattrapage
+    BEFORE DELETE ON seance
+    FOR EACH ROW WHEN (OLD.nature = 'examen') EXECUTE FUNCTION examen_avec_rattrapage();
+
+COMMIT;

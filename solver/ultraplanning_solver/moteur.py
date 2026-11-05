@@ -38,8 +38,12 @@ def semaines_de(d: Donnees, demande: Demande) -> list[date]:
 
 def generer(d: Donnees, demande: Demande | None = None) -> Resultat:
     """Programme le périmètre de la demande sur sa période (BF-15, BF-30) ;
-    avec `minimiser_changements`, c'est une replanification minimale."""
+    avec `minimiser_changements`, c'est une replanification minimale.
+    Moteur v3 par défaut (v3_adaptateur.py) ; `demande.moteur = "cpsat"` : ancien moteur ci-dessous."""
     demande = demande or Demande()
+    if demande.moteur == "v3":
+        from .v3_adaptateur import generer_v3
+        return generer_v3(d, demande)
     debut_calcul = chrono.perf_counter()
     du = max(demande.du or d.semestre_debut, d.semestre_debut)
     au = min(demande.au or d.semestre_fin, d.semestre_fin)

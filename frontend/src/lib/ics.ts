@@ -1,7 +1,8 @@
 // Export iCalendar (BF-22). Ouagadougou est en UTC+0 sans heure d'été :
 // les heures locales s'écrivent directement en UTC.
 
-import { nomEnseignant, publicCours, type SeanceVue } from './queries'
+import { estEpreuve, LIBELLE_NATURE } from './publics'
+import { nomEnseignant, type SeanceVue } from './queries'
 
 const esc = (s: string) => s.replace(/[\\;,]/g, (m) => `\\${m}`).replace(/\n/g, '\\n')
 const stamp = (date: string, heure: string) => `${date.replace(/-/g, '')}T${heure.replace(':', '')}00Z`
@@ -22,9 +23,9 @@ export function toIcs(seances: SeanceVue[], nom: string): string {
       `DTSTAMP:${now}`,
       `DTSTART:${stamp(s.date_seance, s.heure_debut)}`,
       `DTEND:${stamp(s.date_seance, s.heure_fin)}`,
-      `SUMMARY:${esc(`${s.matiere.libelle} (${s.cours.type_cours})`)}`,
+      `SUMMARY:${esc(`${s.matiere.libelle} (${estEpreuve(s) ? LIBELLE_NATURE[s.nature!] : s.cours.type_cours})`)}`,
       `LOCATION:${esc([s.salle.nom_salle, s.salle.batiment, s.site?.nom_site].filter(Boolean).join(' · '))}`,
-      `DESCRIPTION:${esc(`${nomEnseignant(s.enseignant)} · ${publicCours(s.classe, s.groupe)}`)}`,
+      `DESCRIPTION:${esc(estEpreuve(s) ? s.public_affiche : `${nomEnseignant(s.enseignant)} · ${s.public_affiche}`)}`,
       `STATUS:${s.statut === 'annulee' ? 'CANCELLED' : 'CONFIRMED'}`,
       'END:VEVENT',
     )

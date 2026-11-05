@@ -20,7 +20,9 @@ GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 _url = urlsplit(os.environ.get("GROQ_API_URL", "https://api.groq.com/openai/v1/chat/completions"))
 GROQ_BASE_URL = f"{_url.scheme}://{_url.netloc}"  # le SDK Groq ajoute lui-même /openai/v1/…
 MODELE = os.environ.get("MODEL", "openai/gpt-oss-120b")
-EFFORT = os.environ.get("ULTRAPLANNING_EFFORT", "medium")  # raisonnement : low, medium, high
+EFFORT = os.environ.get("ULTRAPLANNING_EFFORT", "low")  # raisonnement : low, medium, high
+# Réflexion préalable de Claude : plus lente, et inutile ici (le solveur et la base font le raisonnement)
+REFLEXION = os.environ.get("ULTRAPLANNING_REFLEXION", "").strip().lower() in ("1", "oui", "true")
 
 # Assistant IA : Claude (Anthropic), en second fournisseur ou en principal
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")

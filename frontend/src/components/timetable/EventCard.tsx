@@ -1,7 +1,8 @@
 import { Lock, MapPin, User, Users } from 'lucide-react'
-import type { DragEvent } from 'react'
+import type { DragEvent, KeyboardEvent } from 'react'
 import { cn } from '@/components/ui'
-import { couleurMatiere, nomEnseignant, publicCours, type SeanceVue } from '@/lib/queries'
+import { estEpreuve, LIBELLE_NATURE } from '@/lib/publics'
+import { couleurMatiere, nomEnseignant, type SeanceVue } from '@/lib/queries'
 import { fmtHeure } from '@/lib/time'
 
 export type Champ = 'enseignant' | 'salle' | 'public'
@@ -23,19 +24,27 @@ export function EventCard({ s, hide = [], selected, compact, draggable, onDragSt
 }) {
   const color = couleurMatiere(s.matiere.id_matiere)
   const annulee = s.statut === 'annulee'
-  const Tag = onClick ? 'button' : 'div'
+  const epreuve = estEpreuve(s)
+  // Firefox ne glisse pas un <button> : une carte déplaçable est un bloc, cliquable au clavier aussi
+  const bouton = !!onClick && !draggable
+  const cliquable = !!onClick && !bouton
+  const Tag = bouton ? 'button' : 'div'
   return (
     <Tag
-      type={onClick ? 'button' : undefined}
+      type={bouton ? 'button' : undefined}
+      role={cliquable ? 'button' : undefined}
+      tabIndex={cliquable ? 0 : undefined}
+      onKeyDown={cliquable ? (e: KeyboardEvent) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick!() } } : undefined}
       draggable={draggable}
       onDragStart={onDragStart}
       onDragEnd={onDragEnd}
       onClick={onClick}
-      aria-label={`${s.matiere.libelle}, ${s.cours.type_cours}, ${fmtHeure(s.heure_debut)} à ${fmtHeure(s.heure_fin)}, ${s.salle.nom_salle}${annulee ? ', annulée' : ''}`}
+      aria-label={`${epreuve ? `${LIBELLE_NATURE[s.nature!]}, ` : ''}${s.matiere.libelle}, ${s.cours.type_cours}, ${fmtHeure(s.heure_debut)} à ${fmtHeure(s.heure_fin)}, ${s.salle.nom_salle}${annulee ? ', annulée' : ''}`}
       className={cn(
         'group relative flex h-full w-full flex-col overflow-hidden rounded-2xl border-l-[3px] px-2.5 py-2 text-left text-[12px] leading-snug transition-shadow duration-150',
-        draggable && 'cursor-grab active:cursor-grabbing',
+        draggable && 'cursor-grab select-none active:cursor-grabbing',
         onClick && 'hover:shadow-md focus-visible:shadow-md',
+        epreuve && 'ring-2 ring-orange',
         selected && 'ring-2 ring-navy ring-offset-1',
         annulee && 'hatched opacity-70',
       )}
@@ -47,18 +56,20 @@ export function EventCard({ s, hide = [], selected, compact, draggable, onDragSt
         </span>
         <span className="flex items-center gap-1">
           {s.est_verrouillee && <Lock className="size-3 text-navy" aria-label="Verrouillée" />}
-          <TypeChip type={s.cours.type_cours} />
+          {epreuve
+            ? <span className="rounded-full bg-orange px-1.5 py-px text-[10px] font-semibold tracking-wide text-navy">{LIBELLE_NATURE[s.nature!]}</span>
+            : <TypeChip type={s.cours.type_cours} />}
         </span>
       </div>
       <p className={cn('mt-0.5 font-medium text-ink', annulee && 'line-through', compact ? 'truncate' : 'line-clamp-2')}>{s.matiere.libelle}</p>
       {annulee && <span className="mt-0.5 w-fit rounded-full bg-[#FEE2E2] px-1.5 text-[10px] font-semibold text-[#991B1B]">Annulée</span>}
       {!compact && (
         <div className="mt-auto space-y-0.5 pt-1 text-ink-2">
-          {!hide.includes('enseignant') && (
+          {!hide.includes('enseignant') && !epreuve && (
             <p className="flex items-center gap-1 truncate"><User className="size-3 shrink-0" />{nomEnseignant(s.enseignant)}</p>
           )}
           {!hide.includes('public') && (
-            <p className="flex items-center gap-1 truncate"><Users className="size-3 shrink-0" />{publicCours(s.classe, s.groupe)}</p>
+            <p className="flex items-center gap-1 truncate"><Users className="size-3 shrink-0" />{s.public_affiche}</p>
           )}
           {!hide.includes('salle') && (
             <p className="flex items-center gap-1 truncate"><MapPin className="size-3 shrink-0" />{s.salle.nom_salle}</p>

@@ -41,7 +41,7 @@ Le projet s'appuie sur un dossier de conception Merise déjà produit : MCD, nor
 
 | Dans le périmètre | Hors périmètre (version 1) |
 |---|---|
-| Référentiel : sites (campus et annexes), filières, classes, groupes, matières, cours, enseignants et habilitations, salles, créneaux, congés et jours fériés | Inscriptions pédagogiques individuelles des étudiants |
+| Référentiel : sites (campus et annexes), filières, classes, groupes, matières, cours, enseignants, salles, créneaux, congés et jours fériés | Inscriptions pédagogiques individuelles des étudiants |
 | Saisie des disponibilités (semaine type) et des absences datées des enseignants, par la scolarité | Planification des examens et surveillances |
 | Planification manuelle, génération automatique et assistant IA en langage naturel | Paie et calcul des heures complémentaires |
 | Consultation publique des emplois du temps publiés (web, mobile, export), sans compte | Gestion des notes |
@@ -95,7 +95,7 @@ Priorités : **M** = indispensable, **S** = souhaité, **C** = confort.
 
 | Réf. | Exigence | Priorité |
 |---|---|---|
-| BF-08 | Gérer les enseignants (grade, coordonnées, site de rattachement, plafond horaire, **statut** : permanent, vacataire local ou externe) et leurs **habilitations** par matière et type de cours | M |
+| BF-08 | Gérer les enseignants (grade, coordonnées, site de rattachement, plafond horaire, **statut** : permanent, vacataire local ou externe). Pas d'habilitation : l'enseignant est choisi séance par séance (enseignant prévu du cours par défaut, ou à désigner) | M |
 | BF-09 | Saisir les disponibilités de chaque enseignant sur la semaine type : disponible, préférence, indisponible | M |
 | BF-10 | Saisir les **absences datées** d'un enseignant (mission, congé, maladie) et les **séjours prévus** des intervenants externes ; signaler les séances déjà planifiées qui ne les respectent pas | M |
 
@@ -117,14 +117,14 @@ Priorités : **M** = indispensable, **S** = souhaité, **C** = confort.
 | BF-17 | Verrouiller des séances avant génération et ne recalculer que le reste | S |
 | BF-18 | Expliquer les séances non placées (contrainte bloquante identifiée) | S |
 | BF-30 | Programmer un **périmètre** (tout l'établissement, une ou plusieurs filières ou classes) sur une **période** choisie, les séances des autres périmètres restant figées | M |
-| BF-29 | Modifier ou interroger un emploi du temps en langage naturel (assistant IA), avec un **historique des discussions**. L'assistant interroge le solveur (voir §6) et ses propositions ne sont appliquées qu'après validation | S |
+| BF-29 | Modifier ou interroger un emploi du temps en langage naturel (assistant IA), avec un **historique des discussions**. L'assistant interroge le solveur (voir §6) ; ses changements de séances s'écrivent directement dans la version à jour, que le planificateur publie à la main | S |
 | BF-31 | Faire **proposer par l'assistant IA les priorités** des cours (prérequis, intervenants externes…), avec une justification ; la scolarité les accepte ou non | S |
 
 ### 3.5 Module Publication
 
 | Réf. | Exigence | Priorité |
 |---|---|---|
-| BF-19 | Valider puis publier un emploi du temps ; garder l'historique des versions | M |
+| BF-19 | Publier la version à jour d'un emploi du temps ; garder l'historique de chaque modification et pouvoir restaurer une version | M |
 | BF-20 | Notifier par e-mail les enseignants concernés par un changement publié (séances ajoutées, retirées, modifiées, avec le lien vers leur emploi du temps). Les étudiants n'ayant pas de compte ni d'adresse dans la base consultent l'espace invités | S |
 
 ### 3.6 Module Consultation (espace invités)
@@ -158,7 +158,7 @@ Une séance n'est enregistrée que si **toutes les contraintes dures sont respec
 | CD-03 | Une classe ne suit pas deux séances en même temps. **Seule exception** : deux groupes différents du même type (TP-G1 et TP-G2, ou TD-A et TD-B) peuvent être en parallèle, chacun dans sa salle et avec son enseignant. Un CM bloque toute la classe ; un TD et un TP ne sont jamais en parallèle. |
 | CD-04 | La capacité de la salle est supérieure ou égale à l'effectif accueilli (groupe ou classe entière). |
 | CD-05 | Le type de la salle correspond au type exigé par le cours (CM en amphithéâtre, TP en laboratoire, etc.). |
-| CD-06 | L'enseignant est **habilité** pour la matière et le type de cours, n'est **pas absent** à cette date, est **présent sur le campus** s'il est externe (séjour prévu) et n'est pas déclaré indisponible sur le créneau. |
+| CD-06 | Si la séance a un enseignant : il n'est **pas absent** à cette date, est **présent sur le campus** s'il est externe (séjour prévu) et n'est pas déclaré indisponible sur le créneau. |
 | CD-07 | La matière d'un cours figure au **programme** de sa classe pour ce semestre et ce type (CM, TD, TP), et le volume du cours ne dépasse pas le volume prévu. |
 | CD-08 | Le cumul des séances d'un cours ne dépasse pas son volume horaire. |
 | CD-09 | La séance tombe le jour de la semaine du créneau, dans les dates du semestre, hors jour férié et hors **congé** ; le cours appartient au semestre de l'emploi du temps. |
@@ -210,7 +210,7 @@ Chaque semaine, le nombre d'heures d'un cours est choisi par le solveur entre `h
 | CD-01, CD-02, CD-03 | Le conflit se détecte sur les **plages horaires qui se chevauchent**. Deux séances qui se suivent (fin = début) ne sont pas en conflit. |
 | CD-03 | Les TP ne sont pas des subdivisions des TD : CM, TD et TP sont des séances distinctes, chacune avec son créneau. Le parallélisme n'est admis qu'entre groupes différents du même type. |
 | CD-04 | La capacité est comparée à l'effectif du **groupe** si le cours cible un groupe, sinon à l'effectif de la **classe**. |
-| CD-06 | Quatre contrôles : habilitation (`HABILITATION`, vérifiée dès l'enregistrement du cours), absences datées (`ABSENCE_ENSEIGNANT`), séjours d'un externe (`SEJOUR_ENSEIGNANT` ; sans séjour, aucune séance possible) et semaine type (`DISPONIBILITE`, niveau `indisponible`). Les niveaux `disponible` (par défaut) et `preference` ne bloquent pas. |
+| CD-06 | Trois contrôles, sur l'enseignant de la séance (aucun si elle est à désigner) : absences datées (`ABSENCE_ENSEIGNANT`), séjours d'un externe (`SEJOUR_ENSEIGNANT` ; sans séjour, aucune séance possible) et semaine type (`DISPONIBILITE`, niveau `indisponible`). Les niveaux `disponible` (par défaut) et `preference` ne bloquent pas. |
 | CD-13, CD-14 | Comptés sur la semaine ISO (du lundi au dimanche). Si la contrainte CD-13 est désactivée pour un emploi du temps, la limite ne s'applique pas. |
 | CD-07 | Pour un TD ou un TP fait par groupes, le volume du programme vaut **pour chaque groupe** (24 h de TD = 24 h pour TD-A et 24 h pour TD-B). On ne peut ni retirer du programme ni réduire sous le volume des cours existants une matière déjà enseignée. |
 | CD-08 | La **somme des durées** des séances d'un cours (hors séances annulées) ne dépasse pas son `volume_horaire`. |
@@ -282,7 +282,7 @@ Tous les clients passent par l'API. Seul le moteur IA utilise la file de tâches
 **Assistant IA et solveur.** Le module IA associe deux composants :
 
 - le **solveur CP-SAT** calcule les emplois du temps. Il sait générer un périmètre (BF-30) et **replanifier au minimum** : recalculer une classe ou une filière sur une période en gardant le reste figé et en changeant le moins de séances possible ;
-- un **agent LLM** (modèle `openai/gpt-oss-120b` servi par Groq, côté serveur) comprend les demandes en langage naturel. Il ne modifie jamais l'emploi du temps lui-même : il utilise des outils (lire l'emploi du temps ou le référentiel, vérifier une modification, demander une replanification au solveur, proposer des priorités) et présente le résultat. Chaque modification calculée est enregistrée comme `PROPOSITION` et n'est appliquée qu'après validation d'un planificateur. Les changements ponctuels (déplacer, annuler, rétablir, ajouter ou supprimer une séance) sont vérifiés par la base avant d'être proposés. Appliquée sur la version publiée, une proposition est visible tout de suite dans l'espace invités (rafraîchi automatiquement) et les enseignants concernés sont prévenus par e-mail ; sur un brouillon, elle l'est à la publication. Quand il manque quelque chose au référentiel (matière, programme, cours, enseignant…), l'assistant demande les informations ou les lit dans un fichier joint au message (CSV, Excel, PDF, image), puis propose les lignes à ajouter ; une fois validées, la génération demandée est lancée et produit une proposition de séances. Il ne fait que des ajouts, jamais de modification ni de suppression du référentiel.
+- un **agent LLM** (modèle `openai/gpt-oss-120b` servi par Groq, côté serveur) comprend les demandes en langage naturel. Il utilise des outils (lire l'emploi du temps ou le référentiel, vérifier une modification, demander une replanification au solveur, proposer des priorités) et présente le résultat. Chaque modification calculée est enregistrée comme `PROPOSITION` et s'écrit directement dans la version à jour, seule modifiable, après la vérification de la base : les invités la voient après la publication manuelle, qui prévient par e-mail les seuls enseignants concernés par un changement, et l'historique permet de revenir en arrière. Restent à valider par un planificateur sur leur carte les changements du référentiel, qui n'ont pas de version, et une modification qui ferait perdre des heures. La page Planification montre la version à jour, avec le bouton Publier, et l'historique : chaque modification y est une version, consultable jusqu'à la première et restaurable après confirmation. Quand il manque quelque chose au référentiel (matière, programme, cours, enseignant…), l'assistant demande les informations ou les lit dans un fichier joint au message (CSV, Excel, PDF, image), puis propose les lignes à ajouter ; une fois validées, la génération demandée est lancée et produit une proposition de séances. Il peut aussi corriger ou retirer une ligne du référentiel (effectif ou site d'une classe, prénom d'un enseignant…) et tenir le calendrier (dates du semestre, jours fériés, congés, créneaux) et les enseignants (disponibilités, absences, séjours), toujours par une proposition validée par un planificateur. Ces changements ne déplacent aucune séance : la proposition liste celles qui ne respecteraient plus les règles, et une replanification peut être enchaînée dès la validation.
 
 ### Choix technologiques
 
@@ -324,14 +324,13 @@ Le MLD couvre deux grands domaines : la **planification pédagogique** (séances
 
 | Table | Attributs | Rôle |
 |---|---|---|
-| **SEANCE** | <u>id_seance</u>, date_seance, heure_debut, heure_fin, statut, est_verrouillee, #id_cours, #id_salle, #id_creneau, #id_edt | Table centrale : une occurrence datée d'un cours (2 h à 4 h), dans une salle, rattachée à un emploi du temps. `id_creneau` est le créneau de début ; `heure_debut` et `heure_fin` portent la durée. `est_verrouillee` supporte BF-17. |
-| **COURS** | <u>id_cours</u>, type_cours, volume_horaire, duree_seance, nb_seances_semaine, priorite, priorite_suggeree, justification_priorite, heures_semaine_min, heures_semaine_max, #id_matiere, #id_classe, #id_groupe, #id_enseignant, #id_type_salle, #id_semestre | Enseignement d'une matière (CM, TD ou TP), pour une classe ou un groupe de même type (`id_groupe` vide = classe entière), par un enseignant habilité, avec un type de salle exigé, sur un semestre. Rythme hebdomadaire borné (CD-14) ; priorité (CS-07) et priorité suggérée par l'assistant IA. |
+| **SEANCE** | <u>id_seance</u>, date_seance, heure_debut, heure_fin, statut, est_verrouillee, nature, #id_cours, #id_enseignant, #id_salle, #id_creneau, #id_edt | Table centrale : une occurrence datée d'un cours (2 h à 4 h), dans une salle, avec son enseignant (vide : à désigner), rattachée à un emploi du temps. `id_creneau` est le créneau de début ; `heure_debut` et `heure_fin` portent la durée. `est_verrouillee` supporte BF-17. |
+| **COURS** | <u>id_cours</u>, type_cours, volume_horaire, duree_seance, nb_seances_semaine, priorite, priorite_suggeree, justification_priorite, heures_semaine_min, heures_semaine_max, #id_matiere, #id_classe, #id_groupe, #id_enseignant, #id_type_salle, #id_semestre | Enseignement d'une matière (CM, TD ou TP), pour une classe ou un groupe de même type (`id_groupe` vide = classe entière), avec un enseignant prévu (facultatif, repris par défaut sur les séances générées), un type de salle exigé, sur un semestre. Rythme hebdomadaire borné (CD-14) ; priorité (CS-07) et priorité suggérée par l'assistant IA. |
 | **PROGRAMME** | <u>id_programme</u>, #id_classe, #id_matiere, #id_semestre, volume_cm, volume_td, volume_tp | Maquette pédagogique : matières qu'une classe suit sur un semestre et volumes prévus par type (CD-07). Unique par (classe, matière, semestre). |
 | **COURS_SEANCE_MODELE** | <u>#id_cours</u>, <u>rang</u>, duree_heures | Découpage hebdomadaire d'un cours en séances (par exemple rang 1 : 2 h, rang 2 : 3 h). Lu par le moteur. |
 | **MATIERE** | <u>id_matiere</u>, code_matiere, libelle, coefficient | Référentiel des matières. |
 | **ENSEIGNANT** | <u>id_enseignant</u>, matricule, nom, prenom, email, telephone, grade, nb_heures_max_semaine, statut, #id_site | Enseignants, plafond horaire hebdomadaire, statut (`permanent`, `vacataire_local`, `externe`, CS-04) et site de rattachement (facultatif). |
 | **SEJOUR_ENSEIGNANT** | <u>id_sejour</u>, #id_enseignant, date_debut, date_fin, commentaire | Séjours prévus d'un intervenant externe sur le campus (CD-06). |
-| **HABILITATION** | <u>id_habilitation</u>, #id_enseignant, #id_matiere, type_cours | Matières et types de cours qu'un enseignant peut assurer (CD-06). Unique par (enseignant, matière, type). |
 | **ABSENCE_ENSEIGNANT** | <u>id_absence</u>, #id_enseignant, date_debut, date_fin, motif | Absences datées : mission, congé, maladie (CD-06). |
 | **DISPONIBILITE** | <u>#id_enseignant</u>, <u>#id_creneau</u>, niveau, motif | Semaine type de l'enseignant : `disponible`, `preference` ou `indisponible` (BF-09, CS-01, CD-06). Sans ligne : disponible. |
 | **CRENEAU** | <u>id_creneau</u>, jour, heure_debut, heure_fin | Grille hebdomadaire de base (BF-05), en créneaux de 1 h. |
@@ -346,8 +345,12 @@ Le MLD couvre deux grands domaines : la **planification pédagogique** (séances
 | **ECOLE** | <u>id_ecole</u>, code_ecole, nom, ville, pays, email_contact, statut, date_creation | École cliente de la plateforme (`statut` : `active` ou `suspendue`), gérée par le super administrateur. |
 | **SITE** | <u>id_site</u>, code_site, nom_site, type_site, adresse | Campus ou annexe de l'école (`type_site` : `campus` ou `annexe`). |
 | **FILIERE** | <u>id_filiere</u>, code_filiere, libelle, #id_site | Filière de formation et son site principal (facultatif). |
-| **CLASSE** | <u>id_classe</u>, code_classe, libelle, niveau, effectif, #id_filiere | Classe appartenant à une filière. |
-| **GROUPE** | <u>id_groupe</u>, code_groupe, type_groupe, effectif, #id_classe | Groupe de TD ou de TP d'une classe (`type_groupe` : `TD` ou `TP`). Un cours de même type peut le cibler (association CIBLER). |
+| **CLASSE** | <u>id_classe</u>, code_classe, libelle, niveau, effectif, #id_filiere, #id_site | Classe appartenant à une filière (niveaux L1 à M2, CPGE1, CPGE2, BT, MAN, AUTRE). `id_site` : site où la promotion a tous ses cours (vide : non fixé). |
+| **GROUPE** | <u>id_groupe</u>, code_groupe, type_groupe, effectif, #id_classe, #id_groupe_parent | Groupe d'une classe : `TD`, `TP` ou `OPTION`. Chaque classe est un arbre (groupe de TD ou option, puis demi-groupe de TP ou sous-option). Deux frères du même type peuvent avoir cours en même temps. Un cours de TD ou de TP cible un groupe de son type, tout cours peut cibler une option (association CIBLER). |
+| **COURS_PUBLIC** | <u>id_cours_public</u>, #id_cours, #id_classe, #id_groupe | Cours mutualisé : public suivi en plus du public principal du cours, en même temps et dans la même salle. |
+| **COURS_TYPE_SALLE** | <u>id_cours_type_salle</u>, #id_cours, #id_type_salle | Type de salle accepté en plus du type exigé par le cours (un CM en amphithéâtre ou dans une grande salle). |
+| **SALLE_RESERVATION** | <u>id_salle_reservation</u>, #id_salle, #id_classe | Salle réservée à certaines formations : elle ne reçoit que les classes listées. |
+| **SITE_TRAJET** | <u>id_site_trajet</u>, #id_site_a, #id_site_b, minutes | Temps de trajet entre deux sites : écart minimal entre deux séances d'un enseignant sur ces sites le même jour. |
 | **SALLE** | <u>id_salle</u>, code_salle, nom_salle, capacite, batiment, est_disponible, #id_type_salle, #id_site | Salle d'un site, avec sa capacité (CD-04), son type (CD-05), son bâtiment et sa disponibilité (CD-12). |
 | **TYPE_SALLE** | <u>id_type_salle</u>, libelle | Amphithéâtre, laboratoire, salle standard, etc. |
 | **SEMESTRE** | <u>id_semestre</u>, libelle, annee_academique, date_debut, date_fin | Période de validité des séances (CD-09, BF-26). |
@@ -356,8 +359,9 @@ Le MLD couvre deux grands domaines : la **planification pédagogique** (séances
 
 | Table | Attributs | Rôle |
 |---|---|---|
-| **EMPLOI_DU_TEMPS** | <u>id_edt</u>, libelle, version, mode_generation, statut, date_creation, date_publication, #id_semestre, #id_utilisateur | Une version d'emploi du temps (manuelle ou automatique), avec son statut de publication (BF-19). Seule la version `publie` est visible des invités. |
-| **CONTRAINTE** | <u>id_contrainte</u>, libelle, type_contrainte, nature, poids, valeur, est_active, #id_edt | Contraintes (dures ou souples) paramétrées pour un emploi du temps (BF-16) ; `valeur` porte leur paramètre (CD-13, CS-06). |
+| **EMPLOI_DU_TEMPS** | <u>id_edt</u>, libelle, version, mode_generation, statut, date_creation, date_publication, #id_semestre, #id_utilisateur | Par semestre : la version à jour (`brouillon`), seule modifiable, et sa copie publiée (`publie`), seule visible des invités (BF-19). |
+| **PUBLICATION_EDT** | <u>id_publication</u>, date_publication, date_version, ajoutees, retirees, modifiees, id_utilisateur, #id_edt | Chaque publication : la version de l'historique publiée et ce qui a changé pour les invités. L'historique lui-même se lit dans `JOURNAL_SEANCE`, une version par transaction. |
+| **CONTRAINTE** | <u>id_contrainte</u>, libelle, type_contrainte, nature, poids, valeur, est_active, parametres, date_debut, date_fin, #id_edt | Contraintes (dures ou souples) paramétrées pour un emploi du temps (BF-16) ; `valeur` porte leur paramètre (CD-13, CS-06). Avec `parametres`, c'est une **règle du planificateur** saisie comme donnée (interdire une fenêtre, finir une matière avant une autre, plafond par jour), avec sa période de validité. |
 | **CONVERSATION** | <u>id_conversation</u>, titre, date_creation, #id_utilisateur, #id_edt | Fil de discussion avec l'assistant IA (historique, BF-29). |
 | **PROMPT** | <u>id_prompt</u>, texte, reponse, statut, date_prompt, #id_utilisateur, #id_edt, #id_conversation | Demande en langage naturel soumise à l'IA et sa réponse, au sein d'une discussion. |
 | **PROPOSITION** | <u>id_proposition</u>, description, modifications, impact, nature, suite, statut, date_creation, date_decision, #id_prompt, #id_edt, #id_utilisateur_decision | Modification calculée par le solveur à la demande de l'assistant IA (`modifications` : liste JSON d'opérations ; `impact` : conséquences — heures perdues, enseignants à prévenir, cours qui finissent plus tard, journées chargées, changements de site), `en_attente`, `appliquee` ou `rejetee` par un planificateur. `nature` : `seances` ou `referentiel` (lignes à ajouter au référentiel) ; `suite` : génération à lancer après validation des ajouts. |
@@ -413,9 +417,9 @@ Les contrôles applicatifs sont doublés par des contraintes en base :
 - **CD-01 (salle)** : contrainte d'exclusion (`EXCLUDE`, extension `btree_gist`) sur `SEANCE` : deux séances d'une même salle ne se chevauchent pas dans un même emploi du temps (séances annulées ignorées).
 - **Durée 2 h à 4 h** : contraintes `CHECK` sur `SEANCE`, `duree_seance` et `duree_heures`.
 - **Clé étrangère composite** `(id_groupe, id_classe)` sur `COURS` : le groupe ciblé appartient à la classe du cours.
-- **Déclencheur sur `COURS`** : un CM ne cible aucun groupe, un cours de TD ou de TP ne cible qu'un groupe du même type ; CD-07, la matière est au programme de la classe et le volume ne dépasse pas celui prévu ; CD-06, l'enseignant est habilité pour la matière et le type du cours.
+- **Déclencheur sur `COURS`** : un CM ne cible aucun groupe, un cours de TD ou de TP ne cible qu'un groupe du même type  ; CD-07, la matière est au programme de la classe et le volume ne dépasse pas celui prévu.
 - **Déclencheur sur `PROGRAMME`** : CD-07 dans l'autre sens, une ligne utilisée par des cours ne peut être ni supprimée ni réduite sous leur volume.
-- **Déclencheur sur `SEANCE`** : CD-02, CD-03, CD-04, CD-05, CD-06 (habilitation, absences, séjours, semaine type), CD-08, CD-09 (semestre, jour, jours fériés, congés), CD-10, CD-11, CD-12, CD-13 et CD-14.
+- **Déclencheur sur `SEANCE`** : CD-02, CD-03, CD-04, CD-05, CD-02 et CD-06 sur l'enseignant de la séance (absences, séjours, semaine type ; aucun contrôle si elle est à désigner), CD-08, CD-09 (semestre, jour, jours fériés, congés), CD-10, CD-11, CD-12, CD-13 et CD-14.
 - **Contrainte `CHECK` sur `PROPOSITION`** : une proposition décidée (appliquée ou rejetée) a une date de décision, une proposition en attente n'en a pas.
 - **Concurrence** : le déclencheur pose un verrou par emploi du temps (`pg_advisory_xact_lock`) ; deux enregistrements simultanés sont traités l'un après l'autre et ne peuvent pas contourner CD-02 ou CD-03.
 - **Sécurité par ligne** : voir §6, « Accès à la base ».
@@ -435,7 +439,7 @@ Le script SQL contient un jeu de données **fictif** à remplacer par les donné
 
 - 3 sites : **campus de Kamboinsé** (8 salles), **campus de Ouagadougou** (3 salles) et **annexe de Ouagadougou** (2 salles), de 25 à 250 places ;
 - 2 filières, 5 classes (de 24 à 120 étudiants), 9 groupes de TD et de TP ;
-- 9 enseignants (6 permanents, 2 vacataires locaux, 1 externe attendu du 9 au 28 novembre), 18 habilitations, 8 matières, 9 lignes de programme, 13 cours (de classe entière ou de groupe), avec leur découpage hebdomadaire (par exemple BD : 2 h + 3 h). Trois écarts au programme sont laissés volontairement pour la démonstration : le TD-B de L1INFO (Probabilités), le TP-G2 de M1IA (Apprentissage automatique) et le M2IA, sans cours ;
+- 9 enseignants (6 permanents, 2 vacataires locaux, 1 externe attendu du 9 au 28 novembre), 8 matières, 9 lignes de programme, 13 cours (de classe entière ou de groupe), avec leur découpage hebdomadaire (par exemple BD : 2 h + 3 h). Trois écarts au programme sont laissés volontairement pour la démonstration : le TD-B de L1INFO (Probabilités), le TP-G2 de M1IA (Apprentissage automatique) et le M2IA, sans cours ;
 - la grille de créneaux de 1 h (7 h – 12 h et 13 h – 16 h, samedi matin), la pause déjeuner (12 h – 13 h), 5 jours fériés fixes, 2 congés (vacances de fin d'année, examens), des disponibilités et une absence datée ;
 - un semestre (2026-2027), deux comptes (`planificateur`, `admin`), un emploi du temps vide en brouillon et ses 21 contraintes (CD-01 à CD-14, CS-01 à CS-07).
 
@@ -548,7 +552,7 @@ Dossier de conception (MCD, MLD, SQL), spécifications détaillées, code source
 
 - `GROUPE` est relié à `COURS` (CIBLER) ; la règle de parallélisme des groupes est fixée (CD-03).
 - `INDISPONIBILITE` est remplacée par `DISPONIBILITE` à trois niveaux, complétée par `ABSENCE_ENSEIGNANT` pour les absences datées.
-- Les habilitations existent (`HABILITATION`) et sont contrôlées (CD-06).
+- Pas d'habilitation : le solveur place les séances sans en tenir compte, et le planificateur choisit ou change l'enseignant de chaque séance dans la grille (version 10).
 - Les sites et bâtiments sont modélisés (`SITE`, `salle.batiment`) ; les filières et les enseignants peuvent y être rattachés.
 - Les jours fériés et les congés sont pris en compte (`JOUR_FERIE`, `CONGE`).
 - Durée et découpage des séances, pause déjeuner, verrou de concurrence.
@@ -575,13 +579,13 @@ Dossier de conception (MCD, MLD, SQL), spécifications détaillées, code source
 | 1 | **Grille de créneaux** | Créneaux de 1 h : 7 h – 12 h et 13 h – 16 h du lundi au vendredi, 7 h – 12 h le samedi. | Décidé |
 | 2 | **Pause déjeuner** | 12 h – 13 h, aucune séance ne l'enjambe (modifiable dans `PAUSE`). | Décidé |
 | 3 | **Accès** | Seuls les administrateurs et planificateurs ont un compte ; enseignants et étudiants consultent sans connexion tous les emplois du temps publiés. | Décidé |
-| 4 | **Groupes en parallèle** | Autorisé seulement entre deux groupes différents du même type, dans des salles différentes et avec des enseignants différents. | Décidé |
+| 4 | **Groupes en parallèle** | Autorisé entre deux groupes frères du même type (TD1 et TD2, deux options), dans des salles différentes et avec des enseignants différents ; un demi-groupe de TP fait partie de son groupe de TD (arbre des groupes, version 11). | Décidé |
 | 5 | **Sites** | Campus et annexes gérés dans le référentiel ; chaque salle a un site ; filières et enseignants peuvent en avoir un. | Décidé |
 | 6 | **Congés** | Table `CONGE` distincte de `JOUR_FERIE`, pour tout l'établissement ou une classe. | Décidé |
 | 7 | **Séances datées** | La base stocke des séances datées. Le solveur les calcule directement semaine par semaine (jours fériés, congés, séjours des externes, rythme variable), sans semaine type à dérouler. | Décidé |
 | 8 | **Jours fériés mobiles** (fêtes religieuses, Pâques, Ascension, Pentecôte) | Saisis chaque année par l'école dans la console (Référentiel > Jours fériés), qui peut aussi les modifier ou en ajouter ; le jeu de test ne fournit que les jours fixes. Un jour non saisi n'est pas connu du solveur. | Décidé |
 | 9 | **Volume horaire** | En heures, pour tout le semestre ; pour un TD ou un TP fait par groupes, le volume vaut pour chaque groupe. Le découpage (`COURS_SEANCE_MODELE`) donne les durées de séance préférées. | Décidé |
-| 10 | **Capacités, effectifs, habilitations** | Valeurs fictives dans le jeu de test. | À remplacer par les données réelles |
+| 10 | **Capacités, effectifs** | Valeurs fictives dans le jeu de test. | À remplacer par les données réelles |
 | 11 | **Hébergement** | Le cahier des charges prévoit les serveurs de l'université ; le schéma est déployé sur Supabase. | À confirmer avec le service informatique |
 | 12 | **Journal d'audit** | Séances seulement (création, modification, suppression), avec le compte, l'origine (console, génération, assistant, système) et l'état avant / après ; consultable par le super admin. Les changements du référentiel ne sont pas journalisés. | Décidé et réalisé |
 | 13 | **Programme** | Maquette par classe, matière et semestre, avec volumes CM / TD / TP ; un volume de TD ou de TP vaut pour chaque groupe. | Décidé |
@@ -593,3 +597,10 @@ Dossier de conception (MCD, MLD, SQL), spécifications détaillées, code source
 | 19 | **Multi-écoles** | Une seule base ; table `ECOLE` et colonne `id_ecole` sur chaque table métier, avec clés étrangères composites. RLS par école pour le rôle `ultraplanning_app` de l'API ; aucun accès direct pour `anon` et `authenticated`. Une nouvelle école reçoit sa grille et ses types de salle à sa création, puis crée son premier semestre dans la console. | Décidé et réalisé (schéma version 7) |
 | 20 | **Authentification** | Supabase Auth : le super admin invite par e-mail, la personne choisit son mot de passe ; l'API vérifie le jeton (JWKS). En-tête `X-Utilisateur` réservé au développement (`ULTRAPLANNING_AUTH_DEV=1`). | Décidé |
 | 21 | **Console super admin** | Application séparée (`superadmin/`), même conception graphique que la console des écoles. | Décidé |
+| 22 | **Moteur du solveur** | Moteur v3 de Soraya Pitroipa par défaut : glouton multi-essais semaine après semaine, puis CP-SAT par promotion et par semaine ; il passe à l'échelle de l'école (S1 à S4 : 100 % en 35 s contre 59 % en 20 min pour l'ancien moteur, gardé pour comparer). Les règles CD-13 (3 matières par semaine) et l'enseignant par séance (version 10) sont conservées et ajoutées à ce moteur. | Décidé et réalisé (schéma version 11) |
+| 23 | **Règles 2iE** | Site de chaque promotion, options et sous-groupes (arbre de groupes), cours mutualisés, types de salle acceptés, salles réservées, temps de trajet entre sites ; règles du planificateur saisies comme données dans la page Génération. Vérifiés par le solveur et par la base (sauf le temps de trajet, respecté par le solveur seulement). | Décidé et réalisé (schéma version 11) |
+| 24 | **Assistant et référentiel** | L'assistant peut ajouter, modifier ou supprimer des lignes du référentiel, du calendrier (semestre, jours fériés, congés, créneaux) et des enseignants (disponibilités, absences, séjours), désignées par leurs codes, par une proposition validée par un planificateur ; pas d'accès SQL libre. Un changement ne déplace aucune séance : les séances devenues invalides sont listées et une replanification peut être enchaînée. | Décidé et réalisé |
+| 25 | **Versions de l'emploi du temps** | Une version à jour par semestre, seule modifiable, et sa copie publiée, celle que voient les invités. Publier reporte les différences, en tout ou rien, et ne prévient que les enseignants concernés par un changement. Chaque modification enregistrée est une version de l'historique, lue dans le journal des séances ; restaurer remplace la version à jour, s'ajoute à l'historique et ne touche les invités qu'après publication. L'assistant ne travaille que sur la version à jour. | Décidé et réalisé (schéma version 12) |
+| 26 | **Examens et rattrapages** | Des séances d'un genre à part (`SEANCE.nature`), de 2 h à 3 h, sans enseignant, hors volumes et hors CD-13, jamais déplacées par la génération. Toute la classe compose. Plusieurs classes peuvent partager une salle assez grande, jamais avec un cours. Dans un module, le rattrapage vient après l'examen. Programmés par sélection d'heures et clic droit dans la grille, ou par l'assistant. | Décidé et réalisé (schéma version 13) |
+| 27 | **Reprogrammer ce qui reste d'un cours** | Ce qui reste d'un cours se compte sur tout le semestre, pas sur la période demandée. Toutes ses séances à venir, avant ou après la période, y sont ramenées, au plus près de leur date et dans leur salle si elle est libre ; celles qui n'y tiennent pas restent en place et sont signalées, aucune heure n'est perdue. Un calcul qui ne change rien ne crée pas de proposition. | Décidé |
+| 28 | **L'assistant écrit dans la version à jour** | À la demande du planificateur, un changement de séances s'écrit directement dans la version à jour : la validation humaine est la publication manuelle, et l'historique permet de revenir en arrière. Une modification qui ferait perdre des heures et les changements du référentiel, sans version, restent à valider sur leur carte. | Décidé |

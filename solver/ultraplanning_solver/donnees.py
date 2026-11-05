@@ -33,15 +33,17 @@ class Classe:
     code_classe: str
     effectif: int
     id_filiere: int
+    id_site: int | None = None  # site où la promotion a tous ses cours (None : non fixé)
 
 
 @dataclass(frozen=True)
 class Groupe:
     id_groupe: int
     code_groupe: str
-    type_groupe: str  # 'TD' ou 'TP'
+    type_groupe: str  # 'TD', 'TP' ou 'OPTION'
     effectif: int
     id_classe: int
+    id_groupe_parent: int | None = None  # demi-groupe de TP dans un TD, sous-option dans une option
 
 
 @dataclass(frozen=True)
@@ -61,6 +63,7 @@ class Salle:
     id_site: int
     batiment: str | None
     est_disponible: bool
+    reservee_a: frozenset[int] = frozenset()  # classes ayants droit (vide : salle libre)
 
 
 @dataclass(frozen=True)
@@ -95,12 +98,15 @@ class Cours:
     id_matiere: int
     id_classe: int
     id_groupe: int | None
-    id_enseignant: int
+    id_enseignant: int | None  # enseignant prévu ; None : à désigner (aucune contrainte d'enseignant)
     id_type_salle: int | None
     priorite: int
     heures_semaine_min: int
     heures_semaine_max: int
     durees_preferees: tuple[int, ...]  # COURS_SEANCE_MODELE, sinon (duree_seance,)
+    # cours mutualisé : publics en plus du public principal (id_classe, id_groupe)
+    publics_suppl: tuple[tuple[int, int | None], ...] = ()
+    types_salle: tuple[int, ...] = ()  # types acceptés en plus de id_type_salle (CM en amphi ou grande salle)
 
 
 @dataclass(frozen=True)
@@ -114,6 +120,7 @@ class Seance:
     id_salle: int
     id_seance: int | None = None
     est_verrouillee: bool = False
+    id_enseignant: int | None = None  # enseignant de la séance (peut différer de celui du cours)
 
     @property
     def duree(self) -> int:
@@ -145,6 +152,10 @@ class Donnees:
     max_matieres_semaine: int | None = 3  # CD-13 (None = désactivée)
     plafond_heures_jour: int = 6  # CS-06
     id_ecole: int | None = None  # école de l'emploi du temps (base partagée entre écoles)
+    trajet_min: dict[tuple[int, int], int] = field(default_factory=dict)  # (site a, site b) -> minutes
+    regles: list[dict] = field(default_factory=list)  # règles du planificateur (contrainte.parametres)
+    # Examens et rattrapages : hors volumes et jamais déplacés, mais leur classe et leur salle sont prises
+    examens: list[Seance] = field(default_factory=list)
 
     # --- dérivés -----------------------------------------------------------
 
@@ -162,8 +173,10 @@ class Donnees:
             return True
         return any(g.contient(d) and (g.id_classe is None or g.id_classe == id_classe) for g in self.conges)
 
-    def enseignant_present(self, id_enseignant: int, d: date) -> bool:
-        """Pas d'absence datée, et dans un séjour s'il est externe (CD-06)."""
+    def enseignant_present(self, id_enseignant: int | None, d: date) -> bool:
+        """Pas d'absence datée, et dans un séjour s'il est externe (CD-06). Sans enseignant : toujours."""
+        if id_enseignant is None:
+            return True
         if any(a.contient(d) for a in self.absences.get(id_enseignant, [])):
             return False
         if self.enseignants[id_enseignant].statut == "externe":

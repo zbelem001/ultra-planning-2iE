@@ -3,8 +3,10 @@
 // contraintes souples CS-01 à CS-06 pondérées par la table CONTRAINTE.
 // Il tient le rôle du futur moteur OR-Tools CP-SAT côté serveur.
 
+import { estEpreuve } from './publics'
 import type { Db, Seance } from '@/types/db'
-import { checkSeance, CODES_DURS, decoupage, effectifCours, enParallele, type Violation } from './rules'
+import { coursEnConflit } from './publics'
+import { checkSeance, CODES_DURS, decoupage, effectifCours, type Violation } from './rules'
 import { addDays, fromMin, hours, jourOf, toMin } from './time'
 
 export interface NonPlace {
@@ -41,9 +43,10 @@ export function generateWeek(
   )
   const inWeek = (s: Seance) => s.date_seance >= monday && s.date_seance <= addDays(monday, 6)
 
-  const travail: Seance[] = opts.keepLocked
-    ? db.seance.filter((s) => s.id_edt === id_edt && s.est_verrouillee && inWeek(s)).map((s) => ({ ...s }))
-    : []
+  // Les épreuves restent toujours en place ; les séances verrouillées, si on le demande
+  const travail: Seance[] = db.seance
+    .filter((s) => s.id_edt === id_edt && inWeek(s) && (estEpreuve(s) || (opts.keepLocked && s.est_verrouillee)))
+    .map((s) => ({ ...s }))
   let tmpId = -1
 
   const semestreIds = new Set(
@@ -92,6 +95,7 @@ export function generateWeek(
               statut: 'planifiee',
               est_verrouillee: false,
               id_cours: c.id_cours,
+              id_enseignant: c.id_enseignant,
               id_salle: salle.id_salle,
               id_creneau: cr.id_creneau,
               id_edt,
@@ -136,7 +140,7 @@ function scoreSouple(db: Db, s: Seance, travail: Seance[], w: Record<string, num
   let score = 0
   const meme = (x: Seance) => {
     const c = db.cours.find((k) => k.id_cours === x.id_cours)!
-    return c.id_classe === cours.id_classe && !enParallele(db, cours, c)
+    return coursEnConflit(db, cours, c)
   }
   const jourPublic = travail.filter((x) => x.date_seance === s.date_seance && meme(x))
 
@@ -190,9 +194,9 @@ function scoreSouple(db: Db, s: Seance, travail: Seance[], w: Record<string, num
   }
 
   // CS-06 : charge journalière de l'enseignant (plafond = valeur de la contrainte, 6 h par défaut)
-  if (w['CS-06']) {
+  if (w['CS-06'] && s.id_enseignant !== null) {
     const hJour = travail
-      .filter((x) => x.date_seance === s.date_seance && db.cours.find((k) => k.id_cours === x.id_cours)!.id_enseignant === cours.id_enseignant)
+      .filter((x) => x.date_seance === s.date_seance && x.id_enseignant === s.id_enseignant)
       .reduce((a, x) => a + hours(x.heure_debut, x.heure_fin), 0)
     const plafond = db.contrainte.find((k) => k.id_edt === s.id_edt && k.type_contrainte === 'CS-06')?.valeur ?? 6
     if (hJour + (d2 - d1) / 60 > plafond) score -= w['CS-06'] * 3

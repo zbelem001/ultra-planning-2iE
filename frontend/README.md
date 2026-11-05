@@ -49,7 +49,7 @@ L'API doit autoriser l'origine du frontend (`ULTRAPLANNING_ORIGINES`).
 
 **Comptes** : la page Référentiel > Utilisateurs liste les comptes de l'école. L'administrateur y invite ses planificateurs (e-mail avec un lien pour choisir le mot de passe), renvoie une invitation, modifie ou désactive un compte. En mode connecté, aucun compte ne se crée autrement.
 
-**Publication** : la publication passe par l'API, qui prévient par e-mail les enseignants dont les séances changent.
+**Publication** : le bouton Publier de la page Planification passe par l'API, qui prévient par e-mail les seuls enseignants concernés par un changement. L'historique et la restauration demandent aussi l'API (mode connecté).
 
 **Import CSV** (Référentiel, bouton Importer ; gabarit par table avec le bouton Gabarit CSV) :
 - les colonnes sont reconnues par leur libellé (« Code », « Effectif ») ou leur nom technique (`code_classe`), sans tenir compte des majuscules ni des accents ; une référence s'écrit par son code (« L2INFO » pour la classe) ; une colonne inconnue est ignorée et signalée ;
@@ -60,7 +60,7 @@ L'API doit autoriser l'origine du frontend (`ULTRAPLANNING_ORIGINES`).
 
 **Espace invités léger** (connexions lentes, forfaits limités) :
 - la console d'administration et le client Supabase ne sont téléchargés qu'à l'ouverture de `/admin` ; le jeu de test, qu'en mode simulé ; la bibliothèque Excel, qu'au clic sur l'export. Première visite : ≈ 170 Ko au total ;
-- l'API compresse ses réponses et étiquette l'emploi du temps public (ETag) : tant que rien n'est publié ou modifié, une visite ne coûte qu'une réponse « 304 » vide ;
+- l'API compresse ses réponses et étiquette l'emploi du temps public (ETag) : tant que rien n'est publié ou modifié, une visite ne coûte qu'une réponse « 304 » vide. La page revérifie toutes les minutes et au retour sur l'onglet, et affiche les changements sans rechargement (la console fait de même avec sa propre image de la base) ;
 - un service worker (`public/sw.js`, en production) garde les fichiers du site et le dernier emploi du temps sur l'appareil : visites suivantes quasi gratuites, consultation possible sans connexion (bandeau « Hors ligne ») ;
 - pas de police monospace à télécharger (police système).
 
@@ -71,7 +71,16 @@ L'API doit autoriser l'origine du frontend (`ULTRAPLANNING_ORIGINES`).
 Le front ne lit et n'écrit qu'à travers `useStore()` (`lib/store.tsx`) :
 - **Lecture** : l'invité reçoit l'image publique (version publiée seulement), un gestionnaire connecté l'image complète.
 - **Écriture** : chaque `mutate()` calcule la différence avec l'état précédent (par clé primaire) et l'envoie à `POST /api/base/sync`. Si la base la refuse, le motif s'affiche et l'état réel est rechargé. Les contrôles de `lib/rules.ts` expliquent un refus avant l'écriture ; la base reste l'arbitre final.
-- **Génération** : le moteur CP-SAT tourne sur le serveur, sur une filière ou tout l'établissement, de la semaine choisie à la fin du semestre. On voit les heures placées, les heures non placées et leur motif, et un aperçu semaine par semaine avant d'appliquer.
-- **Assistant IA** : messages envoyés à l'API ; chaque proposition affiche ses conséquences et se valide ou se rejette sur place, et aussi depuis la page Publication.
+- **Génération** : le solveur (moteur v3) tourne sur le serveur, sur une filière ou tout l'établissement, de la semaine choisie à la fin du semestre. On voit les heures placées, les heures non placées et leur motif, et un aperçu semaine par semaine avant d'appliquer. La carte **Règles du planificateur** saisit des règles sans toucher au code (interdire une fenêtre à une classe, un enseignant ou un cours ; finir une matière avant une autre ; plafond d'heures par jour).
+- **Référentiel, règles 2iE** : site des cours d'une classe, groupes de type option et groupe parent (demi-groupe de TP dans son TD), cours mutualisés, types de salle acceptés, salles réservées, trajets entre sites. Les contrôles de la console (glisser-déposer) appliquent les mêmes règles que la base.
+- **Examens et rattrapages (Planification)** : on sélectionne 2 ou 3 h à la souris sur une case vide (la sélection s'arrête à 3 h et à la pause), puis clic droit, ou le bouton « Programmer une épreuve » ; la fenêtre (`components/timetable/DialogEpreuve.tsx`) propose le cours, le campus et les salles libres, avec les places restantes quand une autre classe y compose déjà. Les règles sont dans `lib/rules.ts`, alignées sur la base.
+- **Planification, deux vues** : « À jour », la seule version modifiable, avec le bouton Publier et le nombre de modifications non publiées ; « Historique », la liste des versions jusqu'à la première, leur grille en lecture seule et la restauration avec aperçu et confirmation (`components/timetable/HistoriqueVersions.tsx`). Les invités voient la dernière publication.
+- **Disponibilités** : la grille montre toutes les heures, comme un emploi du temps ; celles sans créneau (pause déjeuner, samedi après-midi) sont grisées et ne se déclarent pas.
+- **Cours à placer (Planification)** : sur grand écran, c'est la grille qui fixe la hauteur de la ligne ; le panneau ne l'étire jamais et sa liste défile dans sa propre hauteur. Les pastilles se calculent sur ce qui reste (`lib/aPlacer.ts`) : le volume du cours et la place dans son maximum de la semaine, sans jamais laisser un reste inférieur à 2 h.
+- **Glisser-déposer (Planification)** : le créneau visé se déduit de la position du pointeur et de l'endroit où la séance a été saisie (`lib/glisser.ts`), et non de zones de dépôt. Un bloc en pointillé montre où la séance atterrit, avec sa salle ou le motif du refus. La validité des créneaux (`evaluerCreneau`, `lib/rules.ts`) contrôle une seule fois les règles sans rapport avec la salle, puis cherche une salle libre.
+- **Assistant IA** : messages envoyés à l'API ; un changement de séances s'écrit directement dans la version à jour (la carte le montre, avec un lien vers Planification), puis on publie à la main. Restent à valider sur leur carte les changements du référentiel et ce qui ferait perdre des heures.
+- **Réponses de l'assistant** : elles s'affichent au fur et à mesure qu'elles s'écrivent. Pendant l'attente, seul le vrai travail est annoncé (lecture, vérification, solveur).
+- **Écran neutre** : en arrivant sur l'assistant ou en y revenant depuis une autre page, aucune discussion n'est ouverte ; les précédentes restent dans la colonne de gauche. Seule une discussion désignée dans l'adresse (`?c=`) s'ouvre d'elle-même, par exemple après un rechargement.
+- **Suivi de la discussion** : à l'ouverture, à l'envoi et à la fin d'une réponse, la zone revient au dernier message, sans dépasser le début de la dernière réponse (une réponse plus haute que l'écran se lit depuis son début). Entre-temps, elle suit ce qui s'écrit, sauf si l'on est remonté lire plus haut.
 
 En mode simulé, le générateur glouton (`lib/generator.ts`) tourne dans le navigateur, l'assistant répond par des règles simples, et le bouton « Réinitialiser » recharge le jeu de test.

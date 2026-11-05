@@ -8,10 +8,11 @@ import { useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import { Badge, Button, Card, cn, Input, PageTitle, PillTabs, SectionTitle, Select, Switch } from '@/components/ui'
 import { joursGrille, WeekGrid } from '@/components/timetable/WeekGrid'
-import { VersionPubliee } from '@/components/VersionPubliee'
+import { ReglesPlanificateur } from '@/components/ReglesPlanificateur'
 import { appliquerGeneration, etatGeneration, lancerGeneration, type TacheGeneration } from '@/lib/api'
 import { expandWeek, generateWeek, type ResultatGeneration } from '@/lib/generator'
 import { enrichir, libelleCours } from '@/lib/queries'
+import { estEpreuve } from '@/lib/publics'
 import { edtTravail, nextId, useStore } from '@/lib/store'
 import { addDays, fmtJourMois, isoWeek, jourOf, mondayOf, todayIso, weeksBetween } from '@/lib/time'
 import type { Db, Seance } from '@/types/db'
@@ -54,8 +55,8 @@ export default function Generation() {
   const edt = edtTravail(db)
   const semestre = db.semestre.find((s) => s.id_semestre === edt.id_semestre)!
   const weeks = useMemo(() => weeksBetween(semestre.date_debut, semestre.date_fin), [semestre])
-  const lecture = edt.statut === 'publie' || edt.statut === 'archive'
-  const contraintes = db.contrainte.filter((c) => c.id_edt === edt.id_edt)
+  // CD-xx et CS-xx ; les règles du planificateur (avec paramètres) ont leur propre carte
+  const contraintes = db.contrainte.filter((c) => c.id_edt === edt.id_edt && !c.parametres)
 
   const [depart, setDepart] = useState(() => {
     const next = addDays(mondayOf(todayIso()), 7)
@@ -155,7 +156,7 @@ export default function Generation() {
   const appliquer = () => {
     if (connecte) return void appliquerServeur()
     if (!resultat) return
-    const garder = db.seance.filter((s) => s.id_edt !== edt.id_edt || s.date_seance < resultat.depart || (garderVerrou && s.est_verrouillee))
+    const garder = db.seance.filter((s) => s.id_edt !== edt.id_edt || s.date_seance < resultat.depart || estEpreuve(s) || (garderVerrou && s.est_verrouillee))
     const autres = garder.filter((s) => s.id_edt !== edt.id_edt)
     const memeEdt = garder.filter((s) => s.id_edt === edt.id_edt)
     const nouvelles = resultat.semaine.filter((s) => s.id_seance < 0)
@@ -201,8 +202,7 @@ export default function Generation() {
 
   return (
     <div className="grid grid-cols-1 gap-6">
-      <PageTitle eyebrow={`Version ${edt.version} · mode ${edt.mode_generation}`} title="Génération automatique" />
-      <VersionPubliee edt={edt} />
+      <PageTitle eyebrow={`Version à jour · mode ${edt.mode_generation}`} title="Génération automatique" />
 
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-[24rem_minmax(0,1fr)]">
         <div className="grid h-fit grid-cols-1 gap-6">
@@ -215,7 +215,7 @@ export default function Generation() {
                     <div className="min-w-0">
                       <p className="text-sm font-medium"><span className="font-mono text-xs text-ink-2">{c.type_contrainte}</span> {c.libelle}</p>
                     </div>
-                    <Switch checked={c.est_active} onChange={(v) => setContrainte(c.id_contrainte, { est_active: v })} label={`Activer ${c.type_contrainte}`} disabled={lecture} />
+                    <Switch checked={c.est_active} onChange={(v) => setContrainte(c.id_contrainte, { est_active: v })} label={`Activer ${c.type_contrainte}`} />
                   </div>
                   <div className={cn('mt-2 flex items-center gap-3', !c.est_active && 'opacity-40')}>
                     <input
@@ -223,7 +223,7 @@ export default function Generation() {
                       min={0}
                       max={10}
                       value={c.poids}
-                      disabled={!c.est_active || lecture}
+                      disabled={!c.est_active}
                       onChange={(e) => setContrainte(c.id_contrainte, { poids: Number(e.target.value) })}
                       className="h-2 w-full cursor-pointer accent-[#03254C]"
                       aria-label={`Poids de ${c.type_contrainte}`}
@@ -231,12 +231,14 @@ export default function Generation() {
                     <span className="w-6 text-right font-mono text-sm tabular-nums">{c.poids}</span>
                   </div>
                   {c.valeur !== null && (
-                    <ValeurContrainte valeur={c.valeur} unite="h par jour" disabled={!c.est_active || lecture} onChange={(v) => setContrainte(c.id_contrainte, { valeur: v })} />
+                    <ValeurContrainte valeur={c.valeur} unite="h par jour" disabled={!c.est_active} onChange={(v) => setContrainte(c.id_contrainte, { valeur: v })} />
                   )}
                 </li>
               ))}
             </ul>
           </Card>
+
+          <ReglesPlanificateur edt={edt} />
 
           <Card className="p-5">
             <SectionTitle eyebrow="Toujours respectées" title="Contraintes dures" />
@@ -249,7 +251,7 @@ export default function Generation() {
                     <span className="truncate">{c.libelle}</span>
                   </div>
                   {c.valeur !== null && (
-                    <ValeurContrainte valeur={c.valeur} unite="matières par semaine" disabled={lecture} onChange={(v) => setContrainte(c.id_contrainte, { valeur: v })} />
+                    <ValeurContrainte valeur={c.valeur} unite="matières par semaine" onChange={(v) => setContrainte(c.id_contrainte, { valeur: v })} />
                   )}
                 </li>
               ))}
@@ -263,7 +265,7 @@ export default function Generation() {
             <div className="mt-4 grid gap-4 sm:grid-cols-2">
               <label className="flex flex-col gap-1.5">
                 <span className="pl-1 text-sm font-medium">Générer à partir de</span>
-                <Select value={depart} onChange={(e) => setDepart(e.target.value)} disabled={lecture}>
+                <Select value={depart} onChange={(e) => setDepart(e.target.value)}>
                   {weeks.map((w) => <option key={w} value={w}>Semaine {isoWeek(w)} · {fmtJourMois(w)}</option>)}
                 </Select>
                 <span className="pl-1 text-xs text-ink-2">Les semaines précédentes ne sont pas modifiées.</span>
@@ -271,7 +273,7 @@ export default function Generation() {
               {connecte && (
                 <label className="flex flex-col gap-1.5">
                   <span className="pl-1 text-sm font-medium">Périmètre</span>
-                  <Select value={perimetre} onChange={(e) => { setPerimetre(e.target.value); setClassesChoisies([]) }} disabled={lecture}>
+                  <Select value={perimetre} onChange={(e) => { setPerimetre(e.target.value); setClassesChoisies([]) }}>
                     <option value="">Tout l'établissement</option>
                     {db.filiere.map((f) => <option key={f.id_filiere} value={f.code_filiere}>{f.code_filiere} · {f.libelle}</option>)}
                   </Select>
@@ -289,7 +291,7 @@ export default function Generation() {
                     {classesProposees.map((c) => {
                       const choisie = classesChoisies.includes(c.code_classe)
                       return (
-                        <button key={c.id_classe} type="button" aria-pressed={choisie} disabled={lecture} onClick={() => basculerClasse(c.code_classe)}
+                        <button key={c.id_classe} type="button" aria-pressed={choisie} onClick={() => basculerClasse(c.code_classe)}
                           className={cn('press h-8 rounded-full px-3 text-xs font-medium ring-1 disabled:opacity-50',
                             choisie ? 'bg-navy text-white ring-navy' : 'bg-white/80 text-ink-2 ring-line hover:text-ink')}>
                           {c.code_classe}
@@ -306,7 +308,7 @@ export default function Generation() {
                     {matieresProposees.map((m) => {
                       const choisie = matieresChoisies.includes(m.code_matiere)
                       return (
-                        <button key={m.id_matiere} type="button" aria-pressed={choisie} disabled={lecture} onClick={() => basculerMatiere(m.code_matiere)}
+                        <button key={m.id_matiere} type="button" aria-pressed={choisie} onClick={() => basculerMatiere(m.code_matiere)}
                           title={m.code_matiere}
                           className={cn('press h-8 rounded-full px-3 text-xs font-medium ring-1 disabled:opacity-50',
                             choisie ? 'bg-orange text-navy ring-orange' : 'bg-white/80 text-ink-2 ring-line hover:text-ink')}>
@@ -323,14 +325,14 @@ export default function Generation() {
               {connecte && (
                 <label className="flex flex-col gap-1.5">
                   <span className="pl-1 text-sm font-medium">Période</span>
-                  <Select value={String(duree)} onChange={(e) => setDuree(Number(e.target.value))} disabled={lecture}>
+                  <Select value={String(duree)} onChange={(e) => setDuree(Number(e.target.value))}>
                     <option value="0">Jusqu'à la fin du semestre ({fmtJourMois(semestre.date_fin)})</option>
                     <option value="1">Cette semaine seulement</option>
                     <option value="2">Deux semaines</option>
                     <option value="-1">Jusqu'à une date…</option>
                   </Select>
                   {duree === -1 && (
-                    <Input type="date" value={finChoisie} min={depart} max={semestre.date_fin} disabled={lecture}
+                    <Input type="date" value={finChoisie} min={depart} max={semestre.date_fin}
                       onChange={(e) => setFinChoisie(e.target.value)} aria-label="Dernier jour généré" aria-invalid={finInvalide} />
                   )}
                   <span className="pl-1 text-xs text-ink-2">Sur une période courte, chaque cours reçoit sa part du volume restant ; le reste est reporté.</span>
@@ -346,7 +348,7 @@ export default function Generation() {
                         : 'Désactivé : les séances non verrouillées de la période sont recalculées.'}
                     </p>
                   </div>
-                  <Switch checked={completer} onChange={setCompleter} label="Compléter seulement" disabled={lecture} />
+                  <Switch checked={completer} onChange={setCompleter} label="Compléter seulement" />
                 </div>
               )}
               <div className={cn('flex items-center justify-between gap-3 rounded-3xl bg-white/70 px-4 py-3 ring-1 ring-white', completer && 'opacity-50')}>
@@ -354,11 +356,11 @@ export default function Generation() {
                   <p className="text-sm font-medium">Garder les séances verrouillées</p>
                   <p className="text-xs text-ink-2">{db.seance.filter((s) => s.id_edt === edt.id_edt && s.est_verrouillee && s.date_seance >= depart).length} séances verrouillées à partir de cette semaine</p>
                 </div>
-                <Switch checked={garderVerrou || completer} onChange={setGarderVerrou} label="Garder les séances verrouillées" disabled={lecture || completer} />
+                <Switch checked={garderVerrou || completer} onChange={setGarderVerrou} label="Garder les séances verrouillées" disabled={completer} />
               </div>
             </div>
             <div className="mt-5 flex flex-wrap items-center gap-3">
-              <Button variant="accent" size="lg" onClick={lancer} disabled={etape >= 0 || lecture || (connecte && finInvalide)}>
+              <Button variant="accent" size="lg" onClick={lancer} disabled={etape >= 0 || (connecte && finInvalide)}>
                 {etape >= 0 ? <Loader2 className="animate-spin" /> : <Sparkles />}
                 {etape >= 0 ? 'Génération en cours…' : 'Lancer la génération'}
               </Button>

@@ -4,6 +4,7 @@
 // avant même d'écrire en base. La base reste l'arbitre final.
 
 import type { Cours, Db, Seance, Salle } from '@/types/db'
+import { effectifDuCours, effectifPublics, estEpreuve, publicsDuCours, publicsEnConflit, publicsSeance } from './publics'
 import { hours, jourOf, mondayOf, toMin } from './time'
 
 export interface Violation {
@@ -19,15 +20,17 @@ export const CODES_DURS: Record<string, string> = {
   'CD-03': 'Classe déjà en séance',
   'CD-04': 'Capacité de salle insuffisante',
   'CD-05': 'Type de salle non conforme',
-  'CD-06': 'Enseignant non habilité, absent ou indisponible',
+  'CD-06': 'Enseignant absent ou indisponible',
   'CD-08': 'Volume horaire dépassé',
   'CD-09': 'Date hors semestre ou jour férié',
   'CD-10': 'Séance non alignée sur la grille',
   'CD-11': 'Chevauche une pause',
-  'CD-12': 'Salle indisponible',
+  'CD-12': 'Salle indisponible ou réservée',
+  SITE: 'Salle hors du site de la promotion',
   'CD-13': 'Trop de matières dans la semaine',
   'CD-14': 'Rythme hebdomadaire du cours dépassé',
   DUREE: 'Durée hors 2 h – 4 h',
+  EXAMEN: 'Examen et rattrapage dans le désordre',
 }
 
 const overlaps = (a1: number, a2: number, b1: number, b2: number) => a1 < b2 && b1 < a2
@@ -45,12 +48,17 @@ export function checkSeance(db: Db, s: SeanceDraft, seances: Seance[] = db.seanc
   const creneau = db.creneau.find((x) => x.id_creneau === s.id_creneau)
   if (!cours || !salle || !creneau) return [{ code: 'REF', message: 'Cours, salle ou créneau introuvable' }]
   const classe = db.classe.find((c) => c.id_classe === cours.id_classe)!
+  const publics = publicsDuCours(db, cours) // public principal et publics d'un cours mutualisé
   const semestre = db.semestre.find((x) => x.id_semestre === cours.id_semestre)!
   const d1 = toMin(s.heure_debut)
   const d2 = toMin(s.heure_fin)
   const duree = hours(s.heure_debut, s.heure_fin)
+  const epreuve = estEpreuve(s)
 
-  if (duree < 2 || duree > 4) v.push({ code: 'DUREE', message: `Une séance dure entre 2 h et 4 h (ici ${duree} h).` })
+  if (epreuve) {
+    if (duree < 2 || duree > 3) v.push({ code: 'DUREE', message: `Une épreuve dure de 2 h à 3 h (ici ${duree} h).` })
+    if (s.id_enseignant !== null) v.push({ code: 'DUREE', message: "Une épreuve n'a pas d'enseignant." })
+  } else if (duree < 2 || duree > 4) v.push({ code: 'DUREE', message: `Une séance dure entre 2 h et 4 h (ici ${duree} h).` })
 
   // CD-10 : alignement sur la grille
   if (s.heure_debut !== creneau.heure_debut) {
@@ -59,9 +67,6 @@ export function checkSeance(db: Db, s: SeanceDraft, seances: Seance[] = db.seanc
   if (!db.creneau.some((c) => c.jour === creneau.jour && c.heure_fin === s.heure_fin)) {
     v.push({ code: 'CD-10', message: `L'heure de fin ${s.heure_fin} ne correspond à aucun créneau de la grille.` })
   }
-
-  // CD-12 : salle marquée indisponible
-  if (!salle.est_disponible) v.push({ code: 'CD-12', message: `${salle.nom_salle} est marquée indisponible.` })
 
   // CD-09 : le cours appartient au semestre de l'emploi du temps
   const edt = db.emploi_du_temps.find((e) => e.id_edt === s.id_edt)
@@ -82,7 +87,7 @@ export function checkSeance(db: Db, s: SeanceDraft, seances: Seance[] = db.seanc
   }
   const ferie = db.jour_ferie.find((f) => f.date_ferie === s.date_seance)
   if (ferie) v.push({ code: 'CD-09', message: `Le ${s.date_seance} est un jour férié (${ferie.libelle}).` })
-  const conge = congeAt(db, s.date_seance, cours.id_classe)
+  const conge = congeAt(db, s.date_seance, cours.id_classe, epreuve)
   if (conge) v.push({ code: 'CD-09', message: `Le ${s.date_seance} tombe pendant un congé (${conge.libelle}).` })
 
   const autres = seances.filter(
@@ -95,54 +100,53 @@ export function checkSeance(db: Db, s: SeanceDraft, seances: Seance[] = db.seanc
   )
   const coursOf = (x: Seance) => db.cours.find((c) => c.id_cours === x.id_cours)!
 
-  // CD-01 : salle
-  const conflitSalle = autres.find((x) => x.id_salle === s.id_salle)
+  // CD-01 : salle. Des épreuves peuvent la partager (voir CD-04), jamais une épreuve et un cours.
+  const conflitSalle = autres.find((x) => x.id_salle === s.id_salle && !(epreuve && estEpreuve(x)))
   if (conflitSalle) {
     v.push({ code: 'CD-01', message: `${salle.nom_salle} est déjà occupée de ${conflitSalle.heure_debut} à ${conflitSalle.heure_fin}.` })
   }
 
-  // CD-02 : enseignant
-  const conflitEns = autres.find((x) => coursOf(x).id_enseignant === cours.id_enseignant)
+  // CD-02 : enseignant de la séance (séance sans enseignant : aucun contrôle d'enseignant)
+  const ens = s.id_enseignant
+  const conflitEns = ens === null ? undefined : autres.find((x) => x.id_enseignant === ens)
   if (conflitEns) {
     v.push({ code: 'CD-02', message: `L'enseignant a déjà une séance de ${conflitEns.heure_debut} à ${conflitEns.heure_fin}.` })
   }
 
-  // CD-03 : une classe ne suit pas deux séances à la fois, sauf deux groupes
-  // différents du même type (TP-G1 / TP-G2) ; salle et enseignant différents
-  // sont déjà imposés par CD-01 et CD-02
-  const conflitPublic = autres.find((x) => coursOf(x).id_classe === cours.id_classe && !enParallele(db, cours, coursOf(x)))
+  // CD-03 : pas deux séances à la fois pour des étudiants communs (publics des cours mutualisés
+  // compris ; deux groupes frères du même type peuvent être en parallèle) ; salle et enseignant
+  // différents sont déjà imposés par CD-01 et CD-02
+  const publicsS = publicsSeance(db, cours, s)
+  const conflitPublic = autres.find((x) => {
+    const publicsX = publicsSeance(db, coursOf(x), x)
+    return publicsS.some((a) => publicsX.some((b) => publicsEnConflit(db.groupe, a, b)))
+  })
   if (conflitPublic) {
     v.push({ code: 'CD-03', message: `${classe.code_classe} a déjà une séance de ${conflitPublic.heure_debut} à ${conflitPublic.heure_fin}.` })
   }
 
-  // CD-04 : capacité
-  const effectif =
-    cours.id_groupe !== null
-      ? db.groupe.find((g) => g.id_groupe === cours.id_groupe)?.effectif ?? 0
-      : classe.effectif
-  if (salle.capacite < effectif) {
-    v.push({ code: 'CD-04', message: `${salle.nom_salle} compte ${salle.capacite} places pour ${effectif} étudiants.` })
+  // CD-04, CD-05, CD-12, site : ce qui ne dépend que de la salle et du cours
+  v.push(...violationsSalle(db, cours, salle, epreuve))
+  if (epreuve) {
+    // CD-04 : toute la classe, et les autres épreuves qui partagent la salle
+    const effectif = effectifPublics(db, publicsS) + autres
+      .filter((x) => x.id_salle === s.id_salle && estEpreuve(x))
+      .reduce((n, x) => n + effectifPublics(db, publicsSeance(db, coursOf(x), x)), 0)
+    if (salle.capacite < effectif) {
+      v.push({ code: 'CD-04', message: `${salle.nom_salle} compte ${salle.capacite} places pour ${effectif} étudiants.` })
+    }
   }
 
-  // CD-05 : type de salle
-  if (cours.id_type_salle !== null && salle.id_type_salle !== cours.id_type_salle) {
-    const attendu = db.type_salle.find((t) => t.id_type_salle === cours.id_type_salle)?.libelle
-    v.push({ code: 'CD-05', message: `Ce cours exige une salle de type « ${attendu} ».` })
-  }
-
-  // CD-06 : habilitation et absences datées de l'enseignant
-  if (!estHabilite(db, cours.id_enseignant, cours.id_matiere, cours.type_cours)) {
-    v.push({ code: 'CD-06', message: `L'enseignant n'est pas habilité pour ce cours (${cours.type_cours} de cette matière).` })
-  }
-  const absence = absenceAt(db, cours.id_enseignant, s.date_seance)
+  // CD-06 : absences datées et séjours de l'enseignant
+  const absence = ens === null ? undefined : absenceAt(db, ens, s.date_seance)
   if (absence) v.push({ code: 'CD-06', message: `L'enseignant est absent du ${absence.date_debut} au ${absence.date_fin}${absence.motif ? ` (${absence.motif})` : ''}.` })
-  if (horsSejour(db, cours.id_enseignant, s.date_seance)) {
+  if (ens !== null && horsSejour(db, ens, s.date_seance)) {
     v.push({ code: 'CD-06', message: `Intervenant externe : le ${s.date_seance} est en dehors de ses séjours prévus.` })
   }
 
   // CD-06 : disponibilités de la semaine type de l'enseignant
   const indispo = db.disponibilite.find((d) => {
-    if (d.id_enseignant !== cours.id_enseignant || d.niveau !== 'indisponible') return false
+    if (ens === null || d.id_enseignant !== ens || d.niveau !== 'indisponible') return false
     const c = db.creneau.find((x) => x.id_creneau === d.id_creneau)
     return !!c && c.jour === creneau.jour && overlaps(toMin(c.heure_debut), toMin(c.heure_fin), d1, d2)
   })
@@ -150,38 +154,145 @@ export function checkSeance(db: Db, s: SeanceDraft, seances: Seance[] = db.seanc
     v.push({ code: 'CD-06', message: `L'enseignant est indisponible sur ce créneau${indispo.motif ? ` (${indispo.motif})` : ''}.` })
   }
 
-  // CD-08 : volume horaire
-  const deja = seances
-    .filter((x) => x.id_cours === s.id_cours && x.id_edt === s.id_edt && x.statut !== 'annulee' && x.id_seance !== s.id_seance)
-    .reduce((acc, x) => acc + hours(x.heure_debut, x.heure_fin), 0)
-  if (deja + duree > cours.volume_horaire) {
-    v.push({ code: 'CD-08', message: `Volume prévu ${cours.volume_horaire} h dépassé (${deja} h déjà planifiées + ${duree} h).` })
+  // Une épreuve ne compte ni dans le volume, ni dans le rythme, ni dans les matières de la semaine
+  if (!epreuve) {
+    // CD-08 : volume horaire
+    const deja = seances
+      .filter((x) => x.id_cours === s.id_cours && x.id_edt === s.id_edt && x.statut !== 'annulee' && x.id_seance !== s.id_seance && !estEpreuve(x))
+      .reduce((acc, x) => acc + hours(x.heure_debut, x.heure_fin), 0)
+    if (deja + duree > cours.volume_horaire) {
+      v.push({ code: 'CD-08', message: `Volume prévu ${cours.volume_horaire} h dépassé (${deja} h déjà planifiées + ${duree} h).` })
+    }
+
+    // CD-14 : rythme hebdomadaire maximal du cours
+    const lundi = mondayOf(s.date_seance)
+    const memeSemaine = (x: Seance) =>
+      x.id_edt === s.id_edt && x.statut !== 'annulee' && x.id_seance !== s.id_seance && mondayOf(x.date_seance) === lundi && !estEpreuve(x)
+    const semaine = seances.filter((x) => memeSemaine(x) && x.id_cours === s.id_cours).reduce((a, x) => a + hours(x.heure_debut, x.heure_fin), 0)
+    if (semaine + duree > cours.heures_semaine_max) {
+      v.push({ code: 'CD-14', message: `Le cours dépasserait ${semaine + duree} h cette semaine (maximum ${cours.heures_semaine_max} h).` })
+    }
+
+    // CD-13 : au plus N matières différentes par classe et par semaine, pour chaque promotion du cours
+    const max = maxMatieresSemaine(db, s.id_edt)
+    if (max !== null) {
+      for (const id_classe of new Set(publics.map((p) => p.id_classe))) {
+        const matieres = new Set(seances.filter((x) => memeSemaine(x) && publicsDuCours(db, coursOf(x)).some((p) => p.id_classe === id_classe))
+          .map((x) => coursOf(x).id_matiere))
+        matieres.add(cours.id_matiere)
+        if (matieres.size > max) {
+          const code = db.classe.find((c) => c.id_classe === id_classe)?.code_classe
+          v.push({ code: 'CD-13', message: `${code} aurait ${matieres.size} matières différentes cette semaine (maximum ${max}).` })
+        }
+      }
+    }
   }
 
-  // CD-14 : rythme hebdomadaire maximal du cours
-  const lundi = mondayOf(s.date_seance)
-  const memeSemaine = (x: Seance) =>
-    x.id_edt === s.id_edt && x.statut !== 'annulee' && x.id_seance !== s.id_seance && mondayOf(x.date_seance) === lundi
-  const semaine = seances.filter((x) => memeSemaine(x) && x.id_cours === s.id_cours).reduce((a, x) => a + hours(x.heure_debut, x.heure_fin), 0)
-  if (semaine + duree > cours.heures_semaine_max) {
-    v.push({ code: 'CD-14', message: `Le cours dépasserait ${semaine + duree} h cette semaine (maximum ${cours.heures_semaine_max} h).` })
-  }
-
-  // CD-13 : au plus N matières différentes par classe et par semaine
-  const max = maxMatieresSemaine(db, s.id_edt)
-  if (max !== null) {
-    const matieres = new Set(seances.filter((x) => memeSemaine(x) && coursOf(x).id_classe === cours.id_classe).map((x) => coursOf(x).id_matiere))
-    matieres.add(cours.id_matiere)
-    if (matieres.size > max) {
-      v.push({ code: 'CD-13', message: `${classe.code_classe} aurait ${matieres.size} matières différentes cette semaine (maximum ${max}).` })
+  // Dans un module (matière d'une classe), le rattrapage vient après l'examen
+  if (epreuve) {
+    const debut = `${s.date_seance} ${s.heure_debut}`
+    const duModule = seances.filter((x) => x.id_edt === s.id_edt && x.statut !== 'annulee' && x.id_seance !== s.id_seance && estEpreuve(x)
+      && coursOf(x).id_matiere === cours.id_matiere && coursOf(x).id_classe === cours.id_classe)
+    if (s.nature === 'rattrapage' && !duModule.some((x) => x.nature === 'examen' && `${x.date_seance} ${x.heure_fin}` <= debut)) {
+      v.push({ code: 'EXAMEN', message: "Le rattrapage vient après l'examen du module : programmez d'abord l'examen, à une date antérieure." })
+    }
+    if (s.nature === 'examen' && duModule.some((x) => x.nature === 'rattrapage' && `${x.date_seance} ${x.heure_debut}` < `${s.date_seance} ${s.heure_fin}`)) {
+      v.push({ code: 'EXAMEN', message: "L'examen d'un module vient avant son rattrapage." })
     }
   }
 
   return v
 }
 
-export function estHabilite(db: Db, id_enseignant: number, id_matiere: number, type_cours: string): boolean {
-  return db.habilitation.some((h) => h.id_enseignant === id_enseignant && h.id_matiere === id_matiere && h.type_cours === type_cours)
+/** Ce qui empêche une salle d'accueillir un cours, quel que soit le créneau */
+export function violationsSalle(db: Db, cours: Cours, salle: Salle, epreuve = false): Violation[] {
+  const v: Violation[] = []
+  const publics = publicsDuCours(db, cours)
+
+  // CD-12 : salle marquée indisponible
+  if (!salle.est_disponible) v.push({ code: 'CD-12', message: `${salle.nom_salle} est marquée indisponible.` })
+
+  // CD-04 : capacité (effectif de tous les publics du cours) ; une épreuve se contrôle à part
+  const effectif = effectifDuCours(db, cours)
+  if (!epreuve && salle.capacite < effectif) {
+    v.push({ code: 'CD-04', message: `${salle.nom_salle} compte ${salle.capacite} places pour ${effectif} étudiants.` })
+  }
+
+  // CD-05 : type de salle exigé, ou l'un des types acceptés (COURS_TYPE_SALLE)
+  const types = [cours.id_type_salle, ...db.cours_type_salle.filter((t) => t.id_cours === cours.id_cours).map((t) => t.id_type_salle)]
+    .filter((t): t is number => t !== null)
+  if (!epreuve && types.length && !types.includes(salle.id_type_salle)) {
+    const attendus = types.map((t) => db.type_salle.find((x) => x.id_type_salle === t)?.libelle).join(' » ou « ')
+    v.push({ code: 'CD-05', message: `Ce cours exige une salle de type « ${attendus} ».` })
+  }
+
+  // Site : la salle est sur le site de chaque promotion du cours (s'il est fixé)
+  const horsSite = publics.map((p) => db.classe.find((c) => c.id_classe === p.id_classe))
+    .find((c) => c?.id_site != null && c.id_site !== salle.id_site)
+  if (!epreuve && horsSite) {
+    const site = db.site.find((x) => x.id_site === horsSite.id_site)?.nom_site
+    v.push({ code: 'SITE', message: `${horsSite.code_classe} a tous ses cours sur le site ${site} : ${salle.nom_salle} n'y est pas.` })
+  }
+
+  // CD-12 : salle réservée à certaines formations
+  const reservations = db.salle_reservation.filter((r) => r.id_salle === salle.id_salle)
+  if (reservations.length && !reservations.some((r) => publics.some((p) => p.id_classe === r.id_classe))) {
+    v.push({ code: 'CD-12', message: `${salle.nom_salle} est réservée à d'autres formations.` })
+  }
+  return v
+}
+
+/** Salles qui conviennent à un cours, quel que soit le créneau, de la plus ajustée à la plus grande */
+export function sallesDuCours(db: Db, cours: Cours): Salle[] {
+  return db.salle.filter((salle) => violationsSalle(db, cours, salle).length === 0).sort((a, b) => a.capacite - b.capacite)
+}
+
+// Règles qui dépendent de la salle choisie : les autres valent pour toutes les salles d'un créneau
+export const REGLES_SALLE = new Set(['CD-01', 'CD-04', 'CD-05', 'CD-12', 'SITE'])
+
+export type EvaluationCreneau =
+  | { ok: true; id_salle: number }
+  /** raison : le motif complet ; court : quelques mots, pour l'aperçu sur la grille */
+  | { ok: false; raison: string; court: string }
+
+/**
+ * Une séance peut-elle aller sur ce créneau, et dans quelle salle ? Même résultat que d'essayer
+ * sallesCompatibles salle par salle, mais assez rapide pour colorer toute la semaine pendant un
+ * glisser : les règles sans rapport avec la salle ne sont contrôlées qu'une fois, puis on cherche
+ * une salle libre parmi `salles` (sallesDuCours, calculées une fois pour le cours).
+ * `garderSalle` : la salle du brouillon est conservée si elle convient (séance déplacée).
+ */
+export function evaluerCreneau(db: Db, draft: SeanceDraft, seances: Seance[], salles: Salle[], garderSalle: boolean): EvaluationCreneau {
+  const vs = checkSeance(db, draft, seances)
+  if (garderSalle && vs.length === 0) return { ok: true, id_salle: draft.id_salle }
+  if (estEpreuve(draft) && !vs.some((v) => !REGLES_SALLE.has(v.code))) {
+    // Une épreuve peut partager une salle : chaque salle se contrôle en entier
+    const libre = salles.find((x) => checkSeance(db, { ...draft, id_salle: x.id_salle }, seances).length === 0)
+    return libre
+      ? { ok: true, id_salle: libre.id_salle }
+      : { ok: false, raison: "Aucune salle libre assez grande sur cette plage (CD-01, CD-04).", court: 'Aucune salle libre' }
+  }
+  const bloquantes = vs.filter((v) => !REGLES_SALLE.has(v.code))
+  if (bloquantes.length) {
+    return {
+      ok: false,
+      raison: bloquantes.map((v) => `${v.code} : ${v.message}`).join('\n'),
+      court: CODES_DURS[bloquantes[0].code] ?? bloquantes[0].message,
+    }
+  }
+  const d1 = toMin(draft.heure_debut)
+  const d2 = toMin(draft.heure_fin)
+  const occupees = new Set(
+    seances
+      .filter((x) => x.id_edt === draft.id_edt && x.statut !== 'annulee' && x.id_seance !== draft.id_seance
+        && x.date_seance === draft.date_seance && overlaps(d1, d2, toMin(x.heure_debut), toMin(x.heure_fin)))
+      .map((x) => x.id_salle),
+  )
+  const salle = salles.find((x) => !occupees.has(x.id_salle))
+  if (salle) return { ok: true, id_salle: salle.id_salle }
+  return salles.length
+    ? { ok: false, raison: `CD-01 : les ${salles.length} salles adaptées à ce cours sont occupées sur cette plage.`, court: 'Aucune salle libre' }
+    : { ok: false, raison: 'Aucune salle ne convient à ce cours : capacité, type, site ou réservation (CD-04, CD-05, CD-12).', court: 'Aucune salle adaptée' }
 }
 
 /** Intervenant externe sans séjour prévu à cette date */
@@ -203,18 +314,13 @@ export function absenceAt(db: Db, id_enseignant: number, date: string) {
   return db.absence_enseignant.find((a) => a.id_enseignant === id_enseignant && date >= a.date_debut && date <= a.date_fin)
 }
 
-/** Deux cours d'une même classe peuvent-ils avoir lieu en même temps ? (CD-03) */
-export function enParallele(db: Db, a: Cours, b: Cours): boolean {
-  if (a.id_groupe === null || b.id_groupe === null || a.id_groupe === b.id_groupe) return false
-  const ga = db.groupe.find((g) => g.id_groupe === a.id_groupe)
-  const gb = db.groupe.find((g) => g.id_groupe === b.id_groupe)
-  return !!ga && !!gb && ga.type_groupe === gb.type_groupe
-}
 
-/** Congé couvrant une date, pour tout l'établissement ou pour la classe donnée */
-export function congeAt(db: Db, date: string, id_classe?: number | null) {
+/** Congé couvrant une date, pour tout l'établissement ou pour la classe donnée. `epreuve` : une période
+ *  d'examens est fermée aux cours, pas aux épreuves. */
+export function congeAt(db: Db, date: string, id_classe?: number | null, epreuve = false) {
   return db.conge.find(
-    (g) => date >= g.date_debut && date <= g.date_fin && (g.id_classe === null || (id_classe != null && g.id_classe === id_classe)),
+    (g) => date >= g.date_debut && date <= g.date_fin && (g.id_classe === null || (id_classe != null && g.id_classe === id_classe))
+      && !(epreuve && g.type_conge === 'examens'),
   )
 }
 
@@ -242,9 +348,30 @@ export function sallesCompatibles(db: Db, draft: SeanceDraft, seances: Seance[] 
 
 export function effectifCours(db: Db, id_cours: number): number {
   const c = db.cours.find((x) => x.id_cours === id_cours)
-  if (!c) return 0
-  if (c.id_groupe !== null) return db.groupe.find((g) => g.id_groupe === c.id_groupe)?.effectif ?? 0
-  return db.classe.find((x) => x.id_classe === c.id_classe)?.effectif ?? 0
+  return c ? effectifDuCours(db, c) : 0
+}
+
+/** Examen dont le module a encore un rattrapage (et aucun autre examen) : il ne se retire pas */
+export function examenAvecRattrapage(db: Db, s: Seance): boolean {
+  if (s.nature !== 'examen') return false
+  const cours = db.cours.find((c) => c.id_cours === s.id_cours)
+  const duModule = db.seance.filter((x) => {
+    const k = db.cours.find((c) => c.id_cours === x.id_cours)
+    return x.id_edt === s.id_edt && x.statut !== 'annulee' && x.id_seance !== s.id_seance && k?.id_matiere === cours?.id_matiere && k?.id_classe === cours?.id_classe
+  })
+  return duModule.some((x) => x.nature === 'rattrapage') && !duModule.some((x) => x.nature === 'examen')
+}
+
+/** Salles possibles pour une épreuve, de la plus petite à la plus grande */
+export function sallesPourEpreuves(db: Db): Salle[] {
+  return db.salle.filter((s) => s.est_disponible).sort((a, b) => a.capacite - b.capacite)
+}
+
+/** Cours auquel rattacher l'épreuve d'un module : de préférence le CM de toute la classe */
+export function coursDuModule(db: Db, id_classe: number, id_matiere: number, id_semestre: number): Cours | undefined {
+  return db.cours
+    .filter((c) => c.id_classe === id_classe && c.id_matiere === id_matiere && c.id_semestre === id_semestre)
+    .sort((a, b) => Number(a.id_groupe !== null) - Number(b.id_groupe !== null) || Number(a.type_cours !== 'CM') - Number(b.type_cours !== 'CM') || a.id_cours - b.id_cours)[0]
 }
 
 /** Découpage hebdomadaire d'un cours (COURS_SEANCE_MODELE, sinon duree_seance × nb_seances_semaine) */

@@ -5,11 +5,12 @@
 import { AlertTriangle, Ban, CalendarOff, Check, Plane, Plus, Star, Trash2 } from 'lucide-react'
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { toast } from 'sonner'
+import { bornesGrille } from '@/components/timetable/WeekGrid'
 import { Badge, Button, Card, cn, Combobox, Input, PageTitle } from '@/components/ui'
 import { enrichir, nomEnseignant } from '@/lib/queries'
 import { horsSejour } from '@/lib/rules'
 import { edtTravail, nextId, useStore } from '@/lib/store'
-import { fmtHeure, fmtJourCourt, fmtJourMois, jourOf, JOURS, toMin } from '@/lib/time'
+import { fmtHeure, fmtJourCourt, fmtJourMois, fromMin, jourOf, JOURS, toMin } from '@/lib/time'
 import type { NiveauDispo } from '@/types/db'
 
 const NIVEAUX: Record<NiveauDispo, { label: string; icon: ReactNode; cell: string }> = {
@@ -35,7 +36,14 @@ export default function Disponibilites() {
 
   const ens = db.enseignant.find((e) => e.id_enseignant === id)
   const jours = JOURS.filter((j) => db.creneau.some((c) => c.jour === j))
-  const heures = [...new Set(db.creneau.map((c) => c.heure_debut))].sort()
+  // Toutes les heures de la grille, comme sur un emploi du temps : celles sans créneau (pause, samedi après-midi) sont grisées
+  const [debutGrille, finGrille] = bornesGrille(db)
+  const lignes = db.creneau.length
+    ? [...new Set([
+        ...db.creneau.map((c) => toMin(c.heure_debut)),
+        ...Array.from({ length: Math.ceil((finGrille - debutGrille) / 60) }, (_, i) => debutGrille + i * 60),
+      ])].sort((a, b) => a - b)
+    : []
   const niveau = (id_creneau: number): NiveauDispo =>
     db.disponibilite.find((d) => d.id_enseignant === id && d.id_creneau === id_creneau)?.niveau ?? 'disponible'
   const motifDe = (id_creneau: number) => db.disponibilite.find((d) => d.id_enseignant === id && d.id_creneau === id_creneau)?.motif
@@ -81,7 +89,7 @@ export default function Disponibilites() {
     const ind = db.disponibilite.filter((d) => d.id_enseignant === id && d.niveau === 'indisponible')
     const abs = db.absence_enseignant.filter((a) => a.id_enseignant === id)
     const list = enrichir(db, db.seance.filter((s) => s.id_edt === edt.id_edt && s.statut !== 'annulee'))
-      .filter((s) => s.enseignant.id_enseignant === id)
+      .filter((s) => s.enseignant?.id_enseignant === id)
       .filter(
         (s) =>
           horsSejour(db, id, s.date_seance) ||
@@ -216,17 +224,24 @@ export default function Disponibilites() {
               <table className="w-full min-w-[34rem] table-fixed border-separate border-spacing-1 select-none" onPointerLeave={() => setPeinture(false)}>
                 <thead>
                   <tr>
-                    <th className="w-14" />
+                    <th className="w-16" />
                     {jours.map((j) => <th key={j} className="pb-1 text-sm font-medium">{j}</th>)}
                   </tr>
                 </thead>
                 <tbody>
-                  {heures.map((h) => (
-                    <tr key={h}>
-                      <td className="pr-1 text-right font-mono text-xs text-ink-2 tabular-nums">{fmtHeure(h)}</td>
+                  {lignes.map((debut, i) => (
+                    <tr key={debut}>
+                      <td className="pr-1 text-right font-mono text-xs whitespace-nowrap text-ink-2 tabular-nums">{fmtHeure(fromMin(debut))}–{fmtHeure(fromMin(lignes[i + 1] ?? finGrille))}</td>
                       {jours.map((j) => {
-                        const c = db.creneau.find((k) => k.jour === j && k.heure_debut === h)
-                        if (!c) return <td key={j} className="hatched rounded-xl" />
+                        const c = db.creneau.find((k) => k.jour === j && toMin(k.heure_debut) === debut)
+                        if (!c) {
+                          const pause = db.pause.find((p) => toMin(p.heure_debut) <= debut && debut < toMin(p.heure_fin))
+                          return (
+                            <td key={j} title={pause?.libelle ?? 'Pas de cours sur ce créneau'} className="hatched h-11 rounded-xl bg-muted/60 px-1 text-center">
+                              {pause && <span className="hidden max-w-full truncate rounded-full bg-white/80 px-2 py-0.5 align-middle text-[10px] text-ink-2 sm:inline-block">{pause.libelle}</span>}
+                            </td>
+                          )
+                        }
                         const n = niveau(c.id_creneau)
                         const m = motifDe(c.id_creneau)
                         return (
@@ -234,7 +249,7 @@ export default function Disponibilites() {
                             <button
                               type="button"
                               disabled={id === null}
-                              aria-label={`${j} ${fmtHeure(h)} : ${NIVEAUX[n].label}${m ? `, ${m}` : ''}`}
+                              aria-label={`${j} ${fmtHeure(fromMin(debut))} : ${NIVEAUX[n].label}${m ? `, ${m}` : ''}`}
                               title={m ?? NIVEAUX[n].label}
                               onPointerDown={(e) => { e.preventDefault(); setPeinture(true); appliquer(c.id_creneau) }}
                               onPointerEnter={() => peinture && appliquer(c.id_creneau)}

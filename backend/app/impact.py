@@ -45,13 +45,22 @@ def analyser(d: Donnees, r: Resultat, noms_matieres: dict[int, str]) -> dict:
     ]
     # Génération sur une courte période : heures prévues après elle (pas perdues)
     heures_reportees = [{"cours": lib(k), "heures": h} for k, h in sorted(r.reportees.items()) if h > 0]
+    # Séances à ramener dans la période qui n'y ont pas trouvé de place : elles restent où elles sont
+    # (hors période)
+    restees = [{"cours": lib(x["id_cours"]), "date": x["date"], "heure_debut": x["heure_debut"],
+                "heure_fin": x["heure_fin"], "raison": x["raison"]}
+               for x in r.statistiques.get("restees_hors_periode", [])]
 
-    enseignants: dict[int, int] = defaultdict(int)
-    for k in touches:
-        enseignants[d.cours[k].id_enseignant] += supprimees[k] + creees[k]
+    # Enseignants des séances retirées et des séances créées (pas forcément celui prévu du cours)
+    # (une séance déplacée est retirée puis créée : elle ne compte qu'une fois)
+    enseignants: dict[int, list[int]] = defaultdict(lambda: [0, 0])
+    for o in ops:
+        e = (o.get("apres") or o.get("avant") or {}).get("id_enseignant")
+        if e is not None:
+            enseignants[e][o["action"] == "creer"] += 1
     a_prevenir = [
-        {"enseignant": d.enseignants[e].nom, "statut": d.enseignants[e].statut, "seances_modifiees": n}
-        for e, n in sorted(enseignants.items(), key=lambda x: -x[1])
+        {"enseignant": d.enseignants[e].nom, "statut": d.enseignants[e].statut, "seances_modifiees": max(n)}
+        for e, n in sorted(enseignants.items(), key=lambda x: -max(x[1]))
     ]
 
     def fins(seances: list[Seance]) -> dict[int, date]:
@@ -78,7 +87,8 @@ def analyser(d: Donnees, r: Resultat, noms_matieres: dict[int, str]) -> dict:
             if s.date_seance not in jours_touches:
                 continue
             c = d.cours[s.id_cours]
-            charge[c.id_enseignant, s.date_seance] += s.duree
+            if s.id_enseignant is not None:
+                charge[s.id_enseignant, s.date_seance] += s.duree
             sites[c.id_classe, s.date_seance].add(d.salles[s.id_salle].id_site)
         return charge, sites
 
@@ -97,10 +107,12 @@ def analyser(d: Donnees, r: Resultat, noms_matieres: dict[int, str]) -> dict:
 
     return {
         "seances_deplacees": deplacees,
-        "seances_supprimees": sum(supprimees.values()),
-        "seances_creees": sum(creees.values()),
+        # en plus des séances déplacées, qui sont retirées puis recréées
+        "seances_supprimees": sum(supprimees.values()) - deplacees,
+        "seances_creees": sum(creees.values()) - deplacees,
         "heures_perdues": heures_perdues,
         "heures_reportees": heures_reportees,
+        "restees_hors_periode": restees,
         "enseignants_a_prevenir": a_prevenir,
         "classes_concernees": sorted({d.classes[d.cours[k].id_classe].code_classe for k in touches}),
         "fins_decalees": decalees,
@@ -109,12 +121,17 @@ def analyser(d: Donnees, r: Resultat, noms_matieres: dict[int, str]) -> dict:
     }
 
 
+def lignes_restees(impact: dict) -> list[str]:
+    restees = impact.get("restees_hors_periode")
+    if not restees:
+        return []
+    return [f"- {len(restees)} séance(s) n'ont pas de place dans la période et restent où elles sont :",
+            *(f"  · {x['cours']} le {x['date']} {x['heure_debut'][:5]}–{x['heure_fin'][:5]} ({x['raison']})" for x in restees)]
+
+
 def resume(impact: dict) -> list[str]:
-    """Texte des conséquences, lu par l'assistant."""
+    """Texte des conséquences d'une proposition, lu par l'assistant."""
     lignes = ["Conséquences :"]
-    if not (impact["seances_supprimees"] or impact["seances_creees"]):
-        lignes.append("- Aucun changement : l'emploi du temps actuel satisfait déjà la demande.")
-        return lignes
     lignes.append(f"- {impact['seances_deplacees']} séance(s) déplacée(s) ; classes concernées : {', '.join(impact['classes_concernees'])}.")
     if impact["heures_perdues"]:
         total = sum(h["heures"] for h in impact["heures_perdues"])
@@ -124,6 +141,7 @@ def resume(impact: dict) -> list[str]:
         total = sum(h["heures"] for h in impact["heures_reportees"])
         lignes.append(f"- {total} h restent à programmer après la période (volume restant, selon le rythme des cours) : "
                       + ", ".join(f"{h['cours']} {h['heures']} h" for h in impact["heures_reportees"]) + ".")
+    lignes += lignes_restees(impact)
     if impact["enseignants_a_prevenir"]:
         lignes.append("- Enseignants à prévenir : " + ", ".join(
             f"{e['enseignant']} ({e['seances_modifiees']} séance(s){', externe' if e['statut'] == 'externe' else ''})"

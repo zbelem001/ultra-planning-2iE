@@ -23,6 +23,11 @@ from .donnees import (
 )
 
 
+def _existe(conn: psycopg.Connection, table: str) -> bool:
+    """Table du schéma version 11 (règles 2iE) : absente d'une base plus ancienne."""
+    return conn.execute("SELECT to_regclass(%s) IS NOT NULL", (table,)).fetchone()[0]
+
+
 def charger(conn: psycopg.Connection, id_edt: int) -> Donnees:
     cur = conn.cursor(row_factory=dict_row)
     cur.execute(
@@ -40,17 +45,34 @@ def charger(conn: psycopg.Connection, id_edt: int) -> Donnees:
         cur.execute(f"SELECT * FROM {table} WHERE id_ecole = %s {suite}", (ecole, *params))
         return cur.fetchall()
 
-    classes = {r["id_classe"]: Classe(r["id_classe"], r["code_classe"], r["effectif"], r["id_filiere"]) for r in tout("classe")}
+    classes = {r["id_classe"]: Classe(r["id_classe"], r["code_classe"], r["effectif"], r["id_filiere"], r.get("id_site"))
+               for r in tout("classe")}
     groupes = {
-        r["id_groupe"]: Groupe(r["id_groupe"], r["code_groupe"], r["type_groupe"], r["effectif"], r["id_classe"])
+        r["id_groupe"]: Groupe(r["id_groupe"], r["code_groupe"], r["type_groupe"], r["effectif"], r["id_classe"],
+                               r.get("id_groupe_parent"))
         for r in tout("groupe")
     }
+    # Version 11 : salles réservées, publics des cours mutualisés, types de salle acceptés, trajets
+    v11 = _existe(conn, "cours_public")
+    reservations: dict[int, set[int]] = defaultdict(set)
+    publics: dict[int, list[tuple[int, int | None]]] = defaultdict(list)
+    types_acceptes: dict[int, list[int]] = defaultdict(list)
+    trajets: dict[tuple[int, int], int] = {}
+    if v11:
+        for r in tout("salle_reservation"):
+            reservations[r["id_salle"]].add(r["id_classe"])
+        for r in tout("cours_public", "ORDER BY id_cours_public"):
+            publics[r["id_cours"]].append((r["id_classe"], r["id_groupe"]))
+        for r in tout("cours_type_salle"):
+            types_acceptes[r["id_cours"]].append(r["id_type_salle"])
+        trajets = {(r["id_site_a"], r["id_site_b"]): r["minutes"] for r in tout("site_trajet")}
     enseignants = {
         r["id_enseignant"]: Enseignant(r["id_enseignant"], f"{r['prenom']} {r['nom']}", r["statut"], r["nb_heures_max_semaine"])
         for r in tout("enseignant")
     }
     salles = {
-        r["id_salle"]: Salle(r["id_salle"], r["nom_salle"], r["capacite"], r["id_type_salle"], r["id_site"], r["batiment"], r["est_disponible"])
+        r["id_salle"]: Salle(r["id_salle"], r["nom_salle"], r["capacite"], r["id_type_salle"], r["id_site"], r["batiment"],
+                             r["est_disponible"], frozenset(reservations.get(r["id_salle"], ())))
         for r in tout("salle")
     }
     creneaux = [Creneau(r["id_creneau"], r["jour"], r["heure_debut"], r["heure_fin"]) for r in tout("creneau")]
@@ -69,6 +91,7 @@ def charger(conn: psycopg.Connection, id_edt: int) -> Donnees:
             r["id_enseignant"], r["id_type_salle"], r["priorite"],
             math.floor(r["heures_semaine_min"]), math.floor(r["heures_semaine_max"]),
             tuple(modeles.get(k) or [_heures_entieres(r["duree_seance"], "duree_seance")]),
+            tuple(publics.get(k, ())), tuple(types_acceptes.get(k, ())),
         )
 
     disponibilites = {}
@@ -84,13 +107,27 @@ def charger(conn: psycopg.Connection, id_edt: int) -> Donnees:
     for r in tout("sejour_enseignant"):
         sejours[r["id_enseignant"]].append(Periode(r["date_debut"], r["date_fin"]))
 
-    seances = [
-        Seance(r["id_cours"], r["date_seance"], r["heure_debut"], r["heure_fin"], r["id_salle"], r["id_seance"], r["est_verrouillee"])
-        for r in tout("seance", "AND id_edt = %s AND statut <> 'annulee'", id_edt)
-    ]
+    seances, examens = [], []
+    for r in tout("seance", "AND id_edt = %s AND statut <> 'annulee'", id_edt):
+        (seances if r.get("nature", "cours") == "cours" else examens).append(
+            Seance(r["id_cours"], r["date_seance"], r["heure_debut"], r["heure_fin"], r["id_salle"], r["id_seance"],
+                   r["est_verrouillee"], r["id_enseignant"]))
 
     poids, max_mat, plafond_jour = {}, 3, 6
     contraintes = tout("contrainte", "AND id_edt = %s", id_edt)
+    # Règles du planificateur (version 11) : contraintes avec des paramètres, appliquées par le moteur
+    regles = []
+    for r in contraintes:
+        if r.get("parametres") is None or not r["est_active"]:
+            continue
+        regle = {"id": r["id_contrainte"], "type": r["type_contrainte"], "dure": r["nature"] == "dure",
+                 "poids": r["poids"], "libelle": r["libelle"], **r["parametres"]}
+        if r.get("date_debut"):
+            regle["du"] = r["date_debut"].isoformat()
+        if r.get("date_fin"):
+            regle["au"] = r["date_fin"].isoformat()
+        regles.append(regle)
+    contraintes = [r for r in contraintes if r.get("parametres") is None]
     for r in contraintes:
         if r["nature"] == "souple" and r["est_active"]:
             poids[r["type_contrainte"]] = r["poids"]
@@ -108,8 +145,9 @@ def charger(conn: psycopg.Connection, id_edt: int) -> Donnees:
         semestre_fin=edt["date_fin"],
         classes=classes, groupes=groupes, enseignants=enseignants, salles=salles,
         creneaux=creneaux, pauses=pauses, jours_feries=feries, conges=conges, cours=cours,
-        disponibilites=disponibilites, absences=dict(absences), sejours=dict(sejours), seances=seances,
+        disponibilites=disponibilites, absences=dict(absences), sejours=dict(sejours), seances=seances, examens=examens,
         poids=poids, max_matieres_semaine=max_mat, plafond_heures_jour=plafond_jour,
+        trajet_min=trajets, regles=regles,
     )
 
 
@@ -143,13 +181,18 @@ def enregistrer(conn: psycopg.Connection, id_edt: int, resultat: Resultat) -> in
     ecole = ecole_de(conn, id_edt)
     with conn.transaction():
         ids = [s.id_seance for s in resultat.remplacees if s.id_seance is not None]
+        # Une séance recalculée à l'identique garde son enseignant (choisi à la main dans la grille)
+        gardes = {(s.id_cours, s.date_seance, s.heure_debut, s.heure_fin, s.id_salle): s.id_enseignant
+                  for s in resultat.remplacees}
         if ids:
             conn.execute("DELETE FROM seance WHERE id_seance = ANY(%s) AND id_ecole = %s", (ids, ecole))
         for s in resultat.seances:
             conn.execute(
-                "INSERT INTO seance (date_seance, heure_debut, heure_fin, id_cours, id_salle, id_creneau, id_edt, id_ecole) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
-                (s.date_seance, s.heure_debut, s.heure_fin, s.id_cours, s.id_salle, _id_creneau(conn, ecole, s), id_edt, ecole),
+                "INSERT INTO seance (date_seance, heure_debut, heure_fin, id_cours, id_enseignant, id_salle, id_creneau, id_edt, id_ecole) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                (s.date_seance, s.heure_debut, s.heure_fin, s.id_cours,
+                 gardes.get((s.id_cours, s.date_seance, s.heure_debut, s.heure_fin, s.id_salle), s.id_enseignant),
+                 s.id_salle, _id_creneau(conn, ecole, s), id_edt, ecole),
             )
         conn.execute("UPDATE emploi_du_temps SET mode_generation = 'automatique' WHERE id_edt = %s", (id_edt,))
     return len(resultat.seances)
@@ -171,10 +214,12 @@ def verifier(conn: psycopg.Connection, id_edt: int, s: Seance) -> str | None:
                 if n != 1:
                     return f"Séance {s.id_seance} introuvable"
             else:
+                # Nouvelle séance : l'enseignant indiqué, sinon celui prévu pour le cours
                 conn.execute(
-                    "INSERT INTO seance (date_seance, heure_debut, heure_fin, id_cours, id_salle, id_creneau, id_edt, id_ecole) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
-                    (s.date_seance, s.heure_debut, s.heure_fin, s.id_cours, s.id_salle, _id_creneau(conn, ecole, s), id_edt, ecole),
+                    "INSERT INTO seance (date_seance, heure_debut, heure_fin, id_cours, id_enseignant, id_salle, id_creneau, id_edt, id_ecole) "
+                    "SELECT %s, %s, %s, %s, coalesce(%s, c.id_enseignant), %s, %s, %s, %s FROM cours c WHERE c.id_cours = %s",
+                    (s.date_seance, s.heure_debut, s.heure_fin, s.id_cours, s.id_enseignant, s.id_salle,
+                     _id_creneau(conn, ecole, s), id_edt, ecole, s.id_cours),
                 )
             raise _Annuler
     except _Annuler:

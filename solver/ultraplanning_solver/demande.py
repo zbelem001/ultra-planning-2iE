@@ -21,10 +21,11 @@ class Perimetre:
     def contient(self, d: Donnees, c: Cours) -> bool:
         if not (self.id_filieres or self.id_classes or self.id_cours):
             return True
+        classes = [c.id_classe, *(ic for ic, _ in c.publics_suppl)]   # cours mutualisé : tous ses publics
         return (
             c.id_cours in self.id_cours
-            or c.id_classe in self.id_classes
-            or d.classes[c.id_classe].id_filiere in self.id_filieres
+            or any(ic in self.id_classes for ic in classes)
+            or any(d.classes[ic].id_filiere in self.id_filieres for ic in classes if ic in d.classes)
         )
 
 
@@ -53,7 +54,7 @@ class ContrainteAjoutee:
     def cible(self, c: Cours) -> bool:
         return (
             (self.id_cours is None or c.id_cours == self.id_cours)
-            and (self.id_classe is None or c.id_classe == self.id_classe)
+            and (self.id_classe is None or self.id_classe in (c.id_classe, *(ic for ic, _ in c.publics_suppl)))
             and (self.id_enseignant is None or c.id_enseignant == self.id_enseignant)
         )
 
@@ -100,11 +101,21 @@ class Demande:
     # Replanification : déplacer au minimum les séances déjà prévues dans la
     # fenêtre (mêmes heures par cours), au lieu de compléter le programme
     minimiser_changements: bool = False
+    # Avec minimiser_changements (moteur v3) : les séances du périmètre à partir de cette date, hors de la
+    # période, y sont ramenées ; celles qui n'y trouvent pas de place restent où elles sont (aucune heure perdue)
+    ramener_depuis: date | None = None
     # Génération sur une courte période (une ou deux semaines) : l'étage 1
     # répartit le volume restant jusqu'à cet horizon (défaut : fin du semestre)
     # selon le rythme de chaque cours, l'étage 2 ne place que la période ; les
     # heures prévues après elle sont reportées, pas perdues.
     horizon: date | None = None
+    # Moteur : « v3 » (Soraya Pitroipa : glouton multi-essais puis CP-SAT par promotion et semaine,
+    # règles 2iE) ou « cpsat » (ancien moteur à deux étages, gardé pour comparer)
+    moteur: Literal["v3", "cpsat"] = "v3"
+    essais: int = 8  # v3 : passages gloutons (ordres différents), en parallèle
+    processus: int | None = None  # v3 : essais en parallèle (défaut : nombre de processeurs)
+    temps_amelioration: float = 30.0  # v3 : secondes d'amélioration CP-SAT (0 : glouton seul)
+    concentration: float | None = None  # v3 : part du rythme maximal par semaine (défaut : 1 avec CD-13, 0,5 sinon)
     temps_max_semaines: float = 20.0  # secondes, étage 1
     temps_max_placement: float = 10.0  # secondes par semaine, étage 2
     iterations_max: int = 8
@@ -164,4 +175,5 @@ def _json(s: Seance) -> dict:
         "heure_debut": s.heure_debut.strftime("%H:%M"),
         "heure_fin": s.heure_fin.strftime("%H:%M"),
         "id_salle": s.id_salle,
+        "id_enseignant": s.id_enseignant,
     }

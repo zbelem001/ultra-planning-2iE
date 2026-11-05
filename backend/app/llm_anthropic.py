@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Callable
+from functools import lru_cache
 
 import anthropic
 
@@ -21,6 +22,12 @@ journal = logging.getLogger("ultraplanning.agent")
 
 class Indisponible(Exception):
     """Claude ne peut pas répondre (clé, quota, réseau) : l'agent essaie l'autre fournisseur."""
+
+
+@lru_cache(maxsize=1)
+def _client(cle: str) -> anthropic.Anthropic:
+    """Client conservé d'un message à l'autre : sa connexion reste ouverte, le suivant va plus vite."""
+    return anthropic.Anthropic(api_key=cle, max_retries=3)
 
 
 def outils_claude(outils: dict[str, Outil]) -> list[dict]:
@@ -38,13 +45,16 @@ def boucle(
     executer: Callable[[str, str], str],
     relancer_si_decrit: Callable[[str], str | None],
     client: anthropic.Anthropic | None = None,
-    reflechir: Callable[[], None] = lambda: None,
+    nouveau_tour: Callable[[], None] = lambda: None,
     visuels: list[dict] | None = None,
+    sur_texte: Callable[[str], None] = lambda morceau: None,
 ) -> tuple[str, bool]:
     """Fait répondre Claude ; renvoie (texte final, terminé). `terminé` est faux si la limite
     d'étapes d'outils est atteinte ou si la demande est refusée par le modèle. `visuels` : blocs
-    image ou document (fichiers joints sans texte), placés avant la demande."""
-    client = client or anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY, max_retries=3)
+    image ou document (fichiers joints sans texte), placés avant la demande. `sur_texte` reçoit
+    le texte au fur et à mesure qu'il est écrit."""
+    client = client or _client(config.ANTHROPIC_API_KEY)
+    reflexion = {} if config.REFLEXION else {"thinking": {"type": "disabled"}}
     # La consigne et les outils ne changent pas d'un message à l'autre : mis en cache
     systeme_bloc = [{"type": "text", "text": systeme, "cache_control": {"type": "ephemeral"}}]
     messages: list = []
@@ -55,15 +65,19 @@ def boucle(
 
     try:
         for _ in range(config.ITERATIONS_MAX_AGENT):
-            reflechir()
-            rep = client.messages.create(
+            nouveau_tour()
+            with client.messages.stream(
                 model=config.ANTHROPIC_MODEL,
                 max_tokens=16000,
                 system=systeme_bloc,
                 tools=outils_claude(outils),
                 messages=messages,
                 output_config={"effort": config.EFFORT},
-            )
+                **reflexion,
+            ) as flux:
+                for morceau in flux.text_stream:
+                    sur_texte(morceau)
+                rep = flux.get_final_message()
             if rep.stop_reason == "refusal":
                 return "Demande refusée par le modèle : reformulez-la en vous en tenant à la planification.", False
             appels = [b for b in rep.content if b.type == "tool_use"]

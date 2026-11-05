@@ -13,7 +13,8 @@ const ACTIONS: Record<LigneJournal['action'], { label: string; tone: 'success' |
   suppression: { label: 'Suppression', tone: 'danger' },
 }
 const ORIGINES: Record<string, string> = {
-  console: 'Console', generation: 'Génération automatique', assistant: 'Assistant IA', systeme: 'Système',
+  console: 'Console', generation: 'Génération automatique', assistant: 'Assistant IA', restauration: 'Restauration',
+  publication: 'Publication', systeme: 'Système',
 }
 
 const fmtHorodatage = (iso: string) =>

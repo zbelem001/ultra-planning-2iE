@@ -176,6 +176,52 @@ def test_replanification_ne_complete_pas_le_programme():
     assert all(s.date_seance.weekday() != 0 for s in r.seances)
 
 
+def test_ramener_les_seances_hors_de_la_periode():
+    # 6 h par semaine au plus. Période : semaines 1 et 2, soit 12 h ; 6 h y sont déjà.
+    # Après elle : 8 h non verrouillées et 2 h verrouillées. Seules 6 h tiennent.
+    s1, s2, s3, s4 = (LUNDI + timedelta(weeks=k) for k in range(4))
+    dans = [Seance(1, s1, time(7), time(9), 1, id_seance=1), Seance(1, s1 + timedelta(days=1), time(7), time(9), 1, id_seance=2),
+            Seance(1, s2, time(7), time(9), 1, id_seance=3)]
+    apres = [Seance(1, s3 + timedelta(days=j), time(7), time(9), 1, id_seance=10 + j) for j in range(3)] + \
+            [Seance(1, s4, time(7), time(9), 1, id_seance=20)]
+    verrou = Seance(1, s4 + timedelta(days=1), time(7), time(9), 1, id_seance=30, est_verrouillee=True)
+    existantes = [*dans, *apres, verrou]
+    d = donnees([cours(1, "TP", 20, 1, 1, 1, AMPHI, hmax=6)], semaines=4, seances=existantes)
+    fin = s2 + timedelta(days=5)
+
+    # Sans le demander, ce qui est après la période n'est pas regardé : rien ne change
+    assert generer(d, Demande(du=s1, au=fin, minimiser_changements=True, **RAPIDE)).modifications() == []
+
+    r = generer(d, Demande(du=s1, au=fin, minimiser_changements=True, ramener_depuis=s1, **RAPIDE))
+    assert all(s1 <= s.date_seance <= fin for s in r.seances)
+    assert r.non_places == [] and violations(d, r.seances + r.conservees) == []
+    assert sum(s.duree for s in r.seances + r.conservees) == sum(s.duree for s in existantes)  # aucune heure perdue
+    # Les séances déjà dans la période n'ont pas bougé ; 3 séances sont ramenées, la 4e n'a plus de place
+    ops = r.modifications()
+    assert sorted(o["id_seance"] for o in ops if o["action"] == "supprimer") == [10, 11, 12]
+    creees = [o["apres"] for o in ops if o["action"] == "creer"]
+    assert [x["id_salle"] for x in creees] == [1, 1, 1]  # elles gardent leur salle
+    # Au plus près de leur date : la dernière semaine de la période se remplit d'abord
+    assert sum(x["date_seance"] >= s2.isoformat() for x in creees) == 2
+    restees = r.statistiques["restees_hors_periode"]
+    assert [(x["id_cours"], x["date"]) for x in restees] == [(1, s4.isoformat())] and "rythme maximal" in restees[0]["raison"]
+    assert {s.id_seance for s in r.conservees} == {20, 30}
+
+
+def test_ramener_les_seances_avant_la_periode_mais_pas_le_passe():
+    # « Le cours doit commencer en semaine 3 » : les séances à venir des semaines 1 et 2 passent après,
+    # celle d'avant la date du jour (semaine 1, lundi) ne bouge pas.
+    s1, s2, s3 = (LUNDI + timedelta(weeks=k) for k in range(3))
+    passee = Seance(1, s1, time(7), time(9), 1, id_seance=1)
+    a_venir = [Seance(1, s1 + timedelta(days=2), time(7), time(9), 1, id_seance=2), Seance(1, s2, time(7), time(9), 1, id_seance=3)]
+    d = donnees([cours(1, "TP", 20, 1, 1, 1, AMPHI)], semaines=4, seances=[passee, *a_venir])
+    r = generer(d, Demande(du=s3, au=s3 + timedelta(days=5), minimiser_changements=True,
+                           ramener_depuis=s1 + timedelta(days=1), **RAPIDE))
+    assert sorted(o["id_seance"] for o in r.modifications() if o["action"] == "supprimer") == [2, 3]
+    assert all(s3 <= s.date_seance <= s3 + timedelta(days=5) for s in r.seances) and len(r.seances) == 2
+    assert [s.id_seance for s in r.conservees] == [1] and r.non_places == []
+
+
 def test_periode_partielle_de_semaine():
     # La semaine est pleine du jeudi au samedi (séances figées) ; replanifier
     # seulement lundi–mercredi doit rester possible.
@@ -223,3 +269,31 @@ def test_completer_garde_toutes_les_seances_existantes():
     assert r.remplacees == [] and r.non_places == []
     assert r.heures_placees == 8
     assert violations(d, r.seances + r.conservees) == []
+
+
+def test_cours_sans_enseignant():
+    # L'enseignant 1 est pris tous les matins par la classe B ; le cours 1 de la classe A
+    # n'a pas encore d'enseignant : aucune contrainte d'enseignant, il peut aller le matin
+    fixes = [Seance(9, LUNDI + timedelta(days=i), time(7), time(11), 2, id_seance=100 + i) for i in range(5)]
+    d = donnees([cours(1, "CM", 8, 1, 1, None, AMPHI, hmax=8), cours(9, "CM", 20, 3, 2, 1, STANDARD, hmax=20)],
+                semaines=1, seances=fixes)
+    r = generer(d, Demande(perimetre=Perimetre(id_classes=frozenset({1})), **RAPIDE))
+    assert r.non_places == [] and all(s.id_enseignant is None for s in r.seances)
+    assert violations(d, r.seances + fixes) == []
+
+
+def test_remplacant_sur_une_seance():
+    # Les séances figées du cours 9 sont assurées par l'enseignant 2 (remplaçant), pas par
+    # l'enseignant prévu 1 : c'est l'enseignant 2 qui est occupé
+    plages = [(i, time(7), time(10)) for i in range(6)] + [(i, time(10), time(12)) for i in range(6)] \
+        + [(i, time(13), time(16)) for i in range(5)]
+    fixes = [Seance(9, LUNDI + timedelta(days=i), debut, fin, 2, id_seance=100 + k, id_enseignant=2)
+             for k, (i, debut, fin) in enumerate(plages)]
+    d = donnees([cours(1, "CM", 6, 1, 1, 2, AMPHI), cours(2, "CM", 6, 2, 1, 1, AMPHI), cours(9, "CM", 45, 3, 2, 1, STANDARD, hmax=45)],
+                semaines=1, seances=fixes)
+    d.enseignants[2] = Enseignant(2, "E2", "permanent", None)
+    r = generer(d, Demande(perimetre=Perimetre(id_classes=frozenset({1})), **RAPIDE))
+    places = {s.id_cours for s in r.seances}
+    assert 2 in places  # l'enseignant 1 est libre
+    assert 1 not in places and {n.id_cours for n in r.non_places} == {1}  # l'enseignant 2 est pris toute la semaine
+    assert violations(d, r.seances + fixes) == []

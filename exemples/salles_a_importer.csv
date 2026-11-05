@@ -1,0 +1,10 @@
+﻿Code;Nom de la salle;Capacité;Type;Site;Bâtiment
+K-AMPHI3;Amphi 300;300;Amphithéâtre;KAMB;Bloc C
+K-C101;Salle C101;55;Salle standard;KAMB;Bloc C
+K-C102;Salle C102;35;Salle standard;KAMB;Bloc C
+K-INFO2;Salle informatique 2;30;Salle informatique;KAMB;Bloc B
+K-LAB3;Laboratoire de chimie;24;Laboratoire;KAMB;Bloc D
+O-B103;Salle 103;60;Salle standard;OUAGA;Bâtiment principal
+O-INFO2;Salle informatique 2;40;Salle informatique;OUAGA;Bâtiment principal
+A-S01;Salle de l'annexe 1;30;Salle standard;ANNEXE;
+K-A101;Salle A101;60;Salle standard;KAMB;Bloc A

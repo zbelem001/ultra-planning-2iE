@@ -1,7 +1,8 @@
 import { CalendarDays, Clock, Lock, Mail, MapPin, User, Users } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { Badge } from '@/components/ui'
-import { couleurMatiere, nomEnseignant, publicCours, type SeanceVue } from '@/lib/queries'
+import { estEpreuve, LIBELLE_NATURE } from '@/lib/publics'
+import { couleurMatiere, nomEnseignant, type SeanceVue } from '@/lib/queries'
 import { fmtHeure, fmtJourLong } from '@/lib/time'
 
 function Row({ icon, label, children }: { icon: ReactNode; label: string; children: ReactNode }) {
@@ -31,7 +32,7 @@ export function SeanceDetail({ s, publique }: { s: SeanceVue; publique?: boolean
         <div>
           <p className="text-xl font-light">{s.matiere.libelle}</p>
           <div className="mt-1.5 flex flex-wrap gap-1.5">
-            <Badge tone="navy">{s.cours.type_cours}</Badge>
+            {estEpreuve(s) ? <Badge tone="orange">{LIBELLE_NATURE[s.nature!]}</Badge> : <Badge tone="navy">{s.cours.type_cours}</Badge>}
             <StatutSeanceBadge s={s} />
             {s.est_verrouillee && <Badge tone="orange"><Lock className="size-3" />Verrouillée</Badge>}
           </div>
@@ -46,16 +47,16 @@ export function SeanceDetail({ s, publique }: { s: SeanceVue; publique?: boolean
           {s.salle.nom_salle} <span className="text-ink-2">· {s.type_salle?.libelle} · {s.salle.capacite} places</span>
           <p className="text-xs text-ink-2">{[s.site?.nom_site, s.salle.batiment].filter(Boolean).join(' · ')}</p>
         </Row>
-        <Row icon={<User />} label="Enseignant">
-          {nomEnseignant(s.enseignant)} {s.enseignant.grade && <span className="text-ink-2">· {s.enseignant.grade}</span>}
-          {!publique && s.enseignant.email && (
+        {!estEpreuve(s) && <Row icon={<User />} label="Enseignant">
+          {nomEnseignant(s.enseignant)} {s.enseignant?.grade && <span className="text-ink-2">· {s.enseignant.grade}</span>}
+          {!publique && s.enseignant?.email && (
             <a href={`mailto:${s.enseignant.email}`} className="mt-0.5 flex items-center gap-1 text-xs text-navy underline-offset-2 hover:underline">
               <Mail className="size-3" />{s.enseignant.email}
             </a>
           )}
-        </Row>
+        </Row>}
         <Row icon={<Users />} label="Public">
-          {publicCours(s.classe, s.groupe)} <span className="text-ink-2">· {s.classe.libelle} · {s.groupe ? s.groupe.effectif : s.classe.effectif} étudiants</span>
+          {s.public_affiche} <span className="text-ink-2">· {s.classe.libelle} · {s.effectif} étudiants</span>
         </Row>
       </div>
     </div>

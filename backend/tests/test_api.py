@@ -1,8 +1,9 @@
-import json
 import copy
+import json
 import time
 from types import SimpleNamespace
 
+import psycopg
 import pytest
 from fastapi.testclient import TestClient
 
@@ -110,7 +111,7 @@ def test_assistant_discussion(client, monkeypatch):
     tour2 = factice.appels[1]["messages"]
     assert tour2[-2]["tool_calls"][0]["function"]["name"] == "lire_referentiel" and tour2[-1]["role"] == "tool"
     appel = factice.appels[0]
-    assert appel["model"] == config.MODELE and appel["tool_choice"] == "auto" and len(appel["tools"]) == 9
+    assert appel["model"] == config.MODELE and appel["tool_choice"] == "auto" and len(appel["tools"]) == 12
 
 
 def test_assistant_sans_cle(client, monkeypatch):
@@ -144,19 +145,38 @@ class ClientQuiDecrit:
             return _reponse(SimpleNamespace(content="Proposition créée.", tool_calls=None))
         if "sans le faire" in dernier["content"]:
             appel = SimpleNamespace(id="appel_1", function=SimpleNamespace(
-                name="proposer_generation",
-                arguments='{"description": "Semaine du M1IA", "classes": ["M1IA"], "du": "2026-11-09", "au": "2026-11-14"}'))
+                name="proposer_replanification",
+                arguments='{"description": "Libérer le début de semaine du M1IA", "classes": ["M1IA"], "du": "2026-10-12", "au": "2026-11-07", '
+                          '"contraintes": [{"type": "interdire", "code_classe": "M1IA", "jours": ["Lundi", "Mardi", "Mercredi"]}]}'))
             return _reponse(SimpleNamespace(content="", tool_calls=[appel]), "tool_calls")
-        return _reponse(SimpleNamespace(content="Action : appel à proposer_generation (M1IA).", tool_calls=None))
+        return _reponse(SimpleNamespace(content="Action : appel à proposer_replanification (M1IA).", tool_calls=None))
 
 
-def test_appel_d_outil_decrit_puis_relance(client, monkeypatch):
+def test_appel_d_outil_decrit_puis_relance(client, edt_a_remettre, monkeypatch):
     factice = ClientQuiDecrit()
     vrai = agent.repondre
     monkeypatch.setattr(agent, "repondre", lambda *a, **k: vrai(*a, client=factice, **k))
-    r = client.post("/api/assistant/messages", headers=ADMIN, json={"id_edt": 1, "texte": "Planifie la semaine du 9 novembre du M1IA"}).json()
+    r = client.post("/api/assistant/messages", headers=ADMIN, json={"id_edt": 1, "texte": "Libère le début de semaine du M1IA"}).json()
     assert r["statut"] == "traite" and r["reponse"] == "Proposition créée." and len(r["propositions"]) == 1
     assert len(factice.appels) == 3
+
+
+class FluxFactice:
+    """Imite messages.stream du SDK : le texte par morceaux, puis le message complet."""
+
+    def __init__(self, rep):
+        self.rep = rep
+        textes = [b.text for b in rep.content if b.type == "text"]
+        self.text_stream = iter([m + " " for t in textes for m in t.split(" ")])
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def get_final_message(self):
+        return self.rep
 
 
 class ClaudeFactice:
@@ -164,9 +184,13 @@ class ClaudeFactice:
 
     def __init__(self):
         self.appels = []
-        self.messages = SimpleNamespace(create=self.create)
+        self.messages = SimpleNamespace(stream=self.stream)
 
-    def create(self, **kwargs):
+    def stream(self, **kwargs):
+        rep = self.reponse(**kwargs)
+        return FluxFactice(rep)
+
+    def reponse(self, **kwargs):
         self.appels.append(copy.deepcopy({k: v for k, v in kwargs.items() if k != "messages"}) | {"messages": list(kwargs["messages"])})
         dernier = kwargs["messages"][-1]["content"]
         if isinstance(dernier, list) and dernier and dernier[0]["type"] == "tool_result":
@@ -187,6 +211,7 @@ def test_assistant_avec_claude(client, monkeypatch):
     premier, second = claude.appels
     assert premier["model"] == config.ANTHROPIC_MODEL and "temperature" not in premier
     assert premier["output_config"] == {"effort": config.EFFORT} and premier["system"][0]["cache_control"]
+    assert premier["thinking"] == {"type": "disabled"}  # pas de réflexion préalable : réponses plus rapides
     assert {t["name"] for t in premier["tools"]} >= {"lire_referentiel", "proposer_generation"}
     assert all("input_schema" in t for t in premier["tools"])
     # 2e appel : la réponse complète du modèle, puis le résultat de l'outil dans un message utilisateur
@@ -206,13 +231,15 @@ def test_relais_vers_le_second_fournisseur(client, monkeypatch):
     assert agent.fournisseurs() == ["anthropic", "groq"]
     monkeypatch.setattr(config, "LLM", "groq")
     claude = ClaudeFactice()
+    agent.llm_anthropic._client.cache_clear()
     monkeypatch.setattr(agent.llm_anthropic.anthropic, "Anthropic", lambda **k: claude)
     r = client.post("/api/assistant/messages", headers=ADMIN, json={"id_edt": 1, "texte": "Combien de salles ?"}).json()
     assert r["statut"] == "traite" and r["modele"] == config.ANTHROPIC_MODEL and len(claude.appels) == 2
+    agent.llm_anthropic._client.cache_clear()
 
 
 def test_assistant_etapes_en_direct(client, monkeypatch):
-    """Les étapes arrivent dans l'ordre, puis la réponse (Server-Sent Events)."""
+    """Seul le vrai travail est annoncé (ici, un outil), puis le texte s'écrit, puis la réponse (Server-Sent Events)."""
     claude = ClaudeFactice()
     vrai = agent.repondre
     monkeypatch.setattr(agent, "repondre", lambda *a, **k: vrai(*a, client_anthropic=claude, **k))
@@ -220,8 +247,9 @@ def test_assistant_etapes_en_direct(client, monkeypatch):
         assert r.headers["content-type"].startswith("text/event-stream") and "content-encoding" not in r.headers
         evenements = [json.loads(l[6:]) for l in r.iter_lines() if l.startswith("data: ")]
     etapes = [(e["etape"], e["detail"]) for e in evenements if e["type"] == "etape"]
-    assert [e for e, _ in etapes] == ["contextualisation", "reflexion", "analyse", "reflexion", "redaction"]
-    assert etapes[2][1] == "Consultation du référentiel : les salles"
+    assert etapes == [("analyse", "Consultation du référentiel : les salles")]
+    assert [e["type"] for e in evenements][0] == "etape"
+    assert "".join(e["morceau"] for e in evenements if e["type"] == "texte").strip() == "Il y a **13** salles."
     assert evenements[-1]["type"] == "fin" and evenements[-1]["reponse"] == "Il y a 13 salles."
     # Discussion d'une autre personne : erreur annoncée dans le flux
     with client.stream("POST", "/api/assistant/messages/flux", headers={"X-Utilisateur": "2"},
@@ -243,3 +271,30 @@ def test_generation_par_matiere_refusee_si_rien_a_faire(client):
     assert r.status_code == 422 and "introuvable" in r.json()["detail"]
     r = client.post("/api/generations", headers=ADMIN, json={"id_edt": 1, "matieres": ["BD"]})
     assert r.status_code == 422
+
+
+def test_les_reperes_evitent_un_outil(client):
+    from app.db import entrer_ecole
+    with psycopg.connect(config.DATABASE_URL) as c:
+        entrer_ecole(c, 1)
+        chiffres = agent.reperes(c, 1)
+        salles = c.execute("SELECT count(*) FROM salle").fetchone()[0]
+    assert f"{salles} salles" in chiffres and "Repères : " + chiffres in agent.contexte(1, chiffres=chiffres)
+
+
+def test_un_texte_qui_n_etait_pas_la_reponse_est_oublie(client, monkeypatch):
+    """Le modèle écrit avant d'appeler un outil : l'interface doit oublier ce début."""
+    class Bavard(ClaudeFactice):
+        def reponse(self, **kwargs):
+            rep = super().reponse(**kwargs)
+            if rep.stop_reason == "tool_use":
+                rep.content.insert(0, SimpleNamespace(type="text", text="Je regarde."))
+            return rep
+
+    claude = Bavard()
+    vrai = agent.repondre
+    monkeypatch.setattr(agent, "repondre", lambda *a, **k: vrai(*a, client_anthropic=claude, **k))
+    with client.stream("POST", "/api/assistant/messages/flux", headers=ADMIN, json={"id_edt": 1, "texte": "Combien de salles ?"}) as r:
+        types = [json.loads(l[6:])["type"] for l in r.iter_lines() if l.startswith("data: ")]
+    assert types.index("efface") > types.index("texte") and types[-1] == "fin"
+    assert "texte" in types[types.index("efface"):]

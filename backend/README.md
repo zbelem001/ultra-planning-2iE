@@ -15,7 +15,8 @@ python3 -m venv .venv
 .venv/bin/pip install -e ../solver -e ".[test]"
 
 export DATABASE_URL="postgresql://…"       # base chargée avec « ../migrations/schema_supabase.sql »
-.venv/bin/uvicorn app.main:app --reload     # documentation : http://localhost:8000/docs
+# --timeout-graceful-shutdown : sans cette limite, le rechargement attend sans fin une requête encore ouverte
+.venv/bin/uvicorn app.main:app --reload --timeout-graceful-shutdown 3     # documentation : http://localhost:8000/docs
 ```
 
 Le fichier `backend/.env` (ignoré par git) est lu au démarrage ; les variables déjà définies dans l'environnement restent prioritaires :
@@ -30,7 +31,8 @@ Le fichier `backend/.env` (ignoré par git) est lu au démarrage ; les variables
 | `ULTRAPLANNING_LLM` | Fournisseur essayé en premier : `groq` ou `anthropic`. L'autre, s'il a une clé, prend le relais quand le premier est saturé ou injoignable. Autre valeur ou vide : Groq d'abord |
 | `DATABASE_URL` | Connexion PostgreSQL (peut aussi être placée ici) |
 | `SUPABASE_POOLER_URL` | URI du « Session pooler » de Supabase, utilisée si `DATABASE_URL` est absente |
-| `ULTRAPLANNING_EFFORT` | Niveau de raisonnement du modèle : `low`, `medium` (défaut), `high` |
+| `ULTRAPLANNING_EFFORT` | Niveau de raisonnement du modèle : `low` (défaut, réponses rapides), `medium`, `high` |
+| `ULTRAPLANNING_REFLEXION` | `1` : réflexion préalable de Claude, plus lente (désactivée par défaut) |
 | `ULTRAPLANNING_ITERATIONS_AGENT` | Étapes d'outils au plus par message (12) |
 | `ULTRAPLANNING_ORIGINES` | Origines CORS des fronts (défaut : 5173 console, 5174 super admin) |
 | `SUPABASE_URL` | Projet Supabase : vérification des jetons et invitations |
@@ -53,7 +55,10 @@ Toutes les réponses de plus de 1 Ko sont compressées (gzip).
 | `GET /api/ecoles` | Écoles actives (choix de l'école dans l'espace invités) |
 | `GET /api/base/public?ecole=CODE` | Ce que voit un invité de cette école : référentiel, version publiée, enseignants sans coordonnées (sans `ecole` : la seule école active). JSON compact avec `ETag` : « 304 » sans contenu si rien n'a changé |
 | `POST /api/demarrage` | Premier semestre et premier emploi du temps (avec ses 21 contraintes) d'une nouvelle école |
-| `POST /api/emplois-du-temps/{id}/publier` | Publie une version (la précédente est archivée) ; `notifier` : e-mail à chaque enseignant dont les séances changent (ajoutées, retirées, modifiées), avec le lien vers son emploi du temps |
+| `POST /api/emplois-du-temps/{id}/publier` | Publie la version à jour : sa copie publiée reçoit les différences, tout ou rien. Seuls les enseignants concernés par un changement reçoivent un e-mail ; la réponse donne `ajoutees`, `retirees`, `modifiees` et `notification` (`statut`, `destinataires`, `sans_adresse`) |
+| `GET /api/emplois-du-temps/{id}/versions` | Historique de la version à jour, du plus récent au plus ancien (`limite`, `avant`) : numéro, date, auteur, résumé, `publiee_le`, `en_ligne` |
+| `GET /api/emplois-du-temps/{id}/versions/{numero}` | Séances de cette version ; `hors_referentiel` : celles dont le cours, la salle ou le créneau n'existe plus |
+| `POST /api/emplois-du-temps/{id}/versions/{numero}/restaurer` | `appliquer` faux : aperçu, rien n'est écrit. Vrai : la version à jour reprend cet état ; la restauration s'ajoute à l'historique, et les invités n'en voient rien avant une publication |
 | `GET` · `POST /api/ecole/comptes` | Comptes de l'école (tous les gestionnaires) ; invitation d'un compte (administrateur de l'école) |
 | `POST /api/ecole/comptes/{id}/inviter` · `PATCH /api/ecole/comptes/{id}` | Renvoi d'invitation, modification, désactivation (administrateur de l'école ; il ne peut ni se désactiver ni se retirer le rôle) |
 | `POST /api/base/sync` | Ajouts, modifications, suppressions faits dans l'interface, en une transaction ; 409 avec le motif (CD-xx) si la base refuse |
@@ -64,7 +69,7 @@ Toutes les réponses de plus de 1 Ko sont compressées (gzip).
 | `POST /api/generations/{id}/appliquer` | Enregistre le résultat ; la base revalide chaque séance |
 | `POST /api/verifications` | Teste une séance contre les règles CD-01 à CD-14, sans rien écrire |
 | `POST /api/assistant/messages` | Envoie un message à l'assistant (nouvelle discussion ou suite) |
-| `POST /api/assistant/messages/flux` | Même chose, avec les étapes en direct (Server-Sent Events) : contextualisation, analyse, vérification, calcul, réflexion, rédaction, puis la réponse |
+| `POST /api/assistant/messages/flux` | Même chose, au fil de l'eau (Server-Sent Events) : `etape` quand un outil travaille (lecture, vérification, solveur), `texte` pendant que la réponse s'écrit (Claude), `efface` si ce texte n'était pas la réponse, puis `fin` (mêmes champs) ou `erreur` |
 | `GET /api/propositions?id_edt=…` | Propositions de l'assistant en attente, avec leurs conséquences |
 | `POST /api/propositions/{id}/appliquer` · `/rejeter` | Décision du planificateur |
 | `GET` · `POST /api/superadmin/ecoles` | Écoles clientes (nombre de comptes), création |
@@ -90,7 +95,7 @@ La RLS de chaque table (schéma, section 7) ne montre et ne laisse écrire à ce
 
 **Journal d'audit** : le déclencheur `journaliser_seance` inscrit chaque changement de séance dans `journal_seance`, avec le compte (`app.id_utilisateur`) et l'origine (`app.origine` : `console`, `generation`, `assistant`), que `db.entrer_ecole()` et les routes fixent. Hors API (ligne de commande du solveur), l'origine est `systeme`. Le rôle `ultraplanning_app` n'a aucun droit sur cette table.
 
-**Base existante en version 6** : exécuter `../migrations/007_isolation_ecoles.sql` (SQL Editor de Supabase). Toutes les données existantes sont rattachées à 2IE ; la migration est faite en une seule transaction. Puis, pour le journal d'audit, `../migrations/008_journal_audit.sql`, et pour les fichiers joints et les ajouts au référentiel de l'assistant, `../migrations/009_pieces_jointes.sql` (version 9).
+**Base existante en version 6** : exécuter `../migrations/007_isolation_ecoles.sql` (SQL Editor de Supabase). Toutes les données existantes sont rattachées à 2IE ; la migration est faite en une seule transaction. Puis, pour le journal d'audit, `../migrations/008_journal_audit.sql`, et pour les fichiers joints et les ajouts au référentiel de l'assistant, `../migrations/009_pieces_jointes.sql` (version 9), puis `../migrations/010_enseignant_par_seance.sql` (version 10 : enseignant par séance, habilitations supprimées), puis `../migrations/011_regles_2ie.sql` (version 11 : site des promotions, options et sous-groupes, cours mutualisés, types de salle acceptés, salles réservées, trajets entre sites, règles du planificateur ; moteur v3 du solveur), puis `../migrations/012_versions_edt.sql` (version 12 : version à jour et copie publiée, publications, historique), puis `../migrations/013_examens.sql` (version 13 : examens et rattrapages).
 
 ## Authentification
 
@@ -120,10 +125,13 @@ L'agent (`app/agent.py`) dialogue avec le modèle, au choix par l'API « chat co
 | `lire_emploi_du_temps` | Séances d'une classe, d'un enseignant ou d'une salle sur une période |
 | `lire_referentiel` | Cours, classes, enseignants, salles, programme, calendrier |
 | `verifier_seance` | Test d'une séance dans la base, sans écriture |
-| `proposer_replanification` | Appel du solveur en replanification minimale (semaines entières), avec contraintes « imposer / interdire » ; le résultat devient une `PROPOSITION` en attente |
-| `proposer_modifications` | Changements ponctuels de séances précises : déplacer (date, heures, salle), annuler, rétablir, ajouter, supprimer. Toutes les opérations sont essayées ensemble dans la base (puis annulées) avant d'être proposées ; un refus renvoie le motif et ne crée rien |
+| `proposer_replanification` | Appel du solveur en replanification minimale (semaines entières), avec contraintes « imposer / interdire » ; le résultat s'applique directement à la version à jour ; s'il ne change rien, aucune proposition n'est créée |
+| `proposer_reprogrammation_cours` | « Reprogramme les cours restants de X entre A et B » : toutes les séances à venir du cours, avant ou après la période, y sont ramenées (les verrouillées ne bougent pas ; celles qui n'y tiennent pas restent en place et sont signalées) |
+| `proposer_modifications` | Changements ponctuels de séances précises : déplacer (date, heures, salle), annuler, rétablir, ajouter, supprimer, changer l'enseignant (ou le retirer : à désigner). Toutes les opérations sont essayées ensemble dans la base (puis annulées) avant d'être proposées ; un refus renvoie le motif et ne crée rien |
+| `proposer_suppression_seances` | Séances à supprimer de l'emploi du temps d'une classe (cours mutualisés compris), d'un enseignant ou d'une salle, trouvées par critères : matière, type, groupe, dates, jours, heures, ou identifiants. Sans date de début : à partir d'aujourd'hui. Les séances verrouillées restent en place sauf `inclure_verrouillees`, les épreuves sauf `nature`. La carte liste chaque séance ; une suppression appliquée se rattrape dans l'historique |
+| `proposer_epreuve` | Examen ou rattrapage d'un module pour une classe entière : date, heures, salle ou campus (sans salle : la plus petite libre assez grande). Vérifié dans la base |
 | `lire_piece_jointe` | Lit un fichier joint à la discussion (CSV, Excel, PDF, texte), par morceaux de lignes numérotées |
-| `proposer_ajouts_referentiel` | Lignes à ajouter au référentiel (classes, matières, enseignants, salles, habilitations, programme, cours), désignées par leurs codes et vérifiées dans la base (insérées puis annulées). Seulement des ajouts ; l'habilitation d'un cours est ajoutée si elle manque. `ensuite` : la génération à lancer une fois les ajouts validés |
+| `proposer_changements_referentiel` | Lignes à ajouter, modifier ou supprimer (`referentiel_changements.py`) : classes, matières, enseignants, salles, programme, cours ; calendrier (dates du semestre, jours fériés, congés, créneaux de la grille) ; disponibilités, absences et séjours des enseignants. Désignées par leurs codes et vérifiées ensemble dans la base (écrites puis annulées). Une modification garde la ligne lue (`avant`) : si elle a changé entre-temps, l'application est refusée. Le résultat liste les séances que les changements laisseraient hors des règles (jour férié, absence, salle trop petite…), sans les déplacer. `ensuite` : génération ou replanification (`mode: replanifier`) lancée une fois les changements validés |
 | `proposer_generation` | Génération d'une classe ou d'une filière, éventuellement de certains modules seulement (`matieres`), par défaut de la semaine prochaine à la fin du semestre ; explique les modules non prêts (matière inconnue, hors programme, sans cours) ; le résultat devient une `PROPOSITION` en attente |
 | `proposer_priorites` | Priorités suggérées pour les cours, avec justification |
 
@@ -134,7 +142,7 @@ Le modèle joue le rôle d'un conseiller, pas d'un exécutant (consigne `SYSTEME
 - **Conséquences** : `proposer_replanification` calcule l'impact (`app/impact.py`) et le joint à la proposition (`proposition.impact`) : séances déplacées, retirées, créées ; heures qui ne seraient plus programmées ; enseignants à prévenir ; fins de cours décalées ; journées chargées ; changements de site. Le modèle les présente, déconseille une proposition qui perd des heures et propose de l'élargir.
 - **Ambiguïté** : il pose une question plutôt que de deviner.
 
-Le frontend affiche ces conséquences sur chaque proposition (Assistant IA et Publication), à côté des boutons Appliquer et Rejeter.
+Le frontend affiche ces conséquences sur chaque proposition (Assistant IA), à côté des boutons Appliquer et Rejeter.
 
 L'agent ne modifie jamais les séances. Une seule proposition est gardée par message : une nouvelle tentative remplace la précédente. Seul un planificateur applique une proposition (`/api/propositions/{id}/appliquer`) ; l'application passe par les déclencheurs de la base, et une proposition périmée (emploi du temps modifié depuis) est refusée.
 
@@ -142,7 +150,15 @@ L'agent ne modifie jamais les séances. Une seule proposition est gardée par me
 
 **Fichiers joints.** `POST /api/assistant/messages` (et `/flux`) accepte `piece_jointe` : `{nom, contenu}` en base64, 5 Mo au plus ; CSV, Excel (.xlsx), PDF, texte, PNG, JPEG, WebP. Le fichier est gardé dans `piece_jointe` et lu sur le serveur, sans IA (`app/pieces_jointes.py`) ; l'assistant le lit par morceaux. Une image ou un PDF scanné n'a pas de texte : Claude le lit directement (il passe alors en premier) ; Groq ne sait pas, et l'assistant demande un autre format. Le contenu part chez le fournisseur du modèle, comme les messages.
 
-**En direct sur la version publiée.** L'assistant travaille par défaut sur la version publiée. Une proposition appliquée sur cette version est visible tout de suite dans l'espace invités, et les enseignants concernés reçoivent un e-mail des changements (si SMTP est configuré). La réponse de `/appliquer` contient `en_direct` et `notification`. Une version archivée ne se modifie plus. L'espace invités revérifie `/api/base/public` toutes les minutes et au retour sur l'onglet ; l'étiquette `ETag` (exposée par CORS) évite de retélécharger quand rien n'a changé.
+**Version à jour et publication.** Chaque semestre a une version à jour, seule modifiable (console, génération, assistant), et une copie publiée, celle que lisent les invités. Une proposition appliquée va dans la version à jour ; les invités la voient après `POST .../publier`, et c'est à ce moment que les enseignants concernés sont prévenus. Un déclencheur de la base refuse à l'API tout changement de la copie publiée en dehors d'une publication.
+
+**Historique et restauration** (`app/historique.py`). Chaque transaction qui change des séances est une version, lue dans le journal des séances par les fonctions `versions_edt` et `seances_version`, limitées à l'école de la requête. Restaurer retire les séances à changer puis les remet avec leurs identifiants ; la base revalide chacune. Le référentiel n'est pas restauré : une séance dont le cours, la salle ou le créneau n'existe plus, ou que les règles refusent aujourd'hui, ne revient pas et le motif est donné (si elle existe encore, elle reste comme elle était).
+
+**Examens et rattrapages.** Ce sont des séances (`seance.nature`) rattachées à un cours du module. Une épreuve dure de 2 h à 3 h, sans enseignant ; elle ne compte ni dans le volume ni dans le rythme du cours ni dans CD-13, concerne toute la classe, et peut avoir lieu pendant un congé de type « examens ». Plusieurs épreuves peuvent partager une salle si la capacité couvre la somme de leurs effectifs, jamais une épreuve et un cours. Dans un module, le rattrapage vient après l'examen, et un examen ne se retire pas tant que son rattrapage existe. La génération ne les touche jamais et les contourne. Sans enseignant, personne n'est prévenu par e-mail à leur publication.
+
+**Rapidité.** Une question simple doit répondre vite : pas de réflexion préalable de Claude et effort faible par défaut (le solveur et la base portent le raisonnement), réponse diffusée dès ses premiers mots, repères (nombre de classes, de salles...) dans le contexte pour éviter un appel d'outil. Côté base, sur un réseau lent ce sont les allers-retours qui coûtent : les connexions sont gardées 2 minutes (`app/db.py`, remises à zéro à chaque emprunt) et `/api/base` lit toutes ses tables en un seul aller-retour (pipeline).
+
+**Rafraîchissement.** `/api/base` (console) et `/api/base/public` (invités) portent une étiquette `ETag` (exposée par CORS). La console et l'espace invités revérifient toutes les minutes et au retour sur l'onglet, avec `If-None-Match` : tant que rien n'a changé, la réponse est un 304 vide. La console ne revérifie pas pendant l'envoi de ses propres modifications.
 
 Essais réels sur le jeu de test (`openai/gpt-oss-120b`) : une question sur l'emploi du temps répond juste en 2 s ; « aucun cours pour la L2INFO le mardi 13 octobre » produit une proposition en 5 s, puis « élargis à la semaine suivante » une proposition qui replace toutes les heures.
 

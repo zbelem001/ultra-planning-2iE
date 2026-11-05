@@ -19,7 +19,7 @@ const router = createBrowserRouter([
       { path: 'disponibilites', lazy: page(() => import('@/pages/admin/Disponibilites')) },
       { path: 'generation', lazy: page(() => import('@/pages/admin/Generation')) },
       { path: 'assistant', lazy: page(() => import('@/pages/admin/Assistant')) },
-      { path: 'publication', lazy: page(() => import('@/pages/admin/Publication')) },
+      { path: 'publication', element: <Navigate to="/admin/planification" replace /> },
       { path: 'referentiel', element: <Navigate to="/admin/referentiel/classes" replace /> },
       { path: 'referentiel/:table', lazy: page(() => import('@/pages/admin/referentiel/Referentiel')) },
     ],

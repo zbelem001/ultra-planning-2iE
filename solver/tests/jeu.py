@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from dataclasses import replace
 from datetime import date, time
 
 from ultraplanning_solver.donnees import (
@@ -32,7 +33,12 @@ def cours(id_cours, type_cours, volume, id_matiere, id_classe, id_enseignant, id
 
 def donnees(cours_liste: list[Cours], *, semaines=3, enseignants=None, seances=(), sejours=None,
             disponibilites=None, max_matieres=3) -> Donnees:
-    ens = enseignants or {e: Enseignant(e, f"E{e}", "permanent", 30) for e in {c.id_enseignant for c in cours_liste}}
+    ens = enseignants or {e: Enseignant(e, f"E{e}", "permanent", 30)
+                          for e in {c.id_enseignant for c in cours_liste} if e is not None}
+    # Séances existantes sans enseignant précisé : celui de leur cours (comme dans la base)
+    par_cours = {c.id_cours: c for c in cours_liste}
+    seances = [s if s.id_enseignant is not None or s.id_cours not in par_cours
+               else replace(s, id_enseignant=par_cours[s.id_cours].id_enseignant) for s in seances]
     return Donnees(
         id_edt=1,
         semestre_debut=LUNDI,
@@ -68,6 +74,8 @@ def donnees(cours_liste: list[Cours], *, semaines=3, enseignants=None, seances=(
 def violations(d: Donnees, seances: list[Seance]) -> list[str]:
     """Recontrôle indépendant des contraintes dures sur un ensemble de séances."""
     v: list[str] = []
+    connues = {x.id_seance: x for x in d.seances if x.id_seance is not None}  # avec leur enseignant
+    seances = [connues.get(s.id_seance, s) if s.id_seance is not None else s for s in seances]
     grille_debuts = {(c.jour, c.heure_debut) for c in d.creneaux}
     grille_fins = {(c.jour, c.heure_fin) for c in d.creneaux}
 
@@ -92,10 +100,10 @@ def violations(d: Donnees, seances: list[Seance]) -> list[str]:
             v.append(f"CD-12 {s}")
         if d.jour_ferme(s.date_seance, c.id_classe):
             v.append(f"CD-09 {s}")
-        if not d.enseignant_present(c.id_enseignant, s.date_seance):
+        if not d.enseignant_present(s.id_enseignant, s.date_seance):
             v.append(f"CD-06 présence {s}")
         for h in range(minutes(s.heure_debut), minutes(s.heure_fin), 60):
-            if d.disponibilites.get((c.id_enseignant, jour, time(h // 60))) == "indisponible":
+            if d.disponibilites.get((s.id_enseignant, jour, time(h // 60))) == "indisponible":
                 v.append(f"CD-06 indisponible {s}")
 
     for i, a in enumerate(seances):
@@ -106,7 +114,7 @@ def violations(d: Donnees, seances: list[Seance]) -> list[str]:
             cb = d.cours[b.id_cours]
             if a.id_salle == b.id_salle:
                 v.append(f"CD-01 {a} {b}")
-            if ca.id_enseignant == cb.id_enseignant:
+            if a.id_enseignant is not None and a.id_enseignant == b.id_enseignant:
                 v.append(f"CD-02 {a} {b}")
             if ca.id_classe == cb.id_classe:
                 paralleles = (

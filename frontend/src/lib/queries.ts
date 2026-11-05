@@ -1,17 +1,25 @@
 // Jointures utilisées par les vues (l'équivalent des SELECT ... JOIN de l'API).
 
 import type { Classe, Cours, Db, Enseignant, Groupe, Matiere, Salle, Seance, Site, TypeSalle } from '@/types/db'
+import { chaineGroupe, type Public, estEpreuve } from './publics'
 import { hours } from './time'
 
 export interface SeanceVue extends Seance {
   cours: Cours
   matiere: Matiere
-  enseignant: Enseignant
+  /** null : enseignant à désigner */
+  enseignant: Enseignant | null
   salle: Salle
   site: Site | undefined
   type_salle: TypeSalle | undefined
   classe: Classe
   groupe: Groupe | null
+  /** Public principal et publics d'un cours mutualisé */
+  publics: Public[]
+  /** « L2INFO · TD-A », ou « L2INFO + L3INFO » pour un cours mutualisé */
+  public_affiche: string
+  /** Effectif de tous les publics */
+  effectif: number
   duree: number
 }
 
@@ -30,36 +38,50 @@ export function enrichir(db: Db, seances: Seance[]): SeanceVue[] {
   const sites = index(db.site, 'id_site')
   const cla = index(db.classe, 'id_classe')
   const grp = index(db.groupe, 'id_groupe')
+  const suppl = new Map<number, Public[]>()
+  for (const p of db.cours_public) suppl.set(p.id_cours, [...(suppl.get(p.id_cours) ?? []), { id_classe: p.id_classe, id_groupe: p.id_groupe }])
+  const libellePublic = (p: Public) => publicCours(cla.get(p.id_classe)!, p.id_groupe !== null ? grp.get(p.id_groupe) ?? null : null)
+  const effectifPublic = (p: Public) => (p.id_groupe !== null ? grp.get(p.id_groupe)?.effectif : cla.get(p.id_classe)?.effectif) ?? 0
   return seances.map((s) => {
     const c = cours.get(s.id_cours)!
     const salle = sal.get(s.id_salle)!
+    const epreuve = estEpreuve(s) // une épreuve concerne toute la classe
+    const publics = [{ id_classe: c.id_classe, id_groupe: c.id_groupe }, ...(suppl.get(c.id_cours) ?? [])]
+      .map((p) => (epreuve ? { ...p, id_groupe: null } : p))
+      .filter((p, i, l) => !epreuve || l.findIndex((x) => x.id_classe === p.id_classe) === i)
     return {
       ...s,
       cours: c,
       matiere: mat.get(c.id_matiere)!,
-      enseignant: ens.get(c.id_enseignant)!,
+      enseignant: s.id_enseignant !== null ? ens.get(s.id_enseignant) ?? null : null,
       salle,
       site: sites.get(salle.id_site),
       type_salle: ts.get(salle.id_type_salle),
       classe: cla.get(c.id_classe)!,
-      groupe: c.id_groupe !== null ? grp.get(c.id_groupe) ?? null : null,
+      groupe: c.id_groupe !== null && !epreuve ? grp.get(c.id_groupe) ?? null : null,
+      publics,
+      public_affiche: publics.map(libellePublic).join(' + '),
+      effectif: publics.reduce((n, p) => n + effectifPublic(p), 0),
       duree: hours(s.heure_debut, s.heure_fin),
     }
   })
 }
 
 /**
- * Séances d'une ressource. Pour une classe, `id_groupe` restreint aux séances
- * de classe entière et à celles du groupe choisi (même logique que CD-03).
+ * Séances d'une ressource. Pour une classe : aussi les cours mutualisés qu'elle suit ;
+ * `id_groupe` restreint aux séances de classe entière, du groupe choisi et de ses groupes
+ * parents (un demi-groupe de TP suit les TD de son groupe). `groupes` : pour remonter l'arbre.
  */
-export function filtrer(list: SeanceVue[], res: Ressource, id: number, id_groupe?: number | null): SeanceVue[] {
+export function filtrer(list: SeanceVue[], res: Ressource, id: number, id_groupe?: number | null, groupes: Groupe[] = []): SeanceVue[] {
   switch (res) {
-    case 'classe':
-      return list.filter(
-        (s) => s.classe.id_classe === id && (id_groupe == null || s.cours.id_groupe === null || s.cours.id_groupe === id_groupe),
-      )
-    case 'enseignant':
-      return list.filter((s) => s.enseignant.id_enseignant === id)
+    case 'classe': {
+      const chaine = id_groupe == null ? [] : chaineGroupe(groupes, id_groupe)
+      return list.filter((s) => s.publics.some(
+        (p) => p.id_classe === id && (id_groupe == null || p.id_groupe === null || chaine.includes(p.id_groupe)),
+      ))
+    }
+    case 'enseignant': // 0 : séances sans enseignant (à désigner)
+      return list.filter((s) => (id === 0 ? s.enseignant === null : s.enseignant?.id_enseignant === id))
     case 'salle':
       return list.filter((s) => s.salle.id_salle === id)
     case 'matiere':
@@ -67,7 +89,8 @@ export function filtrer(list: SeanceVue[], res: Ressource, id: number, id_groupe
   }
 }
 
-export const nomEnseignant = (e: Enseignant) => `${e.prenom} ${e.nom}`
+/** Nom affiché ; sans enseignant (séance « à désigner ») : « À désigner » */
+export const nomEnseignant = (e: Enseignant | null | undefined) => (e ? `${e.prenom} ${e.nom}` : 'À désigner')
 
 /** « Campus de Kamboinsé · Bloc A » */
 export function lieuSalle(db: Db, s: Salle): string {
@@ -85,7 +108,7 @@ export const couleurMatiere = (id_matiere: number) => PALETTE[(id_matiere - 1) %
 /** Heures planifiées (hors annulées) d'un cours dans un emploi du temps */
 export function heuresPlanifiees(db: Db, id_edt: number, id_cours: number, jusqua?: string): number {
   return db.seance
-    .filter((s) => s.id_edt === id_edt && s.id_cours === id_cours && s.statut !== 'annulee' && (!jusqua || s.date_seance <= jusqua))
+    .filter((s) => s.id_edt === id_edt && s.id_cours === id_cours && s.statut !== 'annulee' && !estEpreuve(s) && (!jusqua || s.date_seance <= jusqua))
     .reduce((a, s) => a + hours(s.heure_debut, s.heure_fin), 0)
 }
 

@@ -2,10 +2,10 @@
 // Les colonnes gardent leur nom SQL pour que le passage à Supabase soit direct.
 // DATE = 'AAAA-MM-JJ', TIME = 'HH:MM', TIMESTAMPTZ = chaîne ISO.
 
-export type Niveau = 'L1' | 'L2' | 'L3' | 'M1' | 'M2'
+export type Niveau = 'L1' | 'L2' | 'L3' | 'M1' | 'M2' | 'CPGE1' | 'CPGE2' | 'BT' | 'MAN' | 'AUTRE'
 export type TypeSeance = 'CM' | 'TD' | 'TP'
-/** Un groupe est de TD ou de TP ; un CM réunit la classe entière */
-export type TypeGroupe = 'TD' | 'TP'
+/** Un groupe est de TD, de TP ou une option ; un CM réunit la classe entière ou une option */
+export type TypeGroupe = 'TD' | 'TP' | 'OPTION'
 export type Jour = 'Lundi' | 'Mardi' | 'Mercredi' | 'Jeudi' | 'Vendredi' | 'Samedi'
 /** Seuls les gestionnaires ont un compte ; enseignants et étudiants consultent sans connexion */
 export type Role = 'administrateur' | 'planificateur'
@@ -45,14 +45,48 @@ export interface Classe {
   niveau: Niveau
   effectif: number
   id_filiere: number
+  /** Site où la promotion a tous ses cours (null : non fixé) */
+  id_site?: number | null
 }
 
+/** Groupe d'une classe ; arbre : TD ou option, puis demi-groupe de TP ou sous-option */
 export interface Groupe {
   id_groupe: number
   code_groupe: string
   type_groupe: TypeGroupe
   effectif: number
   id_classe: number
+  id_groupe_parent?: number | null
+}
+
+/** Cours mutualisé : public suivi en plus du public principal du cours */
+export interface CoursPublic {
+  id_cours_public: number
+  id_cours: number
+  id_classe: number
+  id_groupe: number | null
+}
+
+/** Type de salle accepté en plus du type exigé par le cours */
+export interface CoursTypeSalle {
+  id_cours_type_salle: number
+  id_cours: number
+  id_type_salle: number
+}
+
+/** Salle réservée à certaines formations (aucune ligne : salle libre) */
+export interface SalleReservation {
+  id_salle_reservation: number
+  id_salle: number
+  id_classe: number
+}
+
+/** Temps de trajet entre deux sites (id_site_a < id_site_b) */
+export interface SiteTrajet {
+  id_site_trajet: number
+  id_site_a: number
+  id_site_b: number
+  minutes: number
 }
 
 export interface Matiere {
@@ -73,14 +107,6 @@ export interface Enseignant {
   nb_heures_max_semaine: number | null
   statut: StatutEnseignant
   id_site: number | null
-}
-
-/** Matière et type de cours qu'un enseignant est habilité à assurer (CD-06) */
-export interface Habilitation {
-  id_habilitation: number
-  id_enseignant: number
-  id_matiere: number
-  type_cours: TypeSeance
 }
 
 /** Séjour prévu d'un intervenant externe sur le campus (CD-06) */
@@ -193,7 +219,8 @@ export interface Cours {
   id_matiere: number
   id_classe: number
   id_groupe: number | null
-  id_enseignant: number
+  /** Enseignant prévu (facultatif), repris par défaut sur les séances générées */
+  id_enseignant: number | null
   id_type_salle: number | null
   id_semestre: number
 }
@@ -233,20 +260,52 @@ export interface Contrainte {
   valeur: number | null
   est_active: boolean
   id_edt: number
+  /** Règle du planificateur (type 'interdire', 'precede', 'plafond_jour') : ses paramètres et sa période */
+  parametres?: ParametresRegle | null
+  date_debut?: string | null
+  date_fin?: string | null
+}
+
+export interface ParametresRegle {
+  cible?: { id_classe?: number; id_enseignant?: number; id_cours?: number; tous?: boolean }
+  jours?: Jour[]
+  /** 0 : matin, 1 : après-midi ; absent : toute la journée */
+  demi?: 0 | 1
+  matiere_avant?: number
+  matiere_apres?: number
+  heures?: number
 }
 
 export interface ImpactProposition {
   seances_deplacees?: number
   seances_supprimees?: number
   seances_creees?: number
+  /** Séances supprimées par la proposition : une ligne par séance, dans l'ordre chronologique */
+  seances_retirees?: string[]
+  heures_retirees?: number
+  /** Séances ajoutées (épreuves) : une ligne par séance */
+  seances_ajoutees?: string[]
   heures_perdues?: { cours: string; heures: number; regle: string; raison: string }[]
   /** génération sur une courte période : heures prévues après elle */
   heures_reportees?: { cours: string; heures: number }[]
+  /** séances à ramener dans la période qui n'y ont pas trouvé de place : elles restent où elles sont */
+  restees_hors_periode?: { cours: string; date: string; heure_debut: string; heure_fin: string; raison: string }[]
   enseignants_a_prevenir?: { enseignant: string; statut: string; seances_modifiees: number }[]
   classes_concernees?: string[]
   fins_decalees?: { cours: string; fin_avant: string; fin_apres: string; jours: number }[]
   journees_chargees?: { enseignant: string; date: string; heures: number; plafond: number }[]
   changements_de_site?: { classe: string; date: string; sites: number }[]
+  /** Changements du référentiel : séances (ou cours) qu'ils laisseraient hors des règles */
+  conflits?: { regle: string; nombre: number; exemples: string[]; du: string | null; au: string | null }[]
+}
+
+/** Changement du référentiel proposé (PROPOSITION.modifications de nature « referentiel ») */
+export interface OperationReferentiel {
+  action: 'ajouter_ligne' | 'modifier_ligne' | 'supprimer_ligne' | 'disponibilite'
+  table: string
+  libelle: string
+  /** disponibilite : null quand la saisie est retirée */
+  niveau?: string | null
 }
 
 /** Modification proposée par l'assistant IA, en attente de validation */
@@ -257,10 +316,14 @@ export interface Proposition {
   /** Conséquences calculées : heures perdues, enseignants à prévenir, cours décalés… */
   impact: ImpactProposition
   statut: StatutProposition
-  /** seances : opérations sur des séances ; referentiel : lignes à ajouter au référentiel */
+  /** seances : opérations sur des séances ; referentiel : lignes du référentiel, du calendrier ou
+   *  des enseignants à ajouter, modifier ou supprimer */
   nature?: 'seances' | 'referentiel'
-  /** Génération lancée une fois les ajouts au référentiel validés */
-  suite?: { description: string; classes?: string[]; filieres?: string[]; matieres?: string[]; du?: string; au?: string } | null
+  /** Génération ou replanification lancée une fois les changements du référentiel validés */
+  suite?: {
+    description: string; mode?: 'generer' | 'replanifier'; classes?: string[]; filieres?: string[]; matieres?: string[]
+    du?: string; au?: string
+  } | null
   date_creation: string
   date_decision: string | null
   id_prompt: number
@@ -288,6 +351,9 @@ export interface Prompt {
   id_conversation: number
 }
 
+/** Un cours, ou une épreuve : examen, puis rattrapage du même module */
+export type NatureSeance = 'cours' | 'examen' | 'rattrapage'
+
 export interface Seance {
   id_seance: number
   date_seance: string
@@ -296,9 +362,13 @@ export interface Seance {
   statut: StatutSeance
   est_verrouillee: boolean
   id_cours: number
+  /** Enseignant de la séance ; null : à désigner */
+  id_enseignant: number | null
   id_salle: number
   id_creneau: number
   id_edt: number
+  /** Absente : un cours */
+  nature?: NatureSeance
 }
 
 /** Image complète de la base, telle que le front la manipule. */
@@ -320,7 +390,6 @@ export interface Db {
   groupe: Groupe[]
   matiere: Matiere[]
   enseignant: Enseignant[]
-  habilitation: Habilitation[]
   absence_enseignant: AbsenceEnseignant[]
   sejour_enseignant: SejourEnseignant[]
   creneau: Creneau[]
@@ -329,10 +398,14 @@ export interface Db {
   conge: Conge[]
   type_salle: TypeSalle[]
   salle: Salle[]
+  salle_reservation: SalleReservation[]
+  site_trajet: SiteTrajet[]
   semestre: Semestre[]
   utilisateur: Utilisateur[]
   programme: Programme[]
   cours: Cours[]
+  cours_public: CoursPublic[]
+  cours_type_salle: CoursTypeSalle[]
   cours_seance_modele: CoursSeanceModele[]
   disponibilite: Disponibilite[]
   emploi_du_temps: EmploiDuTemps[]

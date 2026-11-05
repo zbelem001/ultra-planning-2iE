@@ -2,6 +2,10 @@
 .env
 *.local
 
+# Données réelles extraites d'HyperPlanning (noms d'enseignants) : jamais versionnées
+scrap/brut/
+scrap/csv/
+
 # Environnements et fichiers générés
 .venv/
 node_modules/

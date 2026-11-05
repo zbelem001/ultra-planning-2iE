@@ -2,6 +2,8 @@
 
 Ce document explique comment le solveur d'UltraPlanning construit un emploi du temps : ce qu'il reçoit, comment il découpe le problème, quels modèles CP-SAT il résout, comment il explique ce qu'il n'a pas pu placer, et où se trouvent ses limites. Pour l'installation et les commandes, voir `README.md`.
 
+> **Deux moteurs.** Depuis le schéma version 11, `generer()` utilise par défaut le **moteur v3** de Soraya Pitroipa : placement glouton multi-essais semaine après semaine, puis CP-SAT sur de petits sous-problèmes (une promotion, une semaine). Il gère en plus les règles 2iE (site de la promotion, options et sous-groupes, cours mutualisés, salles réservées, temps de trajet, règles du planificateur saisies comme données) et passe à l'échelle de l'école (S1 à S4, 5 200 h : 100 % en 35 s, contre 59 % en 20 min). Il est décrit dans [`ultraplanning_solver/v3/README.md`](ultraplanning_solver/v3/README.md). Ce document décrit l'**ancien moteur à deux étages**, toujours disponible (`Demande(moteur="cpsat")`, `--moteur cpsat`) ; les sections 1, 4, 5, 10 et 11 (rôle, données, demande, résultat, base) valent pour les deux.
+
 ## Sommaire
 
 1. [Rôle du solveur](#1-rôle-du-solveur)
@@ -433,7 +435,7 @@ Côté backend (`../backend`) :
 | CD-03 classe, groupes en parallèle | capacité de la classe (`y_TD`, `y_TP`) | variables `b_TD`, `b_TP` ; filtre | déclencheur |
 | CD-04 capacité ≥ effectif | — | filtre des salles | déclencheur |
 | CD-05 type de salle | capacité par type | filtre des salles | déclencheur |
-| CD-06 présence, disponibilité (l'habilitation est garantie à l'enregistrement du cours) | heures ouvertes du cours et de l'enseignant | filtres | déclencheur, sur `cours` et sur `seance` |
+| CD-06 présence, disponibilité de l'enseignant prévu du cours (aucune contrainte s'il est à désigner ; une séance figée compte pour son propre enseignant) | heures ouvertes du cours et de l'enseignant | filtres | déclencheur, sur `cours` et sur `seance` |
 | CD-07 programme | — (cours déjà conformes) | — | déclencheur sur `cours` |
 | CD-08 volume | égalité de volume avec manque | — | déclencheur |
 | CD-09 semestre, fériés, congés | heures ouvertes | filtre des jours | déclencheur |
@@ -509,6 +511,8 @@ Mesures sur le jeu de test (13 cours, 13 salles, 9 enseignants, semestre de 19 s
 | Classe L2INFO, une semaine (génération courte) | 66 h | 66 h placées, le reste reporté | ≈ 11 s |
 
 Le temps est surtout celui de l'étage 2, borné par `temps_max_placement` pour chaque semaine qui a des heures. Il croît donc à peu près linéairement avec le nombre de semaines actives, et non exponentiellement avec la taille de l'école. Par l'API (5 s par semaine), la filière INFO prend environ 16 s.
+
+À l'échelle de l'école, l'étage 2 ne tient plus : sur S1 à S4 de l'instance calée sur 2iE (154 cours, 60 groupes, 5 200 h), le placement CP-SAT d'une semaine n'aboutit pas dans ses 10 s, la boucle s'arrête à 8 reprises, et l'ancien moteur place 59 à 65 % des heures en 20 min. Le moteur v3 place 100 % (82 % avec CD-13) en 35 s ; voir [`ultraplanning_solver/v3/README.md`](ultraplanning_solver/v3/README.md).
 
 ---
 

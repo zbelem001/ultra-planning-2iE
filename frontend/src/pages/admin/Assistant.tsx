@@ -3,16 +3,16 @@
 // qui interroge le solveur et enregistre ses propositions. Mode simulé : on repère
 // jour, période, classe et enseignant, puis on décrit les séances concernées.
 
-import { ArrowUp, Bot, Brain, Compass, Cpu, History, Loader2, MessageSquarePlus, Paperclip, PenLine, Repeat, Search, ShieldCheck, Trash2, UserRound, X } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { ArrowUp, Bot, History, Loader2, MessageSquarePlus, Paperclip, Search, Trash2, UserRound, X } from 'lucide-react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { toast } from 'sonner'
 import { PropositionCarte } from '@/components/PropositionCarte'
 import { Badge, Button, Card, cn, Dialog, Input, PageTitle } from '@/components/ui'
 import { envoyerMessageFlux, FORMATS_PIECE_JOINTE, lirePieceJointe, TAILLE_MAX_PIECE_JOINTE, type EtapeAssistant } from '@/lib/api'
 import { useSession } from '@/lib/auth'
-import { enrichir, nomEnseignant, publicCours } from '@/lib/queries'
-import { edtPublie, edtTravail, nextId, useStore } from '@/lib/store'
+import { enrichir, nomEnseignant } from '@/lib/queries'
+import { edtTravail, nextId, useStore } from '@/lib/store'
 import { useHauteurRestante } from '@/lib/hauteur'
 import { addDays, fmtDateHeure, fmtHeure, fmtJourCourt, fmtJourMois, jourOf, JOURS, mondayOf, todayIso, toIso, toMin } from '@/lib/time'
 import type { Conversation, Db, Prompt } from '@/types/db'
@@ -76,7 +76,7 @@ function repondre(db: Db, id_edt: number, texte: string, precedent?: string): { 
     .filter((s) => !jour || jourOf(s.date_seance) === jour)
     .filter((s) => !periode || (periode === 'matin' ? toMin(s.heure_debut) < 12 * 60 : toMin(s.heure_debut) >= 12 * 60))
     .filter((s) => !classe || s.classe.id_classe === classe.id_classe)
-    .filter((s) => !ens || s.enseignant.id_enseignant === ens.id_enseignant)
+    .filter((s) => !ens || s.enseignant?.id_enseignant === ens.id_enseignant)
 
   const cible = [jour?.toLowerCase(), periode, classe?.code_classe, ens && nomEnseignant(ens)].filter(Boolean).join(' · ')
   if (!list.length) {
@@ -84,7 +84,7 @@ function repondre(db: Db, id_edt: number, texte: string, precedent?: string): { 
   }
   const lignes = list
     .sort((a, b) => (a.date_seance + a.heure_debut).localeCompare(b.date_seance + b.heure_debut))
-    .map((s) => `• ${fmtJourCourt(s.date_seance)} ${fmtHeure(s.heure_debut)}–${fmtHeure(s.heure_fin)} : ${s.matiere.libelle} (${s.cours.type_cours}), ${publicCours(s.classe, s.groupe)}, ${s.salle.nom_salle}`)
+    .map((s) => `• ${fmtJourCourt(s.date_seance)} ${fmtHeure(s.heure_debut)}–${fmtHeure(s.heure_fin)} : ${s.matiere.libelle} (${s.cours.type_cours}), ${s.public_affiche}, ${s.salle.nom_salle}`)
     .join('\n')
   const action = /libere|evite|deplace|supprime|retire/.test(t)
   return {
@@ -111,6 +111,16 @@ function groupeDate(iso: string): string {
   return 'Plus ancien'
 }
 
+/** Amène la zone sur le dernier message, sans dépasser le début de la dernière réponse : une réponse plus
+ *  haute que la zone se lit depuis son début. Sans `forcer`, ne remonte pas ce que l'on a descendu soi-même. */
+function placerSurDernierMessage(zone: HTMLElement, forcer: boolean) {
+  const reponses = zone.querySelectorAll('[data-reponse]')
+  const derniere = reponses[reponses.length - 1]
+  const debut = derniere ? derniere.getBoundingClientRect().top - zone.getBoundingClientRect().top + zone.scrollTop - 12 : Infinity
+  const cible = Math.min(zone.scrollHeight, debut)
+  zone.scrollTop = forcer ? cible : Math.max(zone.scrollTop, cible)
+}
+
 export default function Assistant() {
   const { db, mutate, connecte, recharger } = useStore()
   // Les deux colonnes occupent l'écran jusqu'en bas (48 px : marge basse de la page)
@@ -119,6 +129,7 @@ export default function Assistant() {
   const [envoi, setEnvoi] = useState<{ texte: string; id_conversation: number | null } | null>(null)
   // Étapes du traitement en cours, reçues en direct de l'API
   const [etapes, setEtapes] = useState<(EtapeAssistant & { resultat?: string })[]>([])
+  const [texteFlux, setTexteFlux] = useState('') // la réponse, pendant qu'elle s'écrit
   const ajouterEtape = (e: EtapeAssistant) => setEtapes((l) => {
     const derniere = l[l.length - 1]
     if (e.etape === 'resultat') return derniere ? [...l.slice(0, -1), { ...derniere, resultat: e.detail }] : l
@@ -126,8 +137,8 @@ export default function Assistant() {
     return [...l, e]
   })
   const session = useSession()
-  // L'assistant travaille en direct sur la version publiée : ce qu'on applique se voit tout de suite côté invités
-  const edt = edtPublie(db) ?? edtTravail(db)
+  // L'assistant travaille sur la version à jour : les invités voient ses changements une fois publiés
+  const edt = edtTravail(db)
   const [params, setParams] = useSearchParams()
   const [texte, setTexte] = useState('')
   const [fichier, setFichier] = useState<File | null>(null)
@@ -136,7 +147,11 @@ export default function Assistant() {
   const [q, setQ] = useState('')
   const [historiqueMobile, setHistoriqueMobile] = useState(false)
   const [aSupprimer, setASupprimer] = useState<Conversation | null>(null)
-  const fin = useRef<HTMLDivElement>(null)
+  const fil = useRef<HTMLDivElement>(null) // la zone des messages, qui défile
+  const contenuFil = useRef<HTMLDivElement>(null)
+  const suivre = useRef(true) // rester sur le dernier message, sauf si l'on est remonté lire plus haut
+  const hautPrecedent = useRef(0)
+  const monte = useRef(true)
   const saisie = useRef<HTMLTextAreaElement>(null)
 
   // Discussions de l'utilisateur connecté, de la plus récente à la plus ancienne
@@ -156,10 +171,10 @@ export default function Assistant() {
     )
   }, [conversations, q, db.prompt])
 
-  // Discussion ouverte : paramètre ?c=, sinon la plus récente ; 'nouvelle' = brouillon vide
+  // Discussion ouverte : seulement celle que désigne ?c=. En arrivant sur la page ou en y revenant, l'écran
+  // est neutre (nouvelle discussion) ; les discussions précédentes sont dans la colonne de gauche.
   const param = params.get('c')
-  const courante =
-    param === 'nouvelle' ? null : conversations.find(({ c }) => c.id_conversation === Number(param))?.c ?? (param ? null : conversations[0]?.c ?? null)
+  const courante = conversations.find(({ c }) => String(c.id_conversation) === param)?.c ?? null
   const ouvrir = (id: number | 'nouvelle') => {
     setParams({ c: String(id) }, { replace: true })
     setHistoriqueMobile(false)
@@ -168,24 +183,62 @@ export default function Assistant() {
   const prompts = courante
     ? db.prompt.filter((p) => p.id_conversation === courante.id_conversation).sort((a, b) => a.date_prompt.localeCompare(b.date_prompt))
     : []
-  const edtConv = db.emploi_du_temps.find((e) => e.id_edt === (courante?.id_edt ?? edt.id_edt))!
+
+  const placer = (forcer: boolean) => {
+    if (!fil.current) return
+    placerSurDernierMessage(fil.current, forcer)
+    hautPrecedent.current = fil.current.scrollTop // ce défilement-là n'est pas celui de l'utilisateur
+  }
+
+  // Une discussion qui s'ouvre, un message envoyé, une réponse terminée : retour au dernier message,
+  // même si l'on était remonté
+  useLayoutEffect(() => {
+    suivre.current = true
+    placer(true)
+  }, [courante?.id_conversation, envoi === null, enCours === null])
+
+  // La réponse qui s'écrit, une carte qui arrive, la hauteur de la zone qui se fixe : on suit
+  useEffect(() => {
+    const zone = fil.current
+    const contenu = contenuFil.current
+    if (!zone || !contenu) return
+    const observateur = new ResizeObserver(() => {
+      if (suivre.current) placer(false)
+    })
+    observateur.observe(zone)
+    observateur.observe(contenu)
+    return () => observateur.disconnect()
+  }, [])
 
   useEffect(() => {
-    fin.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
-  }, [prompts.length, enCours, courante?.id_conversation, etapes.length])
+    monte.current = true
+    return () => { monte.current = false }
+  }, [])
+
+  const auDefilement = () => {
+    const zone = fil.current
+    if (!zone) return
+    if (zone.scrollHeight - zone.scrollTop - zone.clientHeight < 60) suivre.current = true
+    else if (zone.scrollTop < hautPrecedent.current) suivre.current = false // remonté à la main
+    hautPrecedent.current = zone.scrollTop
+  }
 
   const envoyerAuServeur = async (txt: string) => {
     const idConv = courante?.id_conversation ?? null
     const joint = fichier
     setEnvoi({ texte: txt + (joint ? `\n[Pièce jointe : ${joint.name}]` : ''), id_conversation: idConv })
     setEtapes([])
+    setTexteFlux('')
     setTexte('')
     setFichier(null)
     try {
       const piece = joint ? await lirePieceJointe(joint) : undefined
-      const r = await envoyerMessageFlux(courante?.id_edt ?? edt.id_edt, txt, idConv, ajouterEtape, piece)
+      const r = await envoyerMessageFlux(courante?.id_edt ?? edt.id_edt, txt, idConv, (e) => { setTexteFlux(''); ajouterEtape(e) }, piece,
+        (m) => setTexteFlux((t) => (m === null ? '' : t + m)))
+      setTexteFlux(r.reponse) // visible tout de suite : la relecture de la base suit
       await recharger()
-      setParams({ c: String(r.id_conversation) }, { replace: true })
+      // Page quittée pendant la réponse : ne pas toucher à l'adresse de la page où l'on est maintenant
+      if (monte.current) setParams({ c: String(r.id_conversation) }, { replace: true })
     } catch (e) {
       toast.error("L'assistant n'a pas pu répondre", { description: (e as Error).message })
       setTexte(txt)
@@ -261,7 +314,6 @@ export default function Assistant() {
                 dernierGroupe = g
                 const actif = courante?.id_conversation === c.id_conversation
                 const apercu = db.prompt.filter((p) => p.id_conversation === c.id_conversation).sort((a, b) => b.date_prompt.localeCompare(a.date_prompt))[0]
-                const v = db.emploi_du_temps.find((e) => e.id_edt === c.id_edt)
                 return (
                   <li key={c.id_conversation}>
                     {header && <p className="section-label px-3 pt-3 pb-1.5">{header}</p>}
@@ -269,7 +321,6 @@ export default function Assistant() {
                       <button type="button" onClick={() => ouvrir(c.id_conversation)} aria-current={actif ? 'true' : undefined} className="block w-full rounded-2xl px-3 py-2.5 pr-10 text-left">
                         <span className="block truncate text-sm font-medium">{c.titre}</span>
                         <span className={cn('mt-0.5 flex items-center gap-1.5 text-xs', actif ? 'text-on-navy-2' : 'text-ink-2')}>
-                          <span className={cn('shrink-0 rounded-full px-1.5 font-mono text-[10px]', actif ? 'bg-white/15' : 'bg-muted')}>v{v?.version}</span>
                           <span className="truncate">{apercu?.texte ?? 'Discussion vide'}</span>
                         </span>
                         <span className={cn('mt-0.5 block text-[11px]', actif ? 'text-on-navy-2' : 'text-ink-2/80')}>{fmtJourMois(toIso(new Date(last)))}</span>
@@ -299,71 +350,74 @@ export default function Assistant() {
             <div className="min-w-0 flex-1">
               <h2 className="truncate text-xl font-light">{courante?.titre ?? 'Nouvelle discussion'}</h2>
               <p className="text-xs text-ink-2">
-                {courante ? `Ouverte le ${fmtDateHeure(courante.date_creation)} · ` : ''}emploi du temps v{edtConv.version} ({edtConv.statut === 'publie' ? 'publié : modifications visibles en direct' : edtConv.statut})
+                {courante ? `Ouverte le ${fmtDateHeure(courante.date_creation)} · ` : ''}version à jour : les invités voient les changements une fois publiés
               </p>
             </div>
             <Badge tone="navy">{prompts.length} message{prompts.length > 1 ? 's' : ''}</Badge>
           </div>
 
-          <div className="flex-1 space-y-5 overflow-y-auto p-5 sm:p-7 scroll-thin">
-            {prompts.length === 0 && !envoi && (
-              <div className="py-10 text-center text-ink-2">
-                <Bot className="mx-auto size-8 text-navy" />
-                <p className="mt-3">Décrivez une modification de l'emploi du temps en langage naturel.</p>
-                <div className="mt-5 flex flex-wrap justify-center gap-2">
-                  {SUGGESTIONS.map((s) => (
-                    <button key={s} type="button" onClick={() => envoyer(s)} disabled={enCours !== null || envoi !== null} className="press rounded-full bg-white/80 px-3 py-1.5 text-xs text-ink-2 ring-1 ring-line hover:text-ink disabled:opacity-50">
-                      {s}
-                    </button>
-                  ))}
+          <div ref={fil} data-fil onScroll={auDefilement} className="flex-1 overflow-y-auto p-5 sm:p-7 scroll-thin">
+            <div ref={contenuFil} className="space-y-5">
+              {prompts.length === 0 && !envoi && (
+                <div className="py-10 text-center text-ink-2">
+                  <Bot className="mx-auto size-8 text-navy" />
+                  <p className="mt-3">Décrivez une modification de l'emploi du temps en langage naturel.</p>
+                  <div className="mt-5 flex flex-wrap justify-center gap-2">
+                    {SUGGESTIONS.map((s) => (
+                      <button key={s} type="button" onClick={() => envoyer(s)} disabled={enCours !== null || envoi !== null} className="press rounded-full bg-white/80 px-3 py-1.5 text-xs text-ink-2 ring-1 ring-line hover:text-ink disabled:opacity-50">
+                        {s}
+                      </button>
+                    ))}
+                  </div>
                 </div>
-              </div>
-            )}
-            {prompts.map((p) => {
-              const u = db.utilisateur.find((x) => x.id_utilisateur === p.id_utilisateur)
-              return (
-                <div key={p.id_prompt} className="space-y-3">
-                  <div className="flex justify-end gap-2">
-                    <div className="max-w-[85%] rounded-3xl rounded-br-lg bg-navy px-4 py-3 text-sm text-white">
-                      <TexteMessage texte={p.texte} />
-                      <p className="mt-1 text-[11px] text-on-navy-2">{u?.login} · {fmtDateHeure(p.date_prompt)}</p>
+              )}
+              {prompts.map((p) => {
+                const u = db.utilisateur.find((x) => x.id_utilisateur === p.id_utilisateur)
+                return (
+                  <div key={p.id_prompt} className="space-y-3">
+                    <div className="flex justify-end gap-2">
+                      <div className="max-w-[85%] rounded-3xl rounded-br-lg bg-navy px-4 py-3 text-sm text-white">
+                        <TexteMessage texte={p.texte} />
+                        <p className="mt-1 text-[11px] text-on-navy-2">{u?.login} · {fmtDateHeure(p.date_prompt)}</p>
+                      </div>
+                      <span className="grid size-8 shrink-0 place-items-center rounded-full bg-white ring-1 ring-line"><UserRound className="size-4" /></span>
                     </div>
+                    <div className="flex gap-2">
+                      <span className="grid size-8 shrink-0 place-items-center rounded-full bg-orange text-navy"><Bot className="size-4" /></span>
+                      <div data-reponse className={cn('max-w-[85%] rounded-3xl rounded-bl-lg px-4 py-3 text-sm ring-1', p.statut === 'erreur' ? 'bg-[#FEE2E2]/60 ring-[#FEE2E2]' : 'bg-white/85 ring-white')}>
+                        {p.statut === 'en_attente' ? (
+                          <span className="flex items-center gap-2 text-ink-2"><Loader2 className="size-4 animate-spin" />Analyse de la demande…</span>
+                        ) : (
+                          <>
+                            <p className="whitespace-pre-line">{p.reponse}</p>
+                            <div className="mt-2">{p.statut === 'traite' ? <Badge tone="success" dot>Traité</Badge> : <Badge tone="danger" dot>Erreur</Badge>}</div>
+                            {db.proposition.filter((x) => x.id_prompt === p.id_prompt && x.statut !== 'rejetee').map((x) => (
+                              <div key={x.id_proposition} className="mt-3"><PropositionCarte p={x} compacte /></div>
+                            ))}
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )
+              })}
+              {envoi && (envoi.id_conversation === (courante?.id_conversation ?? null)) && (
+                <div className="space-y-3">
+                  <div className="flex justify-end gap-2">
+                    <div className="max-w-[85%] rounded-3xl rounded-br-lg bg-navy px-4 py-3 text-sm text-white"><TexteMessage texte={envoi.texte} /></div>
                     <span className="grid size-8 shrink-0 place-items-center rounded-full bg-white ring-1 ring-line"><UserRound className="size-4" /></span>
                   </div>
                   <div className="flex gap-2">
                     <span className="grid size-8 shrink-0 place-items-center rounded-full bg-orange text-navy"><Bot className="size-4" /></span>
-                    <div className={cn('max-w-[85%] rounded-3xl rounded-bl-lg px-4 py-3 text-sm ring-1', p.statut === 'erreur' ? 'bg-[#FEE2E2]/60 ring-[#FEE2E2]' : 'bg-white/85 ring-white')}>
-                      {p.statut === 'en_attente' ? (
-                        <span className="flex items-center gap-2 text-ink-2"><Loader2 className="size-4 animate-spin" />Analyse de la demande…</span>
-                      ) : (
-                        <>
-                          <p className="whitespace-pre-line">{p.reponse}</p>
-                          <div className="mt-2">{p.statut === 'traite' ? <Badge tone="success" dot>Traité</Badge> : <Badge tone="danger" dot>Erreur</Badge>}</div>
-                          {db.proposition.filter((x) => x.id_prompt === p.id_prompt && x.statut !== 'rejetee').map((x) => (
-                            <div key={x.id_proposition} className="mt-3"><PropositionCarte p={x} compacte /></div>
-                          ))}
-                        </>
-                      )}
+                    <div data-reponse className="max-w-[85%] rounded-3xl rounded-bl-lg bg-white/85 px-4 py-3 text-sm ring-1 ring-white">
+                      {texteFlux
+                        ? <p className="whitespace-pre-line">{texteFlux.replace(/\*\*/g, '')}</p>
+                        : <EtapesEnCours etapes={etapes} />}
                     </div>
                   </div>
                 </div>
-              )
-            })}
-            {envoi && (envoi.id_conversation === (courante?.id_conversation ?? null)) && (
-              <div className="space-y-3">
-                <div className="flex justify-end gap-2">
-                  <div className="max-w-[85%] rounded-3xl rounded-br-lg bg-navy px-4 py-3 text-sm text-white"><TexteMessage texte={envoi.texte} /></div>
-                  <span className="grid size-8 shrink-0 place-items-center rounded-full bg-white ring-1 ring-line"><UserRound className="size-4" /></span>
-                </div>
-                <div className="flex gap-2">
-                  <span className="grid size-8 shrink-0 place-items-center rounded-full bg-orange text-navy"><Bot className="size-4" /></span>
-                  <div className="rounded-3xl rounded-bl-lg bg-white/85 px-4 py-3 text-sm ring-1 ring-white">
-                    <EtapesEnCours etapes={etapes} />
-                  </div>
-                </div>
-              </div>
-            )}
-            <div ref={fin} />
+              )}
+            </div>
           </div>
 
           <div className="border-t border-white/80 p-4 sm:p-5">
@@ -426,47 +480,16 @@ export default function Assistant() {
   )
 }
 
-const ETAPES: Record<string, { label: string; icone: ReactNode }> = {
-  contextualisation: { label: 'Contextualisation', icone: <Compass /> },
-  analyse: { label: 'Analyse', icone: <Search /> },
-  verification: { label: 'Vérification', icone: <ShieldCheck /> },
-  calcul: { label: 'Calcul', icone: <Cpu /> },
-  reflexion: { label: 'Réflexion', icone: <Brain /> },
-  redaction: { label: 'Rédaction', icone: <PenLine /> },
-  relais: { label: 'Relais', icone: <Repeat /> },
-}
-
-/** Durée minimale d'affichage d'une étape : une étape très rapide ne fait pas qu'un éclair */
-const DUREE_ETAPE_MS = 900
-
-/** Une seule étape à la fois : la suivante remplace la précédente (transition), après un temps
- *  d'affichage minimal ; si plusieurs étapes arrivent d'un coup, elles défilent à ce rythme. */
+/** Pendant l'attente : ce que l'assistant fait vraiment (lecture, vérification, solveur) ; rien de plus. */
 function EtapesEnCours({ etapes }: { etapes: (EtapeAssistant & { resultat?: string })[] }) {
-  const [affichee, setAffichee] = useState(0)
-  const derniere = etapes.length - 1
-  useEffect(() => {
-    if (affichee >= derniere) return
-    const t = setTimeout(() => setAffichee((i) => Math.min(i + 1, derniere)), DUREE_ETAPE_MS)
-    return () => clearTimeout(t)
-  }, [affichee, derniere])
-
-  if (!etapes.length) {
-    return <span className="flex items-center gap-2 text-ink-2"><Loader2 className="size-4 animate-spin" />Envoi de la demande…</span>
-  }
-  const i = Math.min(affichee, derniere)
-  const e = etapes[i]
-  const def = ETAPES[e.etape] ?? { label: e.etape, icone: <Search /> }
+  const e = etapes[etapes.length - 1]
   return (
-    <div aria-live="polite" aria-label="Étape de l'assistant" className="min-h-10 min-w-64 max-w-md">
-      {/* key : chaque nouvelle étape remonte le bloc et rejoue l'animation d'entrée */}
-      <div key={i} className="rise flex items-start gap-2.5">
-        <span className="mt-0.5 grid size-5 shrink-0 place-items-center text-navy [&_svg]:size-3.5"><Loader2 className="animate-spin" /></span>
-        <span className="min-w-0">
-          <span className="flex items-center gap-1.5 font-medium text-ink [&_svg]:size-3.5 [&_svg]:text-ink-2">{def.icone}{def.label}</span>
-          <span className="block text-xs text-ink-2">{e.detail}</span>
-          {e.resultat && <span className="block text-xs text-ink-2">→ {e.resultat}</span>}
-        </span>
-      </div>
-    </div>
+    <span aria-live="polite" className="flex items-start gap-2 text-ink-2">
+      <Loader2 className="mt-0.5 size-4 shrink-0 animate-spin" />
+      <span className="min-w-0">
+        {e ? e.detail : 'Un instant…'}
+        {e?.resultat && <span className="block text-xs">→ {e.resultat}</span>}
+      </span>
+    </span>
   )
 }

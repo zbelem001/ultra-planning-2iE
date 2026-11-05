@@ -8,6 +8,7 @@ import { Badge, Card, cn, Meter, PageTitle, PillTabs, SectionTitle } from '@/com
 import { couverture } from '@/lib/programme'
 import { checkSeance } from '@/lib/rules'
 import { couleurMatiere, enrichir, nomEnseignant, publicCours } from '@/lib/queries'
+import { estEpreuve } from '@/lib/publics'
 import { edtTravail, useStore } from '@/lib/store'
 import { addDays, fmtJourMois, hours, isoWeek, mondayOf, todayIso } from '@/lib/time'
 
@@ -38,19 +39,20 @@ export default function Dashboard() {
   const coursSemestre = db.cours.filter((c) => c.id_semestre === semestre.id_semestre)
   const manques = couverture(db, semestre.id_semestre).filter((e) => e.couvert < e.prevu)
   const prevues = coursSemestre.reduce((a, c) => a + c.volume_horaire, 0)
-  const planifiees = actives.reduce((a, s) => a + hours(s.heure_debut, s.heure_fin), 0)
+  const cours = actives.filter((s) => !estEpreuve(s)) // les épreuves ne comptent pas dans les volumes
+  const planifiees = cours.reduce((a, s) => a + hours(s.heure_debut, s.heure_fin), 0)
 
   const violations = useMemo(() => actives.reduce((n, s) => n + (checkSeance(db, s).length ? 1 : 0), 0), [db, actives])
 
   const lignes = coursSemestre
     .map((c) => {
-      const list = actives.filter((s) => s.id_cours === c.id_cours)
+      const list = cours.filter((s) => s.id_cours === c.id_cours)
       const plan = list.reduce((a, s) => a + hours(s.heure_debut, s.heure_fin), 0)
       const faites = list.filter((s) => s.date_seance < today).reduce((a, s) => a + hours(s.heure_debut, s.heure_fin), 0)
       const m = db.matiere.find((x) => x.id_matiere === c.id_matiere)!
       const cl = db.classe.find((x) => x.id_classe === c.id_classe)!
       const g = db.groupe.find((x) => x.id_groupe === c.id_groupe) ?? null
-      const e = db.enseignant.find((x) => x.id_enseignant === c.id_enseignant)!
+      const e = db.enseignant.find((x) => x.id_enseignant === c.id_enseignant)
       return { c, m, public: publicCours(cl, g), ens: nomEnseignant(e), plan, faites, reste: c.volume_horaire - plan }
     })
     .sort((a, b) => (tri === 'ecart' ? b.reste - a.reste : a.m.libelle.localeCompare(b.m.libelle)))
@@ -63,12 +65,12 @@ export default function Dashboard() {
     .sort((a, b) => b.h - a.h)
   const occupation = salles.reduce((a, x) => a + x.h, 0) / (db.salle.length * heuresGrille)
   const charges = db.enseignant
-    .map((e) => ({ e, h: semaine.filter((x) => x.enseignant.id_enseignant === e.id_enseignant).reduce((a, x) => a + x.duree, 0) }))
+    .map((e) => ({ e, h: semaine.filter((x) => x.enseignant?.id_enseignant === e.id_enseignant).reduce((a, x) => a + x.duree, 0) }))
     .sort((a, b) => b.h - a.h)
 
   return (
     <div className="grid grid-cols-1 gap-6">
-      <PageTitle visible eyebrow={`${semestre.libelle} · ${semestre.annee_academique} · version ${edt.version}`} title="Tableau de bord">
+      <PageTitle visible eyebrow={`${semestre.libelle} · ${semestre.annee_academique}`} title="Tableau de bord">
         <Link to="/admin/generation" className="press inline-flex h-10 items-center gap-2 rounded-full border border-line bg-white/80 px-4 text-sm font-medium hover:bg-white [&_svg]:size-4"><Sparkles />Générer</Link>
         <Link to="/admin/planification" className="press inline-flex h-12 items-center gap-2 rounded-full bg-orange px-6 text-sm font-medium text-navy shadow-sm hover:brightness-105 [&_svg]:size-4"><CalendarRange />Planifier</Link>
       </PageTitle>
