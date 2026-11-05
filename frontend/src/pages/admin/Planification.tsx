@@ -15,6 +15,7 @@ import { seancesVersion, type VersionEdt } from '@/lib/api'
 import { expandWeek } from '@/lib/generator'
 import { couleurMatiere, enrichir, filtrer, lieuSalle, heuresPlanifiees, nomEnseignant, publicCours, type Ressource, type SeanceVue } from '@/lib/queries'
 import { aPlacer } from '@/lib/aPlacer'
+import { useGrandEcran } from '@/lib/hauteur'
 import { estEpreuve } from '@/lib/publics'
 import { checkSeance, creneauAt, decoupage, evaluerCreneau, examenAvecRattrapage, sallesCompatibles, sallesDuCours, sallesPourEpreuves, type SeanceDraft } from '@/lib/rules'
 import { edtTravail, nextId, useStore } from '@/lib/store'
@@ -30,6 +31,7 @@ type Drag =
 const DECALAGE_MODELE = 30
 
 export default function Planification() {
+  const grandEcran = useGrandEcran(1280) // à partir de là, le panneau est à côté de la grille et la page tient en un bloc
   const { db, mutate, connecte, recharger } = useStore()
   // « À jour » : la seule version modifiable, à publier. « Historique » : une version passée, en lecture seule.
   const edt = edtTravail(db)
@@ -289,8 +291,8 @@ export default function Planification() {
   }
 
   return (
-    <div className="grid grid-cols-1 gap-6">
-      <PageTitle visible eyebrow={lecture ? 'Historique des modifications' : 'Version à jour'} title="Planification">
+    <div className="grid grid-cols-1 gap-6 xl:flex xl:min-h-0 xl:flex-1 xl:flex-col xl:gap-2 print:block">
+      <PageTitle visible={!grandEcran} eyebrow={lecture ? 'Historique des modifications' : 'Version à jour'} title="Planification">
         <PillTabs
           size="sm"
           label="Vue"
@@ -318,23 +320,23 @@ export default function Planification() {
         )}
       </PageTitle>
 
-      <Card className="p-4 sm:p-5">
-        <div className="grid gap-3 lg:grid-cols-[auto_minmax(0,1fr)_minmax(0,16rem)] lg:items-center">
+      <Card className="p-4 sm:p-5 xl:flex xl:shrink-0 xl:items-center xl:gap-3 xl:p-2">
+        <div className="grid gap-3 lg:grid-cols-[auto_minmax(0,1fr)_minmax(0,16rem)] lg:items-center xl:flex xl:shrink-0 xl:gap-2">
           <PillTabs
             size="sm"
             value={res}
             onChange={(r) => { setRes(r); setId(null); setIdGroupe(null) }}
             items={[{ value: 'classe', label: 'Classe' }, { value: 'enseignant', label: 'Enseignant' }, { value: 'salle', label: 'Salle' }]}
           />
-          <Combobox ariaLabel="Ressource à planifier" placeholder="Rechercher…" options={options} value={id} onChange={(v) => { setId(v); setIdGroupe(null) }} />
+          <Combobox className="xl:w-44" ariaLabel="Ressource à planifier" placeholder="Rechercher…" options={options} value={id} onChange={(v) => { setId(v); setIdGroupe(null) }} />
           {res === 'classe' && id !== null && db.groupe.some((g) => g.id_classe === id) ? (
-            <Select aria-label="Groupe" value={idGroupe ?? ''} onChange={(e) => setIdGroupe(e.target.value ? Number(e.target.value) : null)}>
+            <Select className="xl:w-36 xl:[&_select]:pr-8 xl:[&_select]:pl-3 xl:[&_select]:text-xs" aria-label="Groupe" value={idGroupe ?? ''} onChange={(e) => setIdGroupe(e.target.value ? Number(e.target.value) : null)}>
               <option value="">Tous les groupes</option>
               {db.groupe.filter((g) => g.id_classe === id).map((g) => <option key={g.id_groupe} value={g.id_groupe}>{g.code_groupe}</option>)}
             </Select>
           ) : <div />}
         </div>
-        <div className="mt-4">
+        <div className="mt-4 xl:mt-0 xl:min-w-0 xl:flex-1">
           <WeekStrip weeks={weeks} value={semaine} onChange={setSemaine} counts={counts} />
         </div>
       </Card>
@@ -342,8 +344,8 @@ export default function Planification() {
       {id === null && !lecture ? (
         <Card><EmptyState icon={<CalendarRange />} title="Choisissez une classe, un enseignant ou une salle" /></Card>
       ) : (
-        <div className="grid grid-cols-1 gap-6 xl:grid-cols-[19rem_minmax(0,1fr)]">
-          {lecture && (connecte ? (
+        <div className="grid grid-cols-1 gap-6 xl:min-h-0 xl:flex-1 xl:grid-cols-[17rem_minmax(0,1fr)] xl:grid-rows-[minmax(0,1fr)] xl:gap-2 print:block">
+          {lecture && <div className="relative min-w-0"><div className="xl:absolute xl:inset-0">{connecte ? (
             <HistoriqueVersions
               id_edt={edt.id_edt}
               numero={numeroChoisi}
@@ -352,11 +354,11 @@ export default function Planification() {
             />
           ) : (
             <Card className="h-fit p-4"><EmptyState icon={<History />} title="L'historique demande la connexion à la base" /></Card>
-          ))}
+          )}</div></div>}
 
           {/* Cours à placer */}
-          {/* Sur grand écran, le panneau ne compte pas dans la hauteur de la ligne : c'est la grille qui la fixe, et sa liste défile */}
-          {!lecture && <div className="relative min-w-0"><div className="xl:absolute xl:inset-0"><Card className="flex max-h-96 flex-col p-4 xl:sticky xl:top-4 xl:max-h-[min(100%,calc(100vh-2rem))]">
+          {/* Sur grand écran, le panneau ne dépasse pas la hauteur de la ligne : sa liste défile */}
+          {!lecture && <div className="relative min-w-0"><div className="xl:absolute xl:inset-0"><Card className="flex max-h-96 flex-col p-4 xl:max-h-full xl:p-3">
             <p className="section-label px-1">Cours à placer</p>
             <p className="mt-1 px-1 text-xs text-ink-2">Glissez une séance type sur la grille. Les créneaux verts respectent toutes les contraintes dures.</p>
             {res === 'salle' ? (
@@ -414,9 +416,9 @@ export default function Planification() {
           </Card></div></div>}
 
           {/* Grille */}
-          <Card className="min-w-0 self-start p-3 sm:p-5">
+          <Card className="min-w-0 self-start p-3 sm:p-5 xl:flex xl:min-h-0 xl:flex-col xl:self-stretch xl:p-3 print:block">
             {lecture ? (
-              <div className="mb-3 flex min-h-10 flex-wrap items-center justify-between gap-3 rounded-3xl bg-muted/70 px-4 py-2 text-sm text-ink-2">
+              <div className="mb-3 flex min-h-10 flex-wrap items-center justify-between gap-3 rounded-3xl bg-muted/70 px-4 py-2 text-sm text-ink-2 xl:mb-1 xl:min-h-8 xl:shrink-0 xl:py-0.5 xl:text-xs">
                 {versionChoisie ? (
                   <>
                     <span className="min-w-0">
@@ -433,7 +435,7 @@ export default function Planification() {
                 ) : <>Choisissez une version dans la liste.</>}
               </div>
             ) : (
-            <div className={cn('mb-3 flex min-h-10 items-center gap-2 rounded-full px-4 py-2 text-sm transition-colors', !drag ? 'bg-muted/70 text-ink-2' : hoverInfo?.ok ? 'bg-[#DCFCE7] text-[#166534]' : hoverInfo ? 'bg-[#FEE2E2] text-[#991B1B]' : 'bg-highlight text-ink')}>
+            <div className={cn('mb-3 flex min-h-10 items-center gap-2 rounded-full px-4 py-2 text-sm transition-colors xl:mb-1 xl:min-h-8 xl:shrink-0 xl:py-1 xl:text-xs', !drag ? 'bg-muted/70 text-ink-2' : hoverInfo?.ok ? 'bg-[#DCFCE7] text-[#166534]' : hoverInfo ? 'bg-[#FEE2E2] text-[#991B1B]' : 'bg-highlight text-ink')}>
               {!drag && <>Cliquez une séance pour la modifier, ou glissez-la. Pour un examen : sélectionnez 2 ou 3 h sur une case vide, puis clic droit.</>}
               {drag && !hoverInfo && <>Amenez la séance sur la grille : le bloc en pointillé montre où elle atterrit (vert = possible, rouge = refusé).</>}
               {drag && cible && hoverInfo?.ok && (
@@ -442,7 +444,9 @@ export default function Planification() {
               {drag && hoverInfo && !hoverInfo.ok && <><XCircle className="size-4 shrink-0" /><span className="line-clamp-2">{hoverInfo.raison}</span></>}
             </div>
             )}
+            <div className="scroll-thin xl:min-h-0 xl:flex-1 xl:overflow-y-auto print:overflow-visible">
             {id === null ? <EmptyState icon={<CalendarRange />} title="Choisissez une classe, un enseignant ou une salle" /> : <WeekGrid
+              remplir={grandEcran}
               db={db}
               idClasse={res === 'classe' ? id : null}
               days={jours}
@@ -471,6 +475,7 @@ export default function Planification() {
                     }
               }
             />}
+            </div>
           </Card>
         </div>
       )}

@@ -67,14 +67,14 @@ export function HistoriqueVersions({ id_edt, numero, onChoisir, actualisation }:
   }, [id_edt, versions])
 
   return (
-    <Card className="h-fit p-4 xl:sticky xl:top-4">
+    <Card className="flex h-fit flex-col p-4 xl:max-h-full xl:p-3">
       <p className="section-label px-1">Versions{etat === 'pret' && total ? ` (${total})` : ''}</p>
       <p className="mt-1 px-1 text-xs text-ink-2">Chaque modification enregistrée est une version. Choisissez-en une pour l'afficher et, si besoin, la restaurer.</p>
       {etat === 'chargement' && <p className="mt-4 flex items-center gap-2 px-1 text-sm text-ink-2"><Loader2 className="size-4 animate-spin" />Lecture de l'historique…</p>}
       {etat === 'erreur' && <p className="mt-4 px-1 text-sm text-[#991B1B]">{erreur}</p>}
       {etat === 'pret' && versions.length === 0 && <EmptyState icon={<History />} title="Aucune modification enregistrée pour l'instant" />}
       {etat === 'pret' && versions.length > 0 && (
-        <ul className="mt-3 max-h-[70vh] space-y-1.5 overflow-y-auto pr-1 scroll-thin">
+        <ul className="mt-3 max-h-[70vh] min-h-0 flex-1 space-y-1.5 overflow-y-auto pr-1 scroll-thin xl:max-h-none">
           {versions.map((v) => {
             const actif = v.numero === numero
             return (

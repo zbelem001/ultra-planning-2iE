@@ -2,7 +2,7 @@ import {
   CalendarCog, CalendarRange, Database, Eye, LayoutDashboard, LogOut, MessageSquareText, RotateCcw, Sparkles, UserRoundCheck,
 } from 'lucide-react'
 import { useState } from 'react'
-import { Link, Navigate, NavLink, Outlet, useLocation } from 'react-router-dom'
+import { Link, Navigate, NavLink, Outlet, useLocation, useMatch } from 'react-router-dom'
 import { toast } from 'sonner'
 import { Badge, Button, cn, Dialog, Logo } from '@/components/ui'
 import { logout, useSession } from '@/lib/auth'
@@ -22,6 +22,8 @@ const NAV = [
 export default function AdminLayout() {
   const session = useSession()
   const loc = useLocation()
+  // Sur grand écran, Planification tient en un seul bloc : la page ne défile pas
+  const unBloc = useMatch('/admin/planification') !== null
   const { db, reset, recharger, connecte } = useStore()
   const [confirmReset, setConfirmReset] = useState(false)
 
@@ -33,23 +35,23 @@ export default function AdminLayout() {
   const nonPubliees = aPublier(db, edt).total
 
   return (
-    <div className="flex min-h-dvh w-full flex-col px-4 sm:px-8">
+    <div className={cn('flex min-h-dvh w-full flex-col px-4 sm:px-8', unBloc && 'xl:h-dvh xl:overflow-hidden print:h-auto print:overflow-visible')}>
       <a href="#contenu" className="sr-only focus:not-sr-only focus:fixed focus:top-3 focus:left-3 focus:z-50 focus:rounded-full focus:bg-navy focus:px-4 focus:py-2 focus:text-white">
         Aller au contenu
       </a>
-      <header className="no-print flex flex-wrap items-center gap-3 py-5 2xl:flex-nowrap">
+      <header className="no-print flex flex-wrap items-center gap-3 py-5 xl:flex-nowrap xl:py-1.5">
         <Link to="/admin" className="rounded-full bg-navy py-1.5 pr-4 pl-1.5" aria-label="Console Ultraplanning">
           <Logo dark suffix="Console" ecole={ecoleCourante(db)} />
         </Link>
-        <nav aria-label="Navigation principale" className="order-last w-full 2xl:order-none 2xl:w-auto 2xl:flex-1">
-          <ul className="flex gap-1 overflow-x-auto rounded-full bg-white/70 p-1 ring-1 ring-white scroll-thin 2xl:w-fit">
+        <nav aria-label="Navigation principale" className="order-last w-full xl:order-none xl:w-auto xl:min-w-0 xl:flex-1">
+          <ul className="flex gap-1 overflow-x-auto rounded-full bg-white/70 p-1 ring-1 ring-white scroll-thin xl:w-fit">
             {NAV.map((n) => (
               <li key={n.to} className="shrink-0">
                 <NavLink
                   to={n.to}
                   end={n.end}
                   className={({ isActive }) =>
-                    cn('press flex h-9 items-center gap-1.5 rounded-full px-3.5 text-sm font-medium [&_svg]:size-4', isActive ? 'bg-navy text-white shadow-sm' : 'text-ink-2 hover:bg-muted hover:text-ink')
+                    cn('press flex h-9 items-center gap-1.5 rounded-full px-3.5 text-sm font-medium [&_svg]:size-4 xl:px-3 xl:[&_svg]:hidden 2xl:px-3.5 2xl:[&_svg]:block', isActive ? 'bg-navy text-white shadow-sm' : 'text-ink-2 hover:bg-muted hover:text-ink')
                   }
                 >
                   {n.icon}
@@ -59,7 +61,7 @@ export default function AdminLayout() {
             ))}
           </ul>
         </nav>
-        <div className="ml-auto flex items-center gap-2">
+        <div className="ml-auto flex shrink-0 items-center gap-2">
           <Link to="/admin/planification" className="hidden items-center gap-2 rounded-full bg-white/70 py-1 pr-1 pl-3 text-xs ring-1 ring-white sm:flex" title="Version à jour : publier depuis la page Planification">
             <CalendarCog className="size-4 text-navy" />
             {nonPubliees
@@ -85,7 +87,7 @@ export default function AdminLayout() {
         </div>
       </header>
 
-      <main id="contenu" className="flex-1 pb-12">
+      <main id="contenu" className={cn('flex-1 pb-12', unBloc && 'xl:flex xl:min-h-0 xl:flex-col xl:pb-2 print:block')}>
         <Outlet />
       </main>
 

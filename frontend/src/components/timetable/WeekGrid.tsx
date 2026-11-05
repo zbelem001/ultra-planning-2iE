@@ -2,9 +2,8 @@
 // coloré selon les contraintes dures et un bloc montre où la séance atterrirait. Le créneau visé
 // se déduit de la position du pointeur et de l'endroit où la séance a été saisie (lib/glisser.ts).
 
-import type { DragEvent, MouseEvent as SourisReact, PointerEvent as PointeurReact, ReactNode } from 'react'
+import { useLayoutEffect, useRef, useState, type DragEvent, type MouseEvent as SourisReact, type PointerEvent as PointeurReact, type ReactNode } from 'react'
 import { useSurfaceDepot } from '@/lib/glisser'
-import { useHauteurRestante } from '@/lib/hauteur'
 import { cn } from '@/components/ui'
 import type { Db } from '@/types/db'
 import type { SeanceVue } from '@/lib/queries'
@@ -13,6 +12,10 @@ import { addDays, fmtHeure, fmtJourCourt, fromMin, jourOf, todayIso, toMin } fro
 import { EventCard, type Champ } from './EventCard'
 
 const PX_HEURE = 68
+const PX_HEURE_MIN_REMPLI = 36 // en dessous, une séance de 2 h n'afficherait plus que son titre
+const MARGES_GRILLE = 16 // pt-1 et pb-3 de la grille
+const REM_JOUR = 9.5 // largeur minimale d'un jour, en rem
+const REM_JOUR_REMPLI = 8
 
 export interface SlotState {
   ok: boolean
@@ -160,14 +163,27 @@ export function WeekGrid({ db, days, seances, hide, selectedId, onSelect, editio
   onSelect?: (s: SeanceVue) => void
   edition?: GridEdition
   renderEmptyDay?: (date: string) => ReactNode
-  /** Agrandir les heures pour occuper l'espace restant jusqu'au bas de l'écran */
+  /** Ajuster les heures pour occuper exactement la hauteur du parent, dont la hauteur est fixée */
   remplir?: boolean
 }) {
   const [start, end] = bornesGrille(db)
-  const [refGrille, disponible] = useHauteurRestante<HTMLDivElement>(16)
-  // En-tête des jours (≈ 44 px) et marge du bas (12 px) déduits ; jamais plus petit qu'avant
-  const pxHeure = remplir && disponible ? Math.max(PX_HEURE, (disponible - 56) / ((end - start) / 60)) : PX_HEURE
+  const refGrille = useRef<HTMLDivElement>(null)
+  const refEnTete = useRef<HTMLDivElement>(null)
+  const [disponible, setDisponible] = useState<number | null>(null)
+  useLayoutEffect(() => {
+    const parent = refGrille.current?.parentElement
+    const enTete = refEnTete.current
+    if (!remplir || !parent || !enTete) return setDisponible(null)
+    const mesurer = () => setDisponible(parent.clientHeight - enTete.offsetHeight - MARGES_GRILLE)
+    mesurer()
+    const observateur = new ResizeObserver(mesurer) // fenêtre, ou nom de jour férié dans l'en-tête
+    observateur.observe(parent)
+    observateur.observe(enTete)
+    return () => observateur.disconnect()
+  }, [remplir])
+  const pxHeure = remplir && disponible ? Math.max(PX_HEURE_MIN_REMPLI, disponible / ((end - start) / 60)) : PX_HEURE
   const height = ((end - start) / 60) * pxHeure
+  const remJour = remplir ? REM_JOUR_REMPLI : REM_JOUR
   const heuresLabels: number[] = []
   for (let m = start; m <= end; m += 60) heuresLabels.push(m)
   const today = todayIso()
@@ -240,10 +256,10 @@ export function WeekGrid({ db, days, seances, hide, selectedId, onSelect, editio
     <div ref={refGrille} className="overflow-x-auto pt-1 pb-3 scroll-thin">
       <div
         className="grid"
-        style={{ gridTemplateColumns: `3.25rem repeat(${days.length}, minmax(${days.length > 1 ? '9.5rem' : '0'}, 1fr))`, minWidth: days.length > 1 ? `${3.25 + days.length * 9.5}rem` : undefined }}
+        style={{ gridTemplateColumns: `3.25rem repeat(${days.length}, minmax(${days.length > 1 ? `${remJour}rem` : '0'}, 1fr))`, minWidth: days.length > 1 ? `${3.25 + days.length * remJour}rem` : undefined }}
       >
         {/* En-têtes */}
-        <div />
+        <div ref={refEnTete} />
         {days.map((d) => {
           const ferie = fermeture(db, d, idClasse)
           const isToday = d === today
@@ -335,7 +351,8 @@ export function WeekGrid({ db, days, seances, hide, selectedId, onSelect, editio
                     <EventCard
                       s={s}
                       hide={hide}
-                      compact={h < 80 || p.of > 2}
+                      compact={p.of > 2}
+                      hauteur={h - 4 /* p-0.5 autour de la carte */}
                       selected={selectedId === s.id_seance}
                       draggable={canDrag}
                       onDragStart={canDrag

@@ -2,7 +2,7 @@
 // discussion occupe l'espace restant. Recalculée au redimensionnement et quand le contenu
 // au-dessus change (bandeau, filtres sur deux lignes...).
 
-import { useLayoutEffect, useRef, useState } from 'react'
+import { useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
 
 export function useHauteurRestante<T extends HTMLElement>(marge = 24, minimum = 0) {
   const ref = useRef<T>(null)
@@ -21,4 +21,17 @@ export function useHauteurRestante<T extends HTMLElement>(marge = 24, minimum = 
     return () => { window.removeEventListener('resize', mesurer); observateur.disconnect() }
   }, [marge, minimum])
   return [ref, hauteur] as const
+}
+
+/** Écran assez large pour qu'une page tienne en un seul bloc, sans défiler (par défaut, point de rupture lg) */
+export function useGrandEcran(largeurMin = 1024): boolean {
+  const media = `(min-width: ${largeurMin}px)`
+  return useSyncExternalStore(
+    (ecouter) => {
+      const requete = window.matchMedia(media)
+      requete.addEventListener('change', ecouter)
+      return () => requete.removeEventListener('change', ecouter)
+    },
+    () => window.matchMedia(media).matches,
+  )
 }

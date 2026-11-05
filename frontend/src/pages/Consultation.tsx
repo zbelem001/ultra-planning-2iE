@@ -20,6 +20,7 @@ import { ecoles as ecolesApi } from '@/lib/api'
 import { exporterExcel } from '@/lib/excel'
 import { download, toIcs } from '@/lib/ics'
 import { couleurMatiere, enrichir, filtrer, nomEnseignant, type Ressource, type SeanceVue } from '@/lib/queries'
+import { useGrandEcran } from '@/lib/hauteur'
 import { ecoleCourante, edtPublie, useStore } from '@/lib/store'
 import { addDays, fmtDateHeure, fmtJourCourt, jourOf, mondayOf, todayIso, weeksBetween } from '@/lib/time'
 import type { TypeSeance } from '@/types/db'
@@ -107,6 +108,7 @@ function useEnLigne() {
 }
 
 function Contenu() {
+  const grandEcran = useGrandEcran()
   const { db } = useStore()
   const enLigne = useEnLigne()
   const [params, setParams] = useSearchParams()
@@ -231,13 +233,13 @@ function Contenu() {
   }
 
   return (
-    <div className="flex min-h-dvh w-full flex-col px-4 sm:px-8">
+    <div className="flex min-h-dvh w-full flex-col px-4 sm:px-8 lg:h-dvh lg:overflow-hidden print:h-auto print:overflow-visible">
       <a href="#contenu" className="sr-only focus:not-sr-only focus:fixed focus:top-3 focus:left-3 focus:z-50 focus:rounded-full focus:bg-navy focus:px-4 focus:py-2 focus:text-white">
         Aller au contenu
       </a>
 
       {/* En-tête */}
-      <header className="no-print flex flex-wrap items-center justify-between gap-3 py-5">
+      <header className="no-print flex flex-wrap items-center justify-between gap-3 py-5 lg:py-2">
         <Link to="/" className="rounded-full bg-white/70 py-1.5 pr-4 pl-1.5 ring-1 ring-white" aria-label="Ultraplanning, accueil">
           <Logo suffix="Invités" ecole={ecoleCourante(db)} />
         </Link>
@@ -256,10 +258,10 @@ function Contenu() {
         </div>
       </header>
 
-      <main id="contenu" className="flex-1 pb-10">
-        <div className="no-print mb-6 flex flex-wrap items-end justify-between gap-4">
+      <main id="contenu" className="flex-1 pb-10 lg:flex lg:min-h-0 lg:flex-col lg:pb-3 print:block">
+        <div className="no-print mb-6 flex flex-wrap items-end justify-between gap-4 lg:mb-0">
           <div>
-            <p className="section-label mb-2">Espace invités · enseignants et étudiants</p>
+            <p className="section-label mb-2 lg:sr-only">Espace invités · enseignants et étudiants</p>
             <h1 className="sr-only">Emplois du temps</h1>
           </div>
         </div>
@@ -267,19 +269,20 @@ function Contenu() {
         {!edt ? (
           <Card><EmptyState icon={<CalendarDays />} title="Aucun emploi du temps publié">La scolarité n'a pas encore publié l'emploi du temps de ce semestre.</EmptyState></Card>
         ) : (
-          <div className="grid grid-cols-1 gap-5">
-            {/* Filtres */}
-            <Card className="no-print p-4 sm:p-5">
+          <div className="grid grid-cols-1 gap-5 lg:flex lg:min-h-0 lg:flex-1 lg:flex-col lg:gap-2.5 print:block">
+            {/* Filtres : une seule ligne sur grand écran */}
+            <Card className="no-print p-4 sm:p-5 lg:flex lg:shrink-0 lg:flex-wrap lg:items-center lg:gap-x-1.5 lg:gap-y-1.5 lg:p-2">
               {/* Ligne 1 : type de ressource à gauche, recherche à droite */}
-              <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex flex-wrap items-center justify-between gap-3 lg:contents">
                 <PillTabs
                   label="Type de ressource"
+                  size={grandEcran ? 'sm' : 'md'}
                   value={res}
                   onChange={(r) => set({ r, id: null, g: null })}
-                  items={RESSOURCES.map(({ value, label, icon }) => ({ value, label, icon }))}
+                  items={RESSOURCES.map(({ value, label, icon }) => ({ value, label, icon: grandEcran ? undefined : icon }))}
                 />
                 <Combobox
-                  className="w-full sm:w-80 lg:w-96"
+                  className="w-full sm:w-80 lg:w-36 min-[1366px]:w-44 2xl:w-72"
                   ariaLabel={RESSOURCES.find((r) => r.value === res)!.placeholder}
                   placeholder={RESSOURCES.find((r) => r.value === res)!.placeholder}
                   options={options}
@@ -288,27 +291,27 @@ function Contenu() {
                 />
               </div>
               {/* Ligne 2 : filtres resserrés */}
-              <div className="mt-3 flex flex-wrap items-center gap-2">
+              <div className="mt-3 flex flex-wrap items-center gap-2 lg:contents">
                 {res !== 'matiere' && (
-                  <Select className="w-full sm:w-52" aria-label="Campus" value={idSite ?? ''} onChange={(e) => { setIdSite(e.target.value ? Number(e.target.value) : null); setIdFiliere(null) }}>
+                  <Select className="w-full sm:w-52 lg:w-36 lg:[&_select]:pr-8 lg:[&_select]:pl-3 lg:[&_select]:text-xs 2xl:w-44" aria-label="Campus" value={idSite ?? ''} onChange={(e) => { setIdSite(e.target.value ? Number(e.target.value) : null); setIdFiliere(null) }}>
                     <option value="">Tous les campus</option>
                     {db.site.map((s) => <option key={s.id_site} value={s.id_site}>{s.nom_site}</option>)}
                   </Select>
                 )}
                 {res === 'classe' && (
-                  <Select className="w-full sm:w-52" aria-label="Filière" value={idFiliere ?? ''} onChange={(e) => setIdFiliere(e.target.value ? Number(e.target.value) : null)}>
+                  <Select className="w-full sm:w-52 lg:w-36 lg:[&_select]:pr-8 lg:[&_select]:pl-3 lg:[&_select]:text-xs 2xl:w-44" aria-label="Filière" value={idFiliere ?? ''} onChange={(e) => setIdFiliere(e.target.value ? Number(e.target.value) : null)}>
                     <option value="">Toutes les filières</option>
                     {db.filiere.filter((f) => idSite === null || f.id_site === idSite).map((f) => <option key={f.id_filiere} value={f.id_filiere}>{f.libelle}</option>)}
                   </Select>
                 )}
                 {res === 'classe' && groupes.length > 0 && (
-                  <Select className="w-full sm:w-52" aria-label="Groupe" value={idGroupe ?? ''} onChange={(e) => set({ g: e.target.value || null })}>
+                  <Select className="w-full sm:w-52 lg:w-36 lg:[&_select]:pr-8 lg:[&_select]:pl-3 lg:[&_select]:text-xs 2xl:w-44" aria-label="Groupe" value={idGroupe ?? ''} onChange={(e) => set({ g: e.target.value || null })}>
                     <option value="">Tous les groupes</option>
                     {groupes.map((g) => <option key={g.id_groupe} value={g.id_groupe}>Groupe {g.code_groupe} ({g.effectif})</option>)}
                   </Select>
                 )}
-                <div className="flex items-center gap-1.5 sm:ml-2" role="group" aria-label="Types de séance">
-                  <span className="mr-1 text-sm text-ink-2">Types</span>
+                <div className="flex items-center gap-1.5 sm:ml-2 lg:ml-0.5" role="group" aria-label="Types de séance">
+                  <span className="mr-1 text-sm text-ink-2 lg:hidden">Types</span>
                   {(['CM', 'TD', 'TP'] as TypeSeance[]).map((t) => {
                     const on = types.includes(t)
                     return (
@@ -324,9 +327,10 @@ function Contenu() {
                     )
                   })}
                 </div>
-                <label className="flex items-center gap-2 text-sm text-ink-2 sm:ml-2">
+                <label className="flex items-center gap-2 text-sm text-ink-2 sm:ml-2 lg:ml-0.5">
                   <Switch checked={masquerAnnulees} onChange={setMasquerAnnulees} label="Masquer les séances annulées" />
-                  Masquer les annulées
+                  <span className="lg:hidden">Masquer les annulées</span>
+                  <span className="hidden lg:inline">Sans annulées</span>
                 </label>
               </div>
             </Card>
@@ -343,18 +347,19 @@ function Contenu() {
                 </EmptyState>
               </Card>
             ) : (
-              <Card className="p-3 sm:p-5">
-                {/* Barre d'outils */}
-                <div className="flex flex-wrap items-center justify-between gap-3 px-1">
-                  <div className="min-w-0">
-                    <h2 className="truncate text-2xl font-light tracking-tight sm:text-3xl">{titre}</h2>
-                    <p className="text-sm text-ink-2">
+              <Card className="p-3 sm:p-5 lg:flex lg:min-h-0 lg:flex-1 lg:flex-col lg:p-3 print:block">
+                {/* Barre d'outils : titre, semaines et outils sur une seule ligne sur grand écran */}
+                <div className="lg:flex lg:shrink-0 lg:items-center lg:gap-4">
+                <div className="flex flex-wrap items-center justify-between gap-3 px-1 lg:contents">
+                  <div className="min-w-0 lg:order-1 lg:max-w-56 lg:shrink-0 lg:px-1">
+                    <h2 className="truncate text-2xl font-light tracking-tight sm:text-3xl lg:text-xl">{titre}</h2>
+                    <p className="truncate text-sm text-ink-2 lg:text-xs">
                       {vue === 'semestre'
                         ? `${ressource.filter((s) => s.statut !== 'annulee').reduce((a, s) => a + s.duree, 0)} h sur le semestre`
                         : `${semaineList.length} séance${semaineList.length > 1 ? 's' : ''} · ${heures} h cette semaine`}
                     </p>
                   </div>
-                  <div className="no-print flex flex-wrap items-center gap-2">
+                  <div className="no-print flex flex-wrap items-center gap-2 lg:order-3 lg:ml-auto lg:shrink-0 lg:flex-nowrap">
                     <PillTabs
                       label="Vue"
                       size="sm"
@@ -375,13 +380,14 @@ function Contenu() {
                 </div>
 
                 {vue !== 'semestre' && (
-                  <div className="no-print mt-4">
+                  <div className="no-print mt-4 lg:order-2 lg:mt-0 lg:min-w-0 lg:flex-1">
                     <WeekStrip weeks={weeks} value={semaine} onChange={(s) => set({ s })} counts={counts} />
                   </div>
                 )}
+                </div>
 
                 {vue === 'jour' && (
-                  <div className="no-print mt-3 flex gap-1.5 overflow-x-auto scroll-thin">
+                  <div className="no-print mt-3 flex shrink-0 gap-1.5 overflow-x-auto scroll-thin lg:mt-1.5">
                     {jours.map((d) => (
                       <button
                         key={d}
@@ -396,9 +402,10 @@ function Contenu() {
                   </div>
                 )}
 
-                <div className="mt-4">
-                  {vue === 'semaine' && <WeekGrid remplir db={db} days={jours} seances={semaineList} hide={HIDE[res]} onSelect={setDetail} idClasse={res === 'classe' ? id : null} />}
-                  {vue === 'jour' && <WeekGrid remplir db={db} days={[jour]} seances={semaineList} hide={HIDE[res]} onSelect={setDetail} idClasse={res === 'classe' ? id : null} />}
+                {/* Sur grand écran, la page ne défile pas : ce qui ne tient pas (liste, semestre) défile ici */}
+                <div className="mt-4 scroll-thin lg:mt-1 lg:min-h-0 lg:flex-1 lg:overflow-y-auto print:overflow-visible">
+                  {vue === 'semaine' && <WeekGrid remplir={grandEcran} db={db} days={jours} seances={semaineList} hide={HIDE[res]} onSelect={setDetail} idClasse={res === 'classe' ? id : null} />}
+                  {vue === 'jour' && <WeekGrid remplir={grandEcran} db={db} days={[jour]} seances={semaineList} hide={HIDE[res]} onSelect={setDetail} idClasse={res === 'classe' ? id : null} />}
                   {vue === 'liste' &&
                     (semaineList.length ? (
                       <ListView seances={semaineList} onSelect={setDetail} />
@@ -409,7 +416,7 @@ function Contenu() {
                 </div>
 
                 {matieresSemaine.length > 0 && vue !== 'semestre' && (
-                  <div className="mt-4 flex flex-wrap gap-x-4 gap-y-1.5 px-1 text-xs text-ink-2">
+                  <div className="mt-4 flex flex-wrap gap-x-4 gap-y-1.5 px-1 text-xs text-ink-2 lg:hidden print:flex">
                     {matieresSemaine.map((m) => (
                       <span key={m.id_matiere} className="flex items-center gap-1.5">
                         <span className="size-2 rounded-full" style={{ backgroundColor: couleurMatiere(m.id_matiere) }} />
@@ -424,7 +431,7 @@ function Contenu() {
         )}
       </main>
 
-      <footer className="no-print flex flex-wrap items-center justify-between gap-2 border-t border-black/5 py-5 text-xs text-ink-2">
+      <footer className="no-print flex flex-wrap items-center justify-between gap-2 border-t border-black/5 py-5 text-xs text-ink-2 lg:hidden">
         <span>Ultraplanning{ecoleCourante(db) ? ` · ${ecoleCourante(db)!.nom}` : ''}</span>
         <span>Consultation en lecture seule · {edt ? `version ${edt.version}` : ''}</span>
       </footer>
