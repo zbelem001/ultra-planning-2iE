@@ -335,33 +335,21 @@ def proposer_generation(ctx: Contexte, description: str, classes: list[str] | No
     return texte
 
 
-def appliquer_si_possible(ctx: Contexte) -> str | None:
-    """Un changement de séances demandé à l'assistant s'écrit tout de suite dans la version à jour : c'est ce
-    que montre la grille de Planification, les invités n'en voient rien avant Publier, et l'historique permet de
-    revenir en arrière. Sauf s'il ferait perdre des heures : le planificateur confirme alors sur la carte.
-    Renvoie une phrase pour le modèle, ou None s'il n'y a rien à appliquer."""
+def a_valider(ctx: Contexte) -> str | None:
+    """Rien de ce que propose l'assistant ne s'écrit sans le planificateur : une proposition de séances (ajout,
+    déplacement, suppression, épreuve, résultat du solveur) attend qu'il la valide sur sa carte. Validée, elle
+    s'écrit dans la version à jour (grille de Planification) ; les invités ne la voient qu'après Publier, depuis
+    la page Planification. Renvoie une phrase pour le modèle, ou None s'il n'y a rien en attente."""
     if not ctx.propositions_creees:
         return None
     row = ctx.conn.execute(
-        "SELECT p.id_proposition, p.impact, q.id_utilisateur FROM proposition p JOIN prompt q USING (id_prompt) "
-        "WHERE p.id_proposition = ANY(%s) AND p.statut = 'en_attente' AND p.nature = 'seances'",
+        "SELECT id_proposition FROM proposition WHERE id_proposition = ANY(%s) AND statut = 'en_attente' AND nature = 'seances'",
         (ctx.propositions_creees,)).fetchone()
     if row is None:
         return None
-    id_prop, consequences, id_utilisateur = row
-    if consequences.get("heures_perdues"):
-        return (f"Non appliquée : la proposition {id_prop} ferait perdre des heures. Elle attend la confirmation du "
-                "planificateur (bouton Appliquer de sa carte) ; dis-le et propose mieux si tu peux.")
-    try:
-        with ctx.conn.transaction():
-            origine(ctx.conn, "assistant")
-            propositions.appliquer(ctx.conn, id_prop, id_utilisateur)
-    except propositions.PropositionRefusee as e:
-        propositions.remplacer(ctx.conn, [id_prop])
-        return f"Non appliquée, rien n'a changé : {e}"
-    ctx.conn.commit()  # acquis, et les séances ne restent pas bloquées pendant que le modèle écrit sa réponse
-    return (f"Appliquée à la version à jour (modification n° {id_prop}) : c'est fait, la grille de Planification le montre. "
-            "Les invités le verront après le bouton Publier.")
+    return (f"En attente de validation : la proposition {row[0]} n'est pas appliquée, rien n'est encore écrit. Le planificateur "
+            "la valide (bouton Valider de sa carte) ou la rejette. Validée, elle s'écrit dans la version à jour, visible dans la "
+            "page Planification ; les invités ne la voient qu'après le bouton Publier de cette page.")
 
 
 def _non_placees(r: Resultat) -> list[str]:
@@ -888,8 +876,8 @@ def proposer_changements_referentiel(ctx: Contexte, description: str, changement
                           "période du/au), ou propose une replanification séparée une fois les changements validés.")
     if suite:
         quoi = "la replanification" if suite.get("mode") == "replanifier" else "la génération"
-        lignes.append(f"Une fois les changements validés, {quoi} sera lancée automatiquement : {suite['description']} "
-                      "(appliquée directement à la version à jour).")
+        lignes.append(f"Une fois les changements validés, {quoi} sera lancée automatiquement : {suite['description']}. "
+                      "Son résultat sera une nouvelle proposition, à valider à son tour.")
     return "\n".join(lignes)
 
 
@@ -966,8 +954,8 @@ def construire_outils(ctx: Contexte) -> list[Outil]:
                                        contraintes: list[Fenetre] | None = None) -> str:
         """Demande au solveur de replanifier un périmètre sur une période en changeant le moins de
         séances possible, avec des contraintes ajoutées (imposer ou interdire une fenêtre de jours,
-        d'heures et de dates pour un cours, une classe ou un enseignant). Le résultat s'applique
-        directement à la version à jour. Seules les séances déjà dans la période sont concernées :
+        d'heures et de dates pour un cours, une classe ou un enseignant). Le résultat est une
+        proposition, que le planificateur valide. Seules les séances déjà dans la période sont concernées :
         pour y faire venir les autres séances d'un cours, utiliser proposer_reprogrammation_cours.
         Prendre le périmètre le plus étroit possible (une classe ou quelques cours). La période est
         étendue aux semaines entières (lundi–samedi) ; l'élargir à la semaine suivante si des heures
@@ -991,7 +979,7 @@ def construire_outils(ctx: Contexte) -> list[Outil]:
         commencer le… et finir le… ». Toutes leurs séances à venir, prévues avant ou après la période,
         y sont ramenées, au plus près de leur date et dans leur salle si elle est libre ; les séances
         verrouillées ne bougent pas, et celles qui n'y trouvent pas de place restent où elles sont et
-        sont signalées avec leur motif. Le résultat s'applique directement à la version à jour. C'est
+        sont signalées avec leur motif. Le résultat est une proposition, que le planificateur valide. C'est
         cet outil qui dit si quelque chose change : ne conclus jamais toi-même que c'est déjà planifié.
 
         Args:
@@ -1016,7 +1004,7 @@ def construire_outils(ctx: Contexte) -> list[Outil]:
         Big Data et Computer Vision de la L3IA ») ; si un module n'est pas prêt (matière inconnue,
         hors programme, sans cours), le résultat dit quoi créer dans le référentiel. Pour un
         changement ponctuel de séances existantes, utiliser proposer_replanification. Le résultat
-        s'applique directement à la version à jour.
+        est une proposition, que le planificateur valide.
 
         Args:
             description: Résumé en une phrase de la demande, pour le planificateur.
@@ -1033,8 +1021,8 @@ def construire_outils(ctx: Contexte) -> list[Outil]:
         """Fait des changements ponctuels de séances précises : déplacer (nouvelle date, nouvelles
         heures, autre salle), annuler, rétablir une séance annulée, ajouter une séance d'un cours,
         supprimer une séance, changer l'enseignant d'une séance (ou le retirer : à désigner). Toutes les opérations sont vérifiées ensemble dans la base (règles CD-01
-        à CD-14) puis appliquées directement à la version à jour ; si l'une est refusée, rien n'est fait
-        et le motif est renvoyé. Prendre les identifiants (séance, cours, salle) dans lire_emploi_du_temps. Pour
+        à CD-14) puis enregistrées comme une proposition, que le planificateur valide ; si l'une est
+        refusée, aucune proposition n'est créée et le motif est renvoyé. Prendre les identifiants (séance, cours, salle) dans lire_emploi_du_temps. Pour
         libérer une journée ou absorber une absence, préférer proposer_replanification.
 
         Args:
@@ -1055,8 +1043,8 @@ def construire_outils(ctx: Contexte) -> list[Outil]:
         """Supprime des séances de l'emploi du temps d'une classe, d'un enseignant ou d'une
         salle : elles disparaissent de la grille et leurs heures redeviennent à programmer (pour les
         garder barrées à l'écran, c'est une annulation). Les critères se cumulent ; il n'y a pas à lire
-        l'emploi du temps ni à lister les identifiants. Elles sont retirées directement de la version à
-        jour : la carte montre chaque séance au planificateur, et l'historique permet de les récupérer.
+        l'emploi du temps ni à lister les identifiants. Le résultat est une proposition : sa carte montre
+        chaque séance au planificateur, qui la valide ; l'historique permet ensuite de les récupérer.
 
         Args:
             description: Résumé en une phrase de la suppression, pour le planificateur.
@@ -1086,7 +1074,7 @@ def construire_outils(ctx: Contexte) -> list[Outil]:
         épreuve dure de 2 h à 3 h, n'a pas d'enseignant et ne compte ni dans le volume ni dans le rythme
         du cours ni dans les matières de la semaine. Plusieurs classes peuvent composer dans une même
         salle assez grande, jamais avec un cours. Le rattrapage d'un module vient après son examen.
-        Vérifié dans la base, puis écrit directement dans la version à jour.
+        Vérifié dans la base, puis enregistré comme une proposition, que le planificateur valide.
 
         Args:
             description: Résumé en une phrase, pour le planificateur.

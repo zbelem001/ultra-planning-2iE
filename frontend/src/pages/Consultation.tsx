@@ -2,13 +2,14 @@
 // avec les filtres d'HyperPlanning (classe, enseignant, salle, matière).
 
 import {
-  BookOpen, CalendarDays, CalendarPlus, FileSpreadsheet, Columns3, DoorOpen, GraduationCap, LayoutList, Link2, Printer,
+  BookOpen, CalendarDays, CalendarPlus, FileDown, FileSpreadsheet, Columns3, DoorOpen, GraduationCap, LayoutList, Link2, Printer,
   Rows3, Settings2, SquareUser,
 } from 'lucide-react'
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { toast } from 'sonner'
 import { Badge, Button, Card, cn, Combobox, Dialog, EmptyState, Logo, PillTabs, Select, Switch, type ComboOption } from '@/components/ui'
+import { ExportPdf } from '@/components/timetable/ExportPdf'
 import { ListView } from '@/components/timetable/ListView'
 import { SeanceDetail } from '@/components/timetable/SeanceDetail'
 import { SemesterView } from '@/components/timetable/SemesterView'
@@ -140,6 +141,7 @@ function Contenu() {
   const [types, setTypes] = useState<TypeSeance[]>(['CM', 'TD', 'TP'])
   const [masquerAnnulees, setMasquerAnnulees] = useState(false)
   const [detail, setDetail] = useState<SeanceVue | null>(null)
+  const [exportOuvert, setExportOuvert] = useState(false)
 
   const joursSemaine = Array.from({ length: 6 }, (_, i) => addDays(semaine, i))
   const [jour, setJour] = useState(() => (joursSemaine.includes(todayIso()) ? todayIso() : semaine))
@@ -377,7 +379,8 @@ function Contenu() {
                     />
                     <Button variant="outline" size="icon-sm" onClick={exporter} aria-label="Exporter en iCalendar" title="Exporter en iCalendar"><CalendarPlus /></Button>
                     <Button variant="outline" size="icon-sm" onClick={exporterTableur} aria-label="Exporter en Excel" title="Exporter en Excel (tout le semestre)"><FileSpreadsheet /></Button>
-                    <Button variant="outline" size="icon-sm" onClick={() => window.print()} aria-label="Imprimer" title="Imprimer ou PDF"><Printer /></Button>
+                    <Button variant="outline" size="icon-sm" onClick={() => setExportOuvert(true)} aria-label="Exporter en PDF" title="Exporter en PDF : une page par semaine, pour une classe"><FileDown /></Button>
+                    <Button variant="outline" size="icon-sm" onClick={() => window.print()} aria-label="Imprimer" title="Imprimer la vue affichée"><Printer /></Button>
                     <Button variant="outline" size="icon-sm" onClick={copierLien} aria-label="Copier le lien" title="Copier le lien"><Link2 /></Button>
                   </div>
                 </div>
@@ -453,6 +456,17 @@ function Contenu() {
       >
         {detail && <SeanceDetail s={detail} publique />}
       </Dialog>
+
+      {/* Export PDF d'une classe, une page par semaine, de la version publiée */}
+      <ExportPdf
+        open={exportOuvert}
+        onClose={() => setExportOuvert(false)}
+        db={db}
+        seances={toutes}
+        semaines={weeks}
+        depart={{ idClasse: res === 'classe' ? id : null, idGroupe: res === 'classe' ? idGroupe : null, semaine }}
+        version={`${semestre.libelle} ${semestre.annee_academique} · version publiée${edt?.date_publication ? ` le ${fmtDateHeure(edt.date_publication)}` : ''}`}
+      />
     </div>
   )
 }

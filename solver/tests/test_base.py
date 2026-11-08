@@ -128,7 +128,8 @@ def test_cours_mutualise_sites_et_salles_reservees(conn):
         conn.execute("INSERT INTO cours_type_salle (id_cours, id_type_salle, id_ecole) VALUES (%s, %s, 1)", (k1, std_t))
         assert "CD-05" not in (verifier(conn, 1, Seance(k1, d1, time(h1), time(h1 + 2), std)) or "")
 
-        # Site (version 16) : une promotion peut aller sur un autre campus que le sien, pas sur deux le même jour
+        # Site (version 16) : une promotion peut aller sur un autre campus que le sien ; les mêmes étudiants ne changent
+        # de campus qu'à la pause de midi
         site_amphi = q("SELECT id_site FROM salle WHERE id_salle = %s", amphi)[0]
         autre_site = q("SELECT id_site FROM site WHERE id_site <> %s ORDER BY id_site LIMIT 1", site_amphi)[0]
         conn.execute("UPDATE classe SET id_site = %s WHERE id_classe = %s", (autre_site, c1))
@@ -136,10 +137,11 @@ def test_cours_mutualise_sites_et_salles_reservees(conn):
         conn.execute("INSERT INTO seance (date_seance, heure_debut, heure_fin, id_cours, id_salle, id_creneau, id_edt, id_ecole) "
                      "SELECT %s, %s, %s, %s, %s, id_creneau, 1, 1 FROM creneau WHERE id_ecole = 1 AND jour = %s AND heure_debut = %s",
                      (d1, time(h1), time(h1 + 2), k1, amphi, jour_de(d1), time(h1)))
-        # le même jour, une autre heure libre pour la promotion : son campus d'origine est refusé, le même accepté
+        # la même demi-journée, une autre heure libre pour la promotion : l'autre campus est refusé
         ailleurs = q("SELECT id_salle FROM salle s JOIN type_salle t USING (id_type_salle, id_ecole) WHERE s.id_site = %s "
                      "AND t.libelle IN ('Amphithéâtre', 'Salle standard') ORDER BY capacite DESC LIMIT 1", autre_site)[0]
-        libre = next(hh for hh in (7, 8, 9, 10, 13, 14) if not (h1 - 2 < hh < h1 + 2)
+        meme_demi = (7, 8, 9, 10) if h1 < 12 else (13, 14)
+        libre = next(hh for hh in meme_demi if not (h1 - 2 < hh < h1 + 2)
                      and verifier(conn, 1, Seance(k1, d1, time(hh), time(hh + 2), amphi)) is None)
         assert "SITE" in (verifier(conn, 1, Seance(k1, d1, time(libre), time(libre + 2), ailleurs)) or "")
         conn.execute("DELETE FROM seance WHERE id_cours = %s AND date_seance = %s AND heure_debut = %s", (k1, d1, time(h1)))

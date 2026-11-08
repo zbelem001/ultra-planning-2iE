@@ -8,9 +8,8 @@ import { cn } from '@/components/ui'
 import type { Db } from '@/types/db'
 import type { SeanceVue } from '@/lib/queries'
 import { fermeture } from '@/lib/rules'
-import { estEpreuve } from '@/lib/publics'
 import { addDays, fmtHeure, fmtJourCourt, fromMin, jourOf, todayIso, toMin } from '@/lib/time'
-import { EventCard, type Champ } from './EventCard'
+import { EventCard, type Champ, type ModifClic } from './EventCard'
 
 const PX_HEURE = 68
 const PX_HEURE_MIN_REMPLI = 36 // en dessous, une séance de 2 h n'afficherait plus que son titre
@@ -59,8 +58,12 @@ export interface GridEdition {
   onSurvol?: (p: { date: string; minute: number } | null) => void
   /** Séance copiée : encadrée en pointillé */
   copiee?: number | null
-  /** Petit « + » d'une séance : l'allonger d'une heure */
-  onAllonger?: (s: SeanceVue) => void
+  /** Séances sélectionnées ensemble (Ctrl+clic), pour les supprimer d'un coup */
+  cochees?: Set<number>
+  /** Petits « + » et « − » d'une séance : l'info-bulle de l'heure en plus ou en moins, seulement quand elle
+   *  passe toutes les règles (absente : pas de bouton) */
+  ajustements?: Map<number, { plus?: string; moins?: string }>
+  onAjuster?: (s: SeanceVue, sens: 1 | -1) => void
   /** Pendant un glisser : lundis des semaines voisines (null au bord du semestre). S'attarder sur la bande de
    *  gauche ou de droite de la grille passe à la semaine précédente ou suivante, où l'on peut lâcher la séance. */
   voisines?: { avant: string | null; apres: string | null }
@@ -178,7 +181,7 @@ function lanes(list: SeanceVue[]): Map<number, { lane: number; of: number }> {
   return out
 }
 
-export function WeekGrid({ db, days, seances, hide, selectedId, onSelect, edition, renderEmptyDay, idClasse, remplir }: {
+export function WeekGrid({ db, days, seances, hide, selectedId, onSelect, edition, renderEmptyDay, idClasse, remplir, impression }: {
   db: Db
   /** Classe affichée : ses congés propres sont aussi grisés */
   idClasse?: number | null
@@ -186,11 +189,14 @@ export function WeekGrid({ db, days, seances, hide, selectedId, onSelect, editio
   seances: SeanceVue[]
   hide?: Champ[]
   selectedId?: number | null
-  onSelect?: (s: SeanceVue) => void
+  /** Clic sur une séance, avec les touches tenues (Ctrl+clic : sélection de plusieurs, en Planification) */
+  onSelect?: (s: SeanceVue, m?: ModifClic) => void
   edition?: GridEdition
   renderEmptyDay?: (date: string) => ReactNode
   /** Ajuster les heures pour occuper exactement la hauteur du parent, dont la hauteur est fixée */
   remplir?: boolean
+  /** Export PDF : heures de hauteur fixe (la semaine tient sur sa page), ni « aujourd'hui » ni défilement */
+  impression?: { pxHeure: number }
 }) {
   const [start, end] = bornesGrille(db)
   const refGrille = useRef<HTMLDivElement>(null)
@@ -207,12 +213,13 @@ export function WeekGrid({ db, days, seances, hide, selectedId, onSelect, editio
     observateur.observe(enTete)
     return () => observateur.disconnect()
   }, [remplir])
-  const pxHeure = remplir && disponible ? Math.max(PX_HEURE_MIN_REMPLI, disponible / ((end - start) / 60)) : PX_HEURE
+  const pxHeure = impression ? impression.pxHeure
+    : remplir && disponible ? Math.max(PX_HEURE_MIN_REMPLI, disponible / ((end - start) / 60)) : PX_HEURE
   const height = ((end - start) / 60) * pxHeure
-  const remJour = remplir ? REM_JOUR_REMPLI : REM_JOUR
+  const remJour = remplir || impression ? REM_JOUR_REMPLI : REM_JOUR
   const heuresLabels: number[] = []
   for (let m = start; m <= end; m += 60) heuresLabels.push(m)
-  const today = todayIso()
+  const today = impression ? '' : todayIso()
   const y = (min: number) => ((min - start) / 60) * pxHeure
   const glisse = edition?.glisse ?? null
   const cible = edition?.cible ?? null
@@ -354,7 +361,7 @@ export function WeekGrid({ db, days, seances, hide, selectedId, onSelect, editio
   }
 
   return (
-    <div ref={refGrille} className="overflow-x-auto pt-1 pb-3 scroll-thin">
+    <div ref={refGrille} className={impression ? 'pt-1 pb-1' : 'overflow-x-auto pt-1 pb-3 scroll-thin'}>
       <div
         className="grid"
         style={{
@@ -407,7 +414,7 @@ export function WeekGrid({ db, days, seances, hide, selectedId, onSelect, editio
                 ? (e) => edition.onSurvol!({ date: d, minute: start + ((e.clientY - e.currentTarget.getBoundingClientRect().top) / pxHeure) * 60 })
                 : undefined}
               onPointerLeave={edition?.onSurvol ? () => edition.onSurvol!(null) : undefined}
-              className={cn('relative mx-0.5 rounded-2xl bg-white/55 ring-1 ring-white', edition?.onSelection && 'cursor-cell select-none')}
+              className={cn('relative mx-0.5 rounded-2xl ring-1', impression ? 'ring-line' : 'bg-white/55 ring-white', edition?.onSelection && 'cursor-cell select-none')}
               style={{ height }}
             >
               {/* lignes horaires */}
@@ -452,11 +459,7 @@ export function WeekGrid({ db, days, seances, hide, selectedId, onSelect, editio
                 const top = y(toMin(s.heure_debut))
                 const h = y(toMin(s.heure_fin)) - top
                 const canDrag = !!edition && s.statut !== 'annulee' && !s.est_verrouillee
-                // « + » seulement si l'heure suivante existe ce jour-là, sans pause, et sous la durée maximale
-                const fin = toMin(s.heure_fin) + 60
-                const peutAllonger = canDrag && !glisse && !!edition?.onAllonger
-                  && s.duree + 1 <= (estEpreuve(s) ? 3 : 5)
-                  && finsPossibles(db, s.date_seance, s.heure_debut, [fin - toMin(s.heure_debut)]).length > 0
+                const aj = canDrag && !glisse && edition?.onAjuster ? edition.ajustements?.get(s.id_seance) : undefined
                 return (
                   <div
                     key={s.id_seance}
@@ -477,14 +480,17 @@ export function WeekGrid({ db, days, seances, hide, selectedId, onSelect, editio
                       compact={p.of > 2}
                       hauteur={h - 4 /* p-0.5 autour de la carte */}
                       selected={selectedId === s.id_seance}
+                      cochee={edition?.cochees?.has(s.id_seance)}
                       draggable={canDrag}
                       onDragStart={canDrag
                         ? (e) => edition!.onDragStartSeance(s, e, ((e.clientY - e.currentTarget.getBoundingClientRect().top) / pxHeure) * 60)
                         : undefined}
                       onDragEnd={edition?.onDragEnd}
-                      onClick={onSelect ? () => onSelect(s) : undefined}
-                      onPlus={peutAllonger ? () => edition!.onAllonger!(s) : undefined}
-                      plusTitre={`Allonger d'une heure (jusqu'à ${fmtHeure(fromMin(fin))})`}
+                      onClick={onSelect ? (m) => onSelect(s, m) : undefined}
+                      onPlus={aj?.plus ? () => edition!.onAjuster!(s, 1) : undefined}
+                      plusTitre={aj?.plus}
+                      onMoins={aj?.moins ? () => edition!.onAjuster!(s, -1) : undefined}
+                      moinsTitre={aj?.moins}
                     />
                   </div>
                 )

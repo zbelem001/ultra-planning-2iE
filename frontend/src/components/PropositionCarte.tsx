@@ -1,11 +1,13 @@
 // Proposition de l'assistant IA : ce qu'elle change, ce qu'elle coûte, et la décision du planificateur.
-// Deux natures : séances (déplacements, ajouts, génération…) ou changements du référentiel (lignes
-// ajoutées, modifiées ou supprimées, calendrier et enseignants compris), suivis éventuellement d'une
-// génération ou d'une replanification lancée dès leur validation.
+// L'assistant n'écrit rien lui-même : toute proposition attend « Valider » (ou « Rejeter »). Deux natures :
+// séances (déplacements, ajouts, suppressions, épreuves, résultats du solveur), qui s'écrivent à la validation
+// dans la version à jour puis se publient depuis Planification ; ou changements du référentiel (lignes ajoutées,
+// modifiées ou supprimées, calendrier et enseignants compris), suivis éventuellement d'une génération ou d'une
+// replanification lancée dès leur validation, dont le résultat est une nouvelle proposition à valider.
 
 import { AlertTriangle, Check, X } from 'lucide-react'
 import { useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
 import { Badge, Button, cn } from '@/components/ui'
 import { appliquerProposition, rejeterProposition } from '@/lib/api'
@@ -25,13 +27,14 @@ const APERCU_RETIREES = 6 // séances à supprimer montrées d'emblée
 const pluriel = (n: number, mot: string) => `${n} ${mot}${n > 1 ? 's' : ''}`
 
 const STATUTS = {
-  en_attente: { label: 'En attente', tone: 'warning' },
-  appliquee: { label: 'Appliquée', tone: 'success' },
+  en_attente: { label: 'À valider', tone: 'warning' },
+  appliquee: { label: 'Validée', tone: 'success' },
   rejetee: { label: 'Rejetée', tone: 'neutral' },
 } as const
 
 export function PropositionCarte({ p, compacte }: { p: Proposition; compacte?: boolean }) {
   const { recharger, connecte } = useStore()
+  const naviguer = useNavigate()
   const referentiel = p.nature === 'referentiel'
   const [encours, setEncours] = useState(false)
   const [toutVoir, setToutVoir] = useState(false)
@@ -61,12 +64,13 @@ export function PropositionCarte({ p, compacte }: { p: Proposition; compacte?: b
           await recharger()
           return
         }
-        toast.success(`Proposition ${p.id_proposition} appliquée`, {
+        toast.success(`Proposition ${p.id_proposition} validée`, {
           description: [
             r.seances_creees && `${r.seances_creees} ajoutée(s)`,
             r.seances_modifiees && `${r.seances_modifiees} modifiée(s)`,
             r.seances_supprimees && `${r.seances_supprimees} retirée(s)`,
-          ].filter(Boolean).join(', ') + ', validées par la base. Visible par les invités après publication (page Planification).',
+          ].filter(Boolean).join(', ') + ' dans la version à jour. Les invités la verront une fois publiée depuis Planification.',
+          action: { label: 'Planification', onClick: () => naviguer('/admin/planification') },
         })
       } else {
         await rejeterProposition(p.id_proposition)
@@ -74,7 +78,7 @@ export function PropositionCarte({ p, compacte }: { p: Proposition; compacte?: b
       }
       await recharger()
     } catch (e) {
-      toast.error(action === 'appliquer' ? 'Application refusée' : 'Rejet impossible', { description: (e as Error).message })
+      toast.error(action === 'appliquer' ? 'Validation refusée' : 'Rejet impossible', { description: (e as Error).message })
       await recharger()
     } finally {
       setEncours(false)
@@ -127,8 +131,8 @@ export function PropositionCarte({ p, compacte }: { p: Proposition; compacte?: b
           )}
           {p.suite && (
             <p className="mt-2 text-ink-2">
-              Puis {p.suite.mode === 'replanifier' ? 'replanification' : 'génération'} : {p.suite.description} (appliquée
-              directement à la version à jour).
+              Puis {p.suite.mode === 'replanifier' ? 'replanification' : 'génération'} : {p.suite.description}. Son résultat
+              sera une nouvelle proposition, à valider à son tour.
             </p>
           )}
         </>
@@ -172,7 +176,7 @@ export function PropositionCarte({ p, compacte }: { p: Proposition; compacte?: b
             <li className="flex items-start gap-1.5 text-[#7C4A03]">
               <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
               <span>
-                {perdues} h {fait ? 'ne sont plus programmées' : 'ne seraient plus programmées (à confirmer avec le bouton Appliquer)'} :{' '}
+                {perdues} h {fait ? 'ne sont plus programmées' : 'ne seraient plus programmées'} :{' '}
                 {(i.heures_perdues ?? []).map((h) => `${h.cours} (${h.heures} h, ${h.regle})`).join(' ; ')}
               </span>
             </li>
@@ -212,10 +216,22 @@ export function PropositionCarte({ p, compacte }: { p: Proposition; compacte?: b
         </ul>
       )}
 
+      {p.statut === 'en_attente' && !referentiel && (
+        <p className="mt-3 rounded-2xl bg-highlight/70 px-3 py-2 text-xs text-ink">
+          Rien n'est encore écrit. Validée, elle s'écrit dans la version à jour (grille de Planification) ; les invités ne la
+          voient qu'après « Publier », depuis Planification.
+        </p>
+      )}
+      {p.statut === 'en_attente' && referentiel && (
+        <p className="mt-3 rounded-2xl bg-highlight/70 px-3 py-2 text-xs text-ink">
+          Rien n'est encore écrit. Le référentiel n'a pas de version : une fois validés, ces changements sont visibles aussitôt.
+        </p>
+      )}
+
       <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
         <span className="text-xs text-ink-2">
           {fait && !referentiel
-            ? <>Appliquée le {fmtDateHeure(p.date_decision!)} · <Link to="/admin/planification" className="font-medium text-navy underline underline-offset-2">voir dans Planification</Link></>
+            ? <>Validée le {fmtDateHeure(p.date_decision!)} · <Link to="/admin/planification" className="font-medium text-navy underline underline-offset-2">voir et publier dans Planification</Link></>
             : `Calculée le ${fmtDateHeure(p.date_creation)}`}
         </span>
         {p.statut === 'en_attente' && connecte && (
@@ -223,8 +239,8 @@ export function PropositionCarte({ p, compacte }: { p: Proposition; compacte?: b
             <Button size="sm" variant="ghost" disabled={encours} onClick={() => void decider('rejeter')}><X />Rejeter</Button>
             <Button size="sm" variant={perdues ? 'outline' : 'primary'} disabled={encours} onClick={() => void decider('appliquer')}>
               <Check />{referentiel
-                ? (p.suite ? (p.suite.mode === 'replanifier' ? 'Appliquer et replanifier' : 'Appliquer et planifier') : 'Appliquer au référentiel')
-                : 'Appliquer'}
+                ? (p.suite ? (p.suite.mode === 'replanifier' ? 'Valider et replanifier' : 'Valider et planifier') : 'Valider')
+                : 'Valider'}
             </Button>
           </div>
         )}

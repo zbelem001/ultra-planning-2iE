@@ -150,9 +150,12 @@ def test_l_assistant_lit_et_ecrit_la_version_a_jour(client):
         assert f"{s['id_seance']}" in lire_emploi_du_temps(ctx, n["date_seance"], n["date_seance"])
         texte = executer_outil(ctx, {o.nom: o for o in construire_outils(ctx)}, "proposer_modifications",
                                json.dumps({"description": "Annuler", "operations": [{"action": "annuler", "id_seance": s["id_seance"]}]}))
-        assert texte.startswith("Appliquée à la version à jour"), texte
+        assert "En attente de validation" in texte, texte
         c.commit()
-    # Écrit tout de suite dans la version à jour ; les invités ne voient rien avant la publication manuelle
+    # Rien d'écrit avant la validation du planificateur
+    assert next(x for x in seances(client) if x["id_seance"] == s["id_seance"])["statut"] != "annulee"
+    assert client.post(f"/api/propositions/{ctx.propositions_creees[0]}/appliquer", headers=ADMIN).status_code == 200
+    # Validée : écrite dans la version à jour ; les invités ne voient rien avant la publication manuelle
     assert next(x for x in seances(client) if x["id_seance"] == s["id_seance"])["statut"] == "annulee"
     publie = lambda: client.get("/api/base/public?ecole=2IE").json()["seance"]  # noqa: E731
     assert {x["id_edt"] for x in publie()} == {id_publie} and not any(x["statut"] == "annulee" for x in publie())

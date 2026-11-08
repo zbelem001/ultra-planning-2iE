@@ -18,6 +18,8 @@ export interface SeanceVue extends Seance {
   publics: Public[]
   /** « L2INFO · TD-A », ou « L2INFO + L3INFO » pour un cours mutualisé */
   public_affiche: string
+  /** Un libellé par public : [« L2INFO », « L3INFO »] pour un cours mutualisé */
+  publics_libelles: string[]
   /** Effectif de tous les publics */
   effectif: number
   duree: number
@@ -63,6 +65,7 @@ function enrichirSans(db: Db, seances: Seance[]): [Seance, SeanceVue][] {
     const publics = [{ id_classe: c.id_classe, id_groupe: c.id_groupe }, ...(suppl.get(c.id_cours) ?? [])]
       .map((p) => (epreuve ? { ...p, id_groupe: null } : p))
       .filter((p, i, l) => !epreuve || l.findIndex((x) => x.id_classe === p.id_classe) === i)
+    const libelles = publics.map(libellePublic)
     return [s, {
       ...s,
       cours: c,
@@ -74,7 +77,8 @@ function enrichirSans(db: Db, seances: Seance[]): [Seance, SeanceVue][] {
       classe: cla.get(c.id_classe)!,
       groupe: c.id_groupe !== null && !epreuve ? grp.get(c.id_groupe) ?? null : null,
       publics,
-      public_affiche: publics.map(libellePublic).join(' + '),
+      public_affiche: libelles.join(' + '),
+      publics_libelles: libelles,
       effectif: publics.reduce((n, p) => n + effectifPublic(p), 0),
       duree: hours(s.heure_debut, s.heure_fin),
     }]
@@ -105,6 +109,9 @@ export function filtrer(list: SeanceVue[], res: Ressource, id: number, id_groupe
 
 /** Nom affiché ; sans enseignant (séance « à désigner ») : « À désigner » */
 export const nomEnseignant = (e: Enseignant | null | undefined) => (e ? `${e.prenom} ${e.nom}` : 'À désigner')
+
+/** « Kamboinsé » pour « Campus de Kamboinsé » : le nom d'un site tel qu'il tient sur une carte de séance */
+export const nomCourtSite = (s: Site | undefined) => s?.nom_site.replace(/^campus\s+(de\s+|d['’]\s*)/i, '') ?? ''
 
 /** « Campus de Kamboinsé · Bloc A » */
 export function lieuSalle(db: Db, s: Salle): string {

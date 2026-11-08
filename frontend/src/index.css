@@ -109,3 +109,24 @@ h1, h2, h3 { text-wrap: balance; line-height: 1.1; }
   .no-print { display: none !important; }
   .surface { box-shadow: none; backdrop-filter: none; border-color: var(--line); }
 }
+
+/* Export PDF (components/timetable/ExportPdf.tsx) : une page A4 paysage par semaine. Hors impression, les pages
+   sont rendues hors de l'écran ; pendant l'impression, elles seules s'affichent, en couleurs. */
+@page export { size: A4 landscape; margin: 8mm; }
+#impression-export { position: fixed; top: 0; left: -100000px; }
+.page-export {
+  page: export;
+  display: flex;
+  flex-direction: column;
+  width: 281mm;
+  height: 194mm;
+  overflow: hidden;
+  background: white;
+  break-after: page;
+}
+.page-export:last-child { break-after: auto; }
+@media print {
+  body.impression-export-active > :not(#impression-export) { display: none !important; }
+  body.impression-export-active #impression-export { position: static; }
+  #impression-export, #impression-export * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+}

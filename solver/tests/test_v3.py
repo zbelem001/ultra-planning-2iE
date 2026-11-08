@@ -203,18 +203,23 @@ class TestMoteur(unittest.TestCase):
             {"id_cours": 1, "date": "2026-09-14", "heure_debut": "07:00", "heure_fin": "09:00", "id_salle": 1},
             {"id_cours": 2, "date": "2026-09-14", "heure_debut": "08:00", "heure_fin": "10:00", "id_salle": 2},
             {"id_cours": 2, "date": "2026-09-19", "heure_debut": "13:00", "heure_fin": "15:00", "id_salle": 5},
-            # la promotion 1 a déjà cours au site 1 ce lundi : le site 2 l'après-midi est refusé
-            {"id_cours": 2, "date": "2026-09-14", "heure_debut": "13:00", "heure_fin": "15:00", "id_salle": 5},
+            # mardi matin : la promotion 1 au site 1 puis au site 2 sans passer par la pause de midi
+            {"id_cours": 1, "date": "2026-09-15", "heure_debut": "07:00", "heure_fin": "09:00", "id_salle": 1},
+            {"id_cours": 2, "date": "2026-09-15", "heure_debut": "09:00", "heure_fin": "11:00", "id_salle": 5},
+            # mercredi : site 1 le matin, site 2 l'après-midi (changement à midi) : accepté
+            {"id_cours": 1, "date": "2026-09-16", "heure_debut": "07:00", "heure_fin": "09:00", "id_salle": 1},
+            {"id_cours": 2, "date": "2026-09-16", "heure_debut": "13:00", "heure_fin": "15:00", "id_salle": 5},
         ]
         v = " | ".join(valider(d, mauvaises))
         self.assertIn("étudiants communs", v)
         self.assertIn("salle trop petite", v)
         self.assertIn("hors des plages", v)
-        self.assertIn("deux campus le même jour", v)
+        self.assertIn("le 2026-09-15 : étudiants communs sur deux campus la même demi-journée", v)
+        self.assertNotIn("le 2026-09-16 : étudiants communs sur deux campus", v)
 
     def test_cours_mutualise_entre_deux_campus(self):
-        """Une promotion peut aller sur l'autre campus pour un cours mutualisé, jamais sur les deux le même jour ;
-        ses autres cours restent sur son campus."""
+        """Une promotion peut aller sur l'autre campus pour un cours mutualisé, jamais sur les deux la même
+        demi-journée (elle change de campus à midi) ; ses autres cours restent sur son campus."""
         classes = [{"id_classe": 1, "code_classe": "A", "id_site": 1, "effectif": 30},
                    {"id_classe": 2, "code_classe": "B", "id_site": 2, "effectif": 30}]
         salles = [{"id_salle": 1, "id_site": 1, "id_type_salle": STD, "capacite": 80, "reservee_a": []},
@@ -226,11 +231,12 @@ class TestMoteur(unittest.TestCase):
         self.assertEqual(v, [])
         self.assertEqual((heures(res, 1), heures(res, 2), heures(res, 3)), (8, 12, 8))
         site = {x["id_salle"]: x["id_site"] for x in salles}
-        par_jour = {}
+        par_demi = {}
         for x in res["seances"]:
+            demi = 0 if int(x["heure_debut"][:2]) < 12 else 1
             for p in next(c for c in d["cours"] if c["id_cours"] == x["id_cours"])["publics"]:
-                par_jour.setdefault((p["id_classe"], x["date"]), set()).add(site[x["id_salle"]])
-        self.assertTrue(all(len(s) == 1 for s in par_jour.values()))
+                par_demi.setdefault((p["id_classe"], x["date"], demi), set()).add(site[x["id_salle"]])
+        self.assertTrue(all(len(s) == 1 for s in par_demi.values()))
         # le cours mutualisé a lieu au campus de sa classe (A) ; les cours de B restent au sien
         self.assertTrue(all(site[x["id_salle"]] == 1 for x in res["seances"] if x["id_cours"] == 1))
         self.assertTrue(all(site[x["id_salle"]] == 2 for x in res["seances"] if x["id_cours"] == 2))

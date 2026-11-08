@@ -1,12 +1,14 @@
 -- =====================================================================
---  Migration 15 -> 16 : une promotion n'a cours que sur un campus par jour.
+--  Migration 15 -> 16 : un campus par demi-journée pour les mêmes étudiants.
 --  À exécuter une fois sur une base en version 15 (Supabase > SQL Editor),
 --  après migrations/015_mutualisations_publiees.sql. Sans danger si on la relance.
 --
 --   * avant : la salle d'un cours devait être sur le campus de chacune de ses
 --     promotions (classe.id_site) ;
 --   * maintenant : une promotion peut aller sur l'autre campus (cours mutualisé,
---     salle libre...), mais pas sur les deux le même jour. Le campus de la
+--     salle libre...). Les mêmes étudiants n'ont cours que sur un campus par
+--     demi-journée : ils changent de campus à la pause de midi. Deux groupes
+--     différents peuvent être sur deux campus en même temps. Le campus de la
 --     promotion guide seulement la génération, qui y place ses cours (sauf un
 --     cours mutualisé entre deux campus : celui de la classe du cours).
 --   * seule la fonction verifier_seance() change (le contrôle « SITE »).
@@ -199,13 +201,15 @@ BEGIN
             USING ERRCODE = 'check_violation';
     END IF;
 
-    -- Site : une promotion n'a pas cours sur deux campus le même jour. Elle peut aller sur l'autre
-    -- campus (cours mutualisé, salle libre), mais toute sa journée s'y passe. Le campus de la
-    -- promotion (classe.id_site) guide la génération ; la base ne l'impose pas.
+    -- Site : les mêmes étudiants n'ont cours que sur un campus par demi-journée. Ils changent de
+    -- campus à la pause de midi (le matin sur l'un, l'après-midi sur l'autre) ; deux groupes
+    -- différents peuvent être sur deux campus en même temps (publics_en_conflit, comme CD-03).
+    -- Le campus de la promotion (classe.id_site) guide la génération ; la base ne l'impose pas.
     DECLARE
         v_autre_site TEXT;
+        v_midi       TIME := (SELECT min(p.heure_debut) FROM pause p);
     BEGIN
-        SELECT cl.code_classe || ' a déjà cours sur le ' || si.nom_site
+        SELECT cl.code_classe || coalesce(' · ' || g.code_groupe, '') || ' a déjà cours sur le ' || si.nom_site
         INTO v_autre_site
         FROM seance s
         CROSS JOIN LATERAL publics_seance(s.id_cours, s.nature) ps
@@ -213,14 +217,18 @@ BEGIN
         JOIN salle sa ON sa.id_salle = s.id_salle
         JOIN site si ON si.id_site = sa.id_site
         JOIN classe cl ON cl.id_classe = ps.id_classe
+        LEFT JOIN groupe g ON g.id_groupe = ps.id_groupe
         WHERE s.id_edt = NEW.id_edt
           AND s.statut <> 'annulee'
           AND s.date_seance = NEW.date_seance
           AND s.id_seance IS DISTINCT FROM NEW.id_seance
           AND sa.id_site <> v_salle.id_site
+          -- même demi-journée : du même côté de la pause de midi
+          AND (v_midi IS NULL OR (s.heure_fin <= v_midi) = (NEW.heure_fin <= v_midi))
+          AND publics_en_conflit(pn.id_classe, pn.id_groupe, ps.id_classe, ps.id_groupe)
         LIMIT 1;
         IF v_autre_site IS NOT NULL THEN
-            RAISE EXCEPTION 'SITE : % ce jour-là (une promotion n''a cours que sur un campus par jour)', v_autre_site
+            RAISE EXCEPTION 'SITE : % cette demi-journée (les mêmes étudiants ne changent de campus qu''à la pause de midi)', v_autre_site
                 USING ERRCODE = 'check_violation';
         END IF;
     END;

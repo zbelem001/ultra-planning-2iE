@@ -248,15 +248,30 @@ def test_la_suppression_laisse_les_epreuves_sauf_demande(ctx, conn):
     assert [o["id_seance"] for o in ops] == [examen]
 
 
-def test_une_promotion_n_a_cours_que_sur_un_campus_par_jour(conn):
-    """Contrôle SITE (version 16) : une promotion peut aller sur l'autre campus, pas sur les deux le même jour"""
+def test_les_memes_etudiants_n_ont_cours_que_sur_un_campus_par_demi_journee(conn):
+    """Contrôle SITE (version 16) : une promotion peut aller sur l'autre campus ; les mêmes étudiants changent de
+    campus à la pause de midi, pas dans la même demi-journée ; deux groupes différents peuvent être séparés"""
+    def plus_d_heures(k):
+        conn.execute("UPDATE programme p SET volume_cm = volume_cm + 10, volume_td = volume_td + 10, volume_tp = volume_tp + 10 "
+                     "FROM cours c WHERE c.id_cours = %s AND p.id_classe = c.id_classe AND p.id_matiere = c.id_matiere", (k,))
+        conn.execute("UPDATE cours SET volume_horaire = volume_horaire + 10, heures_semaine_max = 20 WHERE id_cours = %s", (k,))
+
     k = cours_de(conn, "L2INFO")  # CM en amphithéâtre ; la promotion est au campus de Kamboinsé
-    conn.execute("UPDATE programme p SET volume_cm = volume_cm + 10, volume_td = volume_td + 10, volume_tp = volume_tp + 10 "
-                 "FROM cours c WHERE c.id_cours = %s AND p.id_classe = c.id_classe AND p.id_matiere = c.id_matiere", (k,))
-    conn.execute("UPDATE cours SET volume_horaire = volume_horaire + 10 WHERE id_cours = %s", (k,))
-    # à Ouagadougou : accepté (avant, la salle devait être sur le campus de la promotion)
+    plus_d_heures(k)
+    # le matin à Ouagadougou : accepté (avant, la salle devait être sur le campus de la promotion)
     assert poser(conn, k, LUNDI, "07:00", "09:00", id_salle=salle(conn, "O-AMPHI1"), nature="cours")
-    # le même jour, à Kamboinsé : refusé
-    refuse(conn, "SITE", k, LUNDI, "13:00", "15:00", id_salle=salle(conn, "K-AMPHI1"), nature="cours")
-    # un autre jour, à Kamboinsé : accepté
-    assert poser(conn, k, MARDI, "13:00", "15:00", id_salle=salle(conn, "K-AMPHI1"), nature="cours")
+    # le même matin à Kamboinsé : refusé
+    refuse(conn, "SITE", k, LUNDI, "09:00", "11:00", id_salle=salle(conn, "K-AMPHI1"), nature="cours")
+    # l'après-midi à Kamboinsé : accepté (changement de campus à midi)
+    assert poser(conn, k, LUNDI, "13:00", "15:00", id_salle=salle(conn, "K-AMPHI1"), nature="cours")
+
+    # deux groupes de TD différents, en même temps, chacun sur un campus : pas d'étudiants communs, accepté
+    td = dict(conn.execute("""SELECT g.code_groupe, co.id_cours FROM cours co JOIN groupe g ON g.id_groupe = co.id_groupe
+                              JOIN classe cl ON cl.id_classe = co.id_classe
+                              WHERE cl.code_classe = 'L2INFO' AND co.type_cours = 'TD' ORDER BY g.code_groupe""").fetchall())
+    (ga, ka), (gb, kb) = list(td.items())[:2]
+    plus_d_heures(ka)
+    plus_d_heures(kb)
+    conn.execute("UPDATE cours SET id_type_salle = NULL WHERE id_cours IN (%s, %s)", (ka, kb))
+    assert poser(conn, ka, MERCREDI, "07:00", "09:00", id_salle=salle(conn, "O-B101"), nature="cours")
+    assert poser(conn, kb, MERCREDI, "07:00", "09:00", id_salle=salle(conn, "K-A101"), nature="cours")

@@ -63,7 +63,7 @@ def _candidats(inst: Instance, e: Etat, c, duree: int, w: int, apres, avant, ori
                     site = inst.salles[r]["id_site"]
                     if sites_ens - {site} and inst.deux_sites_dur:
                         return False
-                    if e.autre_site(c, di, site):
+                    if e.autre_site(c, di, demi, site):
                         return False
                     return trajet_ok([h for h, x in heures_site.items() if x != site], s, duree, inst.trajet_h)
 
@@ -161,7 +161,7 @@ def sous_probleme(inst: Instance, e: Etat, ic: int, w: int, temps: float, suivan
     occ_atome, occ_ens, occ_salle = defaultdict(list), defaultdict(list), defaultdict(list)
     jour_atome, jour_ens = defaultdict(list), defaultdict(list)
     mat_vars = defaultdict(list)
-    site_jour = defaultdict(lambda: defaultdict(list))   # (promotion, jour) -> campus -> séances candidates
+    site_jour = defaultdict(lambda: defaultdict(list))   # (atome d'étudiants, jour, demi-journée) -> campus -> séances
     sem_ens, sem_cours = defaultdict(list), defaultdict(list)
     objectif = []
     choix = []   # (cours, durée, [(var, di, s, salle)])
@@ -192,8 +192,8 @@ def sous_probleme(inst: Instance, e: Etat, ic: int, w: int, temps: float, suivan
                         sem_ens[c.enseignant].append((x, d))
                     sem_cours[c.id].append((x, d))
                     mat_vars[c.matiere].append(x)
-                    for ic in c.classes:
-                        site_jour[ic, di][inst.salles[r]["id_site"]].append(x)
+                    for a in c.atomes:
+                        site_jour[a, di, inst.demi_de(di, s)][inst.salles[r]["id_site"]].append(x)
                     heures.append((x, d))
                     gardee = bonus_origine if (di, s, r, d) in origines else 0
                     objectif.append((1000 * d - 10 * cout + gardee - (5 if d not in c.durees else 0), x))
@@ -227,7 +227,7 @@ def sous_probleme(inst: Instance, e: Etat, ic: int, w: int, temps: float, suivan
         m.Add(sum(d * x for x, d in v) <= max(0, cap - e.ens_sem[k, w]))
     for k, v in sem_cours.items():
         m.Add(sum(d * x for x, d in v) <= max(0, inst.cours[k].h_max - e.cours_sem[k, w]))
-    # une promotion n'a cours que sur un campus par jour (les séances restées en place sont déjà filtrées)
+    # les mêmes étudiants n'ont cours que sur un campus par demi-journée (séances restées en place : déjà filtrées)
     for par_site in site_jour.values():
         if len(par_site) > 1:
             choisis = []

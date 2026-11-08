@@ -226,7 +226,7 @@ class Instance:
             elif t == "enseignant_site_unique_jour":
                 self.deux_sites_dur = r.get("dure", False)
             elif t == "site_unique_jour":
-                pass  # toujours appliquée : une promotion n'a cours que sur un campus par jour (Etat.classe_site)
+                pass  # toujours appliquée : un campus par demi-journée pour les mêmes étudiants (Etat.atome_site)
             else:
                 self.erreurs.append(f"règle {r.get('id')} : type « {t} » inconnu, ignorée")
 
@@ -285,7 +285,7 @@ class Instance:
         classes = sorted({p["id_classe"] for p in c["publics"]})
         sites = {self.classes[i].get("id_site") for i in classes} - {None}
         # Campus de la promotion ; cours mutualisé entre deux campus : celui de la classe du cours, les autres
-        # promotions s'y déplacent (ce jour-là, elles n'ont cours que sur ce campus : Etat.classe_site)
+        # promotions s'y déplacent (cette demi-journée, elles n'ont cours que sur ce campus : Etat.atome_site)
         proprio = self.classes[c["publics"][0]["id_classe"]].get("id_site") if c["publics"] else None
         site = proprio if proprio is not None else (min(sites) if sites else None)
         k = Cours(c["id_cours"], c["id_matiere"], c["type_cours"], classes,

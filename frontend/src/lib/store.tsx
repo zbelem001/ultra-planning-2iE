@@ -111,8 +111,13 @@ function difference(avant: Db, apres: Db): Changements | null {
     const cle = (r: Record<string, unknown>) => pk.map((c) => String(r[c])).join('|')
     const anciennes = new Map((avant[table] as unknown as Record<string, unknown>[]).map((r) => [cle(r), r]))
     const nouvelles = new Map((apres[table] as unknown as Record<string, unknown>[]).map((r) => [cle(r), r]))
+    // La base veut un examen avant son rattrapage : un rattrapage s'écrit après, et se supprime avant
+    const rattrapage = (r: Record<string, unknown>) => (r.nature === 'rattrapage' ? 1 : 0)
     const upsert = [...nouvelles].filter(([k, r]) => anciennes.get(k) !== r).map(([, r]) => r)
-    const supprimer = [...anciennes].filter(([k]) => !nouvelles.has(k)).map(([, r]) => Object.fromEntries(pk.map((c) => [c, r[c]])))
+      .sort((a, b) => rattrapage(a) - rattrapage(b))
+    const supprimer = [...anciennes].filter(([k]) => !nouvelles.has(k)).map(([, r]) => r)
+      .sort((a, b) => rattrapage(b) - rattrapage(a))
+      .map((r) => Object.fromEntries(pk.map((c) => [c, r[c]])))
     if (upsert.length || supprimer.length) out[table] = { upsert, supprimer }
   }
   return Object.keys(out).length ? out : null

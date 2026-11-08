@@ -1,11 +1,11 @@
 // Mutualiser un cours avec une autre classe (COURS_PUBLIC), depuis le détail d'une séance : toutes les séances
 // du cours entrent dans l'emploi du temps de cette classe. Elle ne doit donc avoir aucune autre séance en même
-// temps (CD-03), ni cours sur l'autre campus ces jours-là (SITE), et chaque salle doit rester assez grande (CD-04)
+// temps (CD-03), ni cours sur l'autre campus ces demi-journées-là (SITE), et chaque salle doit rester assez grande (CD-04)
 // quand les effectifs sont connus. La base ne
 // contrôle pas l'ajout d'un public : ce contrôle-ci l'évite.
 
 import type { Cours, Db, Seance } from '@/types/db'
-import { capaciteConnue } from './rules'
+import { capaciteConnue, memeDemiJournee } from './rules'
 import { effectifDuCours, estEpreuve, publicsSeance } from './publics'
 import { fmtHeure, fmtJourCourt, toMin } from './time'
 
@@ -40,13 +40,15 @@ export function disponibiliteMutualisation(db: Db, id_edt: number, cours: Cours,
         + (conflits.length > 1 ? `, et ${conflits.length - 1} autre${conflits.length > 2 ? 's' : ''} séance${conflits.length > 2 ? 's' : ''} du cours` : ''),
     }
   }
-  // Un campus par jour : la classe ne peut pas suivre une séance sur un campus et avoir cours sur l'autre ce jour-là
+  // Un campus par demi-journée : toute la classe suivrait la séance, elle ne peut pas avoir cours sur l'autre
+  // campus la même demi-journée (elle change de campus à la pause de midi)
   const siteDe = (s: Seance) => db.salle.find((x) => x.id_salle === s.id_salle)?.id_site
+  const memeDemi = memeDemiJournee(db)
   for (const a of duCours) {
-    const b = deLaClasse.find((x) => x.date_seance === a.date_seance && siteDe(x) !== siteDe(a))
+    const b = deLaClasse.find((x) => x.date_seance === a.date_seance && memeDemi(x, a) && siteDe(x) !== siteDe(a))
     if (b) {
       const nom = (s: Seance) => db.site.find((x) => x.id_site === siteDe(s))?.nom_site ?? 'un autre campus'
-      return { ok: false, nb: duCours.length, motif: `Aurait cours sur deux campus le ${fmtJourCourt(a.date_seance)} (${nom(b)} pour ${libelle(b)}, ${nom(a)} pour ce cours)` }
+      return { ok: false, nb: duCours.length, motif: `Aurait cours sur deux campus la même demi-journée le ${fmtJourCourt(a.date_seance)} (${nom(b)} pour ${libelle(b)}, ${nom(a)} pour ce cours)` }
     }
   }
   // Capacité : seulement si l'effectif de la classe et la capacité de la salle sont renseignés

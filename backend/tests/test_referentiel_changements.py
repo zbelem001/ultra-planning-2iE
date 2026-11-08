@@ -117,12 +117,20 @@ def test_ajouts_puis_generation_enchainee(client, edt_a_remettre):
         id_prop = ctx.propositions_creees[0]
     r = client.post(f"/api/propositions/{id_prop}/appliquer", headers=ADMIN).json()
     assert r["nature"] == "referentiel" and r["lignes_ajoutees"] == 3
-    assert r["suite"]["id_proposition"] and r["suite"]["message"].startswith("Appliquée à la version à jour"), r["suite"]
+    id_suite = r["suite"]["id_proposition"]
+    assert id_suite and r["suite"]["message"] == f"Proposition {id_suite} calculée : à valider sur sa carte, dans la discussion.", r["suite"]
+    seances_bd = lambda c: c.execute("SELECT count(*) FROM seance s JOIN cours USING (id_cours) JOIN matiere USING (id_matiere) "  # noqa: E731
+                                     "WHERE code_matiere = 'TST-BD'").fetchone()[0]
     with psycopg.connect(config.DATABASE_URL) as c:
         nature, statut, id_prompt = c.execute("SELECT nature, statut, id_prompt FROM proposition WHERE id_proposition = %s",
-                                              (r["suite"]["id_proposition"],)).fetchone()
-        assert (nature, statut) == ("seances", "appliquee")  # la génération va directement dans la version à jour
+                                              (id_suite,)).fetchone()
+        # La génération attend à son tour la validation, sous le même message de la discussion
+        assert (nature, statut) == ("seances", "en_attente") and seances_bd(c) == 0
         assert id_prompt == c.execute("SELECT id_prompt FROM proposition WHERE id_proposition = %s", (id_prop,)).fetchone()[0]
+    r = client.post(f"/api/propositions/{id_suite}/appliquer", headers=ADMIN).json()
+    assert r["nature"] == "seances" and r["seances_creees"], r
+    with psycopg.connect(config.DATABASE_URL) as c:
+        assert seances_bd(c) == r["seances_creees"]
 
 
 def test_message_avec_piece_jointe(client, monkeypatch):
@@ -282,7 +290,7 @@ def test_absence_puis_replanification_enchainee(client, edt_a_remettre):
     try:
         r = client.post(f"/api/propositions/{id_prop}/appliquer", headers=ADMIN).json()
         assert r["lignes_ajoutees"] == 1 and r["suite"]["id_proposition"], r
-        assert r["suite"]["message"].startswith("Appliquée à la version à jour"), r  # la replanification est faite
+        assert r["suite"]["message"].endswith("à valider sur sa carte, dans la discussion."), r  # à valider à son tour
         with psycopg.connect(config.DATABASE_URL) as c:
             ops = c.execute("SELECT modifications FROM proposition WHERE id_proposition = %s",
                             (r["suite"]["id_proposition"],)).fetchone()[0]

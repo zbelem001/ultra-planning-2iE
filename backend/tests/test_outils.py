@@ -8,7 +8,7 @@ import pytest
 from app import propositions
 from app.outils import (
     Contexte, construire_outils, lire_emploi_du_temps, lire_referentiel, proposer_priorites, proposer_suppression_seances,
-    appliquer_si_possible, proposer_generation, proposer_modifications, proposer_replanification,
+    a_valider, proposer_generation, proposer_modifications, proposer_replanification,
     proposer_reprogrammation_cours, verifier_seance,
 )
 
@@ -234,34 +234,34 @@ def test_reprogrammer_verifie_le_cours_et_ne_va_pas_dans_le_passe(ctx, conn, cou
     assert all(o["apres"]["date_seance"] > "2026-11-04" for o in ops if o["action"] == "creer")
 
 
-def test_un_changement_de_seances_s_applique_directement(edt_a_remettre, ctx, conn):
+def test_un_changement_de_seances_attend_la_validation(edt_a_remettre, ctx, conn):
+    """L'assistant n'écrit rien : sa proposition attend le planificateur, puis s'écrit dans la version à jour."""
     from app.agent import executer_outil
+    from app.db import origine
 
     classe, lundi = classe_avec_cours_un_lundi(conn)
-    avant = conn.execute("SELECT count(*) FROM seance WHERE id_edt = 1 AND date_seance = %s", (lundi,)).fetchone()[0]
+    compter = lambda: conn.execute("SELECT count(*) FROM seance WHERE id_edt = 1 AND date_seance = %s", (lundi,)).fetchone()[0]  # noqa: E731
+    statut = lambda i: conn.execute("SELECT statut FROM proposition WHERE id_proposition = %s", (i,)).fetchone()[0]  # noqa: E731
+    avant = compter()
     outils = {o.nom: o for o in construire_outils(ctx)}
-    # Assez de place pour replacer les séances de ce seul lundi : aucune heure perdue
+    # Assez de place pour replacer les séances de ce seul lundi : aucune heure perdue, et pourtant rien n'est appliqué
     texte = executer_outil(ctx, outils, "proposer_replanification", json.dumps({
         "description": "Libérer le lundi", "du": lundi.isoformat(), "au": (lundi + FENETRE_LIBRE).isoformat(), "classes": [classe],
         "contraintes": [{"type": "interdire", "code_classe": classe, "date_debut": lundi.isoformat(), "date_fin": lundi.isoformat()}]}))
     id_prop = ctx.propositions_creees[0]
-    id_prompt = ctx.id_prompt
-    try:
-        assert texte.startswith(f"Appliquée à la version à jour (modification n° {id_prop})"), texte
-        # Écrit et acquis : une autre connexion le voit, sans le moindre clic
-        with psycopg.connect(os.environ["DATABASE_URL"]) as autre:
-            assert autre.execute("SELECT statut FROM proposition WHERE id_proposition = %s", (id_prop,)).fetchone()[0] == "appliquee"
-            assert autre.execute("SELECT count(*) FROM seance WHERE id_edt = 1 AND date_seance = %s", (lundi,)).fetchone()[0] < avant
-            origine, note = autre.execute("SELECT origine, note FROM journal_seance WHERE id_edt = 1 ORDER BY date_action DESC LIMIT 1").fetchone()
-            assert origine == "assistant" and note.startswith("Assistant IA : Libérer le lundi")
-    finally:
-        with psycopg.connect(os.environ["DATABASE_URL"]) as autre:
-            autre.execute("DELETE FROM proposition WHERE id_prompt = %s", (id_prompt,))
-            autre.execute("DELETE FROM prompt WHERE id_prompt = %s", (id_prompt,))
-            autre.execute("DELETE FROM conversation WHERE titre = 'test' AND NOT EXISTS (SELECT 1 FROM prompt p WHERE p.id_conversation = conversation.id_conversation)")
+    assert texte.startswith(f"Proposition {id_prop} calculée"), texte
+    assert f"En attente de validation : la proposition {id_prop} n'est pas appliquée" in texte, texte
+    assert statut(id_prop) == "en_attente" and compter() == avant
+    # Validée par le planificateur (bouton Valider) : écrite dans la version à jour, avec son motif dans l'historique
+    origine(conn, "assistant")
+    propositions.appliquer(conn, id_prop, 1)
+    assert statut(id_prop) == "appliquee" and compter() < avant
+    conn.execute("RESET ROLE")  # l'historique ne se lit que par l'API (propriétaire), dans la même transaction
+    origine_, note = conn.execute("SELECT origine, note FROM journal_seance WHERE id_edt = 1 ORDER BY date_action DESC, id_journal DESC LIMIT 1").fetchone()
+    assert origine_ == "assistant" and note.startswith("Assistant IA : Libérer le lundi")
 
 
-def test_ce_qui_perd_des_heures_attend_une_confirmation(ctx, conn):
+def test_ce_qui_perd_des_heures_attend_aussi_la_validation(ctx, conn):
     from app.agent import executer_outil
 
     classe, lundi = classe_avec_cours_un_lundi(conn)
@@ -270,21 +270,20 @@ def test_ce_qui_perd_des_heures_attend_une_confirmation(ctx, conn):
     texte = executer_outil(ctx, outils, "proposer_replanification", json.dumps({
         "description": "Semaine banalisée", "du": lundi.isoformat(), "au": (lundi + timedelta(days=5)).isoformat(), "classes": [classe],
         "contraintes": [{"type": "interdire", "code_classe": classe, "jours": ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi"]}]}))
-    assert texte.startswith("Non appliquée") and "ferait perdre des heures" in texte
+    assert "En attente de validation" in texte and "ne seraient plus programmées" in texte, texte
     assert conn.execute("SELECT statut FROM proposition WHERE id_proposition = %s", (ctx.propositions_creees[0],)).fetchone()[0] == "en_attente"
     assert conn.execute("SELECT count(*) FROM seance WHERE id_edt = 1").fetchone()[0] == avant
 
 
-def test_une_application_refusee_est_rapportee(ctx, conn, monkeypatch):
+def test_a_valider_ne_parle_que_d_une_proposition_en_attente(ctx, conn):
+    assert a_valider(ctx) is None
     classe, lundi = classe_avec_cours_un_lundi(conn)
     proposer_replanification(ctx, "x", lundi.isoformat(), (lundi + FENETRE_LIBRE).isoformat(), classes=[classe],
                              contraintes=[{"type": "interdire", "code_classe": classe, "date_debut": lundi.isoformat(), "date_fin": lundi.isoformat()}])
-
-    def refuser(*a):
-        raise propositions.PropositionRefusee("Refusée par la base : CD-02")
-    monkeypatch.setattr(propositions, "appliquer", refuser)
-    assert appliquer_si_possible(ctx) == "Non appliquée, rien n'a changé : Refusée par la base : CD-02"
-    assert conn.execute("SELECT statut FROM proposition WHERE id_proposition = %s", (ctx.propositions_creees[0],)).fetchone()[0] == "rejetee"
+    id_prop = ctx.propositions_creees[0]
+    assert a_valider(ctx).startswith(f"En attente de validation : la proposition {id_prop}")
+    propositions.rejeter(conn, id_prop, 1)
+    assert a_valider(ctx) is None
 
 
 def test_un_deplacement_n_est_pas_annonce_sans_changement(ctx, conn, cours_etale):

@@ -315,11 +315,12 @@ def appliquer_proposition(id_proposition: int, conn: psycopg.Connection = Depend
         raise HTTPException(409, str(e)) from e
     suite = None
     if r["suite"]:
-        # Changements du référentiel validés : la génération (ou la replanification) demandée est lancée
+        # Changements du référentiel validés : la génération (ou la replanification) demandée est lancée. Son
+        # résultat est une nouvelle proposition, sous le même message de la discussion : le planificateur la
+        # valide à son tour avant que les séances ne s'écrivent dans la version à jour.
         conn.commit()  # les changements restent acquis même si le calcul échoue
         ctx = outils.Contexte(conn, r["id_edt"], r["id_prompt"], [])
         s = r["suite"]
-        application = None
         try:
             if s.get("mode") == "replanifier":
                 texte = outils.proposer_replanification(ctx, s["description"], s["du"], s["au"],
@@ -327,12 +328,13 @@ def appliquer_proposition(id_proposition: int, conn: psycopg.Connection = Depend
             else:
                 texte = outils.proposer_generation(ctx, s["description"], s.get("classes"), s.get("filieres"),
                                                    s.get("du"), s.get("au"), s.get("matieres"))
-            application = outils.appliquer_si_possible(ctx)
         except (ValueError, psycopg.Error) as e:
             conn.rollback()
             texte = f"Génération impossible : {e}"
-        suite = {"id_proposition": ctx.propositions_creees[0] if ctx.propositions_creees else None,
-                 "message": application or texte.splitlines()[0]}
+        id_suite = ctx.propositions_creees[0] if ctx.propositions_creees else None
+        suite = {"id_proposition": id_suite,
+                 "message": f"Proposition {id_suite} calculée : à valider sur sa carte, dans la discussion." if id_suite
+                 else texte.splitlines()[0]}
     return {k: v for k, v in r.items() if k not in ("suite", "id_prompt")} | {"suite": suite}
 
 

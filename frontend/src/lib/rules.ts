@@ -26,10 +26,10 @@ export const CODES_DURS: Record<string, string> = {
   'CD-10': 'Séance non alignée sur la grille',
   'CD-11': 'Chevauche une pause',
   'CD-12': 'Salle indisponible ou réservée',
-  SITE: 'Salle hors du site de la promotion',
+  SITE: 'Mêmes étudiants sur deux campus la même demi-journée',
   'CD-13': 'Trop de matières dans la semaine',
   'CD-14': 'Rythme hebdomadaire du cours dépassé',
-  DUREE: 'Durée hors 2 h – 4 h',
+  DUREE: 'Durée hors 2 h – 5 h',
   EXAMEN: 'Examen et rattrapage dans le désordre',
 }
 
@@ -76,6 +76,12 @@ function salleIndex(db: Db): Map<number, Salle> {
   let m = sallesIndex.get(db.salle)
   if (!m) sallesIndex.set(db.salle, (m = new Map(db.salle.map((x) => [x.id_salle, x]))))
   return m
+}
+
+/** Deux séances d'un même jour sont-elles dans la même demi-journée (du même côté de la pause de midi) ? */
+export function memeDemiJournee(db: Db): (a: { heure_fin: string }, b: { heure_fin: string }) => boolean {
+  const midi = db.pause.length ? Math.min(...db.pause.map((p) => toMin(p.heure_debut))) : null
+  return (a, b) => midi === null || (toMin(a.heure_fin) <= midi) === (toMin(b.heure_fin) <= midi)
 }
 
 /** Campus mère du cours : celui de sa classe, sinon celui de sa filière. La génération y place les cours ; à la main,
@@ -183,21 +189,23 @@ export function checkSeance(db: Db, s: SeanceDraft, seances: Seance[] = db.seanc
     v.push({ code: 'CD-03', message: `${classe.code_classe} a déjà une séance de ${conflitPublic.heure_debut} à ${conflitPublic.heure_fin}.` })
   }
 
-  // Site : une promotion n'a cours que sur un campus par jour. Elle peut aller sur l'autre campus (cours
-  // mutualisé, salle libre), mais toute sa journée s'y passe (contrôle SITE de la base, version 16).
+  // Site : les mêmes étudiants n'ont cours que sur un campus par demi-journée ; ils changent de campus à la pause
+  // de midi. Deux groupes différents peuvent être sur deux campus en même temps (contrôle SITE de la base, v16).
   const sallesParId = salleIndex(db)
+  const midi = memeDemiJournee(db)
   const autreCampus = (ix.parDate.get(s.date_seance) ?? []).find((x) => {
-    if (x.id_edt !== s.id_edt || x.statut === 'annulee' || x.id_seance === s.id_seance) return false
+    if (x.id_edt !== s.id_edt || x.statut === 'annulee' || x.id_seance === s.id_seance || !midi(x, s)) return false
     const sx = sallesParId.get(x.id_salle)
     if (!sx || sx.id_site === salle.id_site) return false
     const publicsX = publicsSeance(db, coursOf(x), x)
-    return publicsS.some((a) => publicsX.some((b) => b.id_classe === a.id_classe))
+    return publicsS.some((a) => publicsX.some((b) => publicsEnConflit(db.groupe, a, b)))
   })
   if (autreCampus) {
-    const commun = publicsSeance(db, coursOf(autreCampus), autreCampus).find((b) => publicsS.some((a) => a.id_classe === b.id_classe))
+    const commun = publicsSeance(db, coursOf(autreCampus), autreCampus).find((b) => publicsS.some((a) => publicsEnConflit(db.groupe, a, b)))
     const code = db.classe.find((c) => c.id_classe === commun?.id_classe)?.code_classe
+    const groupe = commun?.id_groupe != null ? db.groupe.find((g) => g.id_groupe === commun.id_groupe)?.code_groupe : null
     const site = db.site.find((x) => x.id_site === sallesParId.get(autreCampus.id_salle)?.id_site)?.nom_site
-    v.push({ code: 'SITE', message: `${code} a déjà cours sur le ${site} ce jour-là : une promotion n'a cours que sur un campus par jour.` })
+    v.push({ code: 'SITE', message: `${code}${groupe ? ` · ${groupe}` : ''} a déjà cours sur le ${site} cette demi-journée : les mêmes étudiants ne changent de campus qu'à la pause de midi.` })
   }
 
   // CD-04, CD-05, CD-12 : ce qui ne dépend que de la salle et du cours
@@ -458,7 +466,7 @@ export const capaciteConnue = (s: Salle) => s.capacite > 1
 /**
  * Salles où une séance peut avoir lieu à son horaire (détail d'une séance) : libres (CD-01), du type exigé
  * (CD-05), ni indisponibles ni réservées (CD-12), assez grandes (CD-04), sur un campus où ses promotions n'ont
- * pas déjà cours autre part ce jour-là (SITE). Les règles qui ne dépendent pas de la salle (classe, enseignant...)
+ * pas déjà cours autre part cette demi-journée (SITE). Les règles qui ne dépendent pas de la salle (classe, enseignant...)
  * ne vident pas la liste. Comme dans la base, une classe sans effectif renseigné (0) ne fait écarter aucune salle
  * pour sa capacité. Ordre : la salle actuelle, puis le campus mère du cours, puis l'autre campus.
  */
