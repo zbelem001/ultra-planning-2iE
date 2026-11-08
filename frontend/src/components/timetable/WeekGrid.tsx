@@ -2,7 +2,7 @@
 // coloré selon les contraintes dures et un bloc montre où la séance atterrirait. Le créneau visé
 // se déduit de la position du pointeur et de l'endroit où la séance a été saisie (lib/glisser.ts).
 
-import { useLayoutEffect, useRef, useState, type DragEvent, type MouseEvent as SourisReact, type PointerEvent as PointeurReact, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type DragEvent, type MouseEvent as SourisReact, type PointerEvent as PointeurReact, type ReactNode } from 'react'
 import { useSurfaceDepot } from '@/lib/glisser'
 import { cn } from '@/components/ui'
 import type { Db } from '@/types/db'
@@ -52,6 +52,16 @@ export interface GridEdition {
   onSelection?: (s: SelectionGrille | null) => void
   /** Clic droit sur la grille : le menu s'ouvre à ces coordonnées, pour cette plage */
   onMenu?: (x: number, y: number, s: SelectionGrille) => void
+  /** Clic droit sur une séance */
+  onMenuSeance?: (x: number, y: number, s: SeanceVue) => void
+  /** Jour et minute sous le pointeur (null : hors de la grille), pour coller une séance là où il se trouve */
+  onSurvol?: (p: { date: string; minute: number } | null) => void
+  /** Séance copiée : encadrée en pointillé */
+  copiee?: number | null
+  /** Pendant un glisser : lundis des semaines voisines (null au bord du semestre). S'attarder sur la bande de
+   *  gauche ou de droite de la grille passe à la semaine précédente ou suivante, où l'on peut lâcher la séance. */
+  voisines?: { avant: string | null; apres: string | null }
+  onSemaine?: (lundi: string) => void
   /** Créneau visé pendant le glisser */
   cible: Cible | null
   /** État d'un créneau pendant un glisser-déposer */
@@ -63,10 +73,16 @@ export interface GridEdition {
   onDragEnd: () => void
 }
 
-const SELECTION_MAX = 240 // minutes : une séance de cours dure 4 h au plus (une épreuve, 3 h)
+// ms sur une bande avant de changer de semaine, puis entre deux semaines si le pointeur y reste (la bande se
+// remplit pendant ce temps : .remplir-bord)
+const DELAI_BORD = 700
+const DELAI_BORD_SUITE = 1100
+const REM_BANDE = 2.5
+
+const SELECTION_MAX = 300 // minutes : une séance de cours dure 5 h au plus (une épreuve, 3 h)
 
 /** Créneaux consécutifs d'un jour, depuis celui de `ancre` jusqu'à `vise` : sans franchir une pause et sans
- *  dépasser 4 h. Null si `ancre` ne tombe sur aucun créneau. */
+ *  dépasser 5 h. Null si `ancre` ne tombe sur aucun créneau. */
 export function plageSelectionnee(db: Db, date: string, ancre: number, vise: number): { debut: number; fin: number } | null {
   const jour = jourOf(date)
   const cr = db.creneau.filter((c) => c.jour === jour).map((c) => [toMin(c.heure_debut), toMin(c.heure_fin)]).sort((a, b) => a[0] - b[0])
@@ -198,6 +214,49 @@ export function WeekGrid({ db, days, seances, hide, selectedId, onSelect, editio
   const glisse = edition?.glisse ?? null
   const cible = edition?.cible ?? null
 
+  // Bandes de changement de semaine, visibles pendant un glisser
+  const bandes = !!glisse && !!edition?.onSemaine
+  const refAvant = useRef<HTMLDivElement>(null)
+  const refApres = useRef<HTMLDivElement>(null)
+  const [bord, setBord] = useState<{ sens: -1 | 1; tour: number } | null>(null)
+  const minuterie = useRef<{ sens: -1 | 1; id: number } | null>(null)
+  const editionCourante = useRef(edition)
+  useEffect(() => { editionCourante.current = edition })
+  const voisine = (sens: -1 | 1) => (sens === -1 ? editionCourante.current?.voisines?.avant : editionCourante.current?.voisines?.apres) ?? null
+  const arreterBord = () => {
+    if (minuterie.current) clearTimeout(minuterie.current.id)
+    minuterie.current = null
+    setBord(null)
+  }
+  // Bande sous le pointeur : tout ce qui est à gauche des heures, ou à droite du dernier jour
+  const bandeSous = (px: number): -1 | 1 | null => {
+    if (!bandes) return null
+    const a = refAvant.current?.getBoundingClientRect()
+    const b = refApres.current?.getBoundingClientRect()
+    return a && px <= a.right ? -1 : b && px >= b.left ? 1 : null
+  }
+  const viserBord = (sens: -1 | 1 | null) => {
+    if (sens === null || !voisine(sens)) return void (minuterie.current && arreterBord())
+    if (minuterie.current?.sens === sens) return
+    if (minuterie.current) clearTimeout(minuterie.current.id)
+    // tant que le pointeur reste sur la bande, une semaine de plus à chaque délai
+    const lancer = (tour: number) => {
+      setBord({ sens, tour })
+      minuterie.current = {
+        sens,
+        id: window.setTimeout(() => {
+          const lundi = voisine(sens)
+          if (!lundi) return arreterBord()
+          editionCourante.current?.onSemaine?.(lundi)
+          lancer(tour + 1)
+        }, tour === 0 ? DELAI_BORD : DELAI_BORD_SUITE),
+      }
+    }
+    lancer(0)
+  }
+  useEffect(() => { if (!glisse) arreterBord() }, [glisse])
+  useEffect(() => () => { if (minuterie.current) clearTimeout(minuterie.current.id) }, [])
+
   // Créneau visé : colonne la plus proche du pointeur, heure donnée par le haut de la séance
   const cibleAu = (px: number, py: number): Cible | null => {
     if (!glisse) return null
@@ -254,18 +313,54 @@ export function WeekGrid({ db, days, seances, hide, selectedId, onSelect, editio
   }
 
   useSurfaceDepot(refGrille, !!glisse, {
-    surPointeur: (px, py) => edition?.onCible(cibleAu(px, py)),
-    surSortie: () => edition?.onCible(null),
-    surDepot: (px, py) => edition?.onDrop(cibleAu(px, py)),
+    surPointeur: (px, py) => {
+      const sens = bandeSous(px)
+      viserBord(sens)
+      edition?.onCible(sens ? null : cibleAu(px, py))
+    },
+    surSortie: () => { viserBord(null); edition?.onCible(null) },
+    surDepot: (px, py) => {
+      const surBande = bandeSous(px) !== null
+      viserBord(null)
+      if (surBande) return edition?.onDragEnd() // lâchée sur une bande : rien ne bouge
+      edition?.onDrop(cibleAu(px, py))
+    },
   })
+
+  const bande = (sens: -1 | 1) => {
+    const lundi = sens === -1 ? edition?.voisines?.avant : edition?.voisines?.apres
+    const active = bord?.sens === sens
+    return (
+      <div
+        ref={sens === -1 ? refAvant : refApres}
+        data-bande={sens === -1 ? 'precedente' : 'suivante'}
+        className={cn(
+          'relative mx-0.5 grid place-items-center overflow-hidden rounded-2xl ring-1 transition-colors duration-150',
+          !lundi ? 'bg-muted/60 text-ink-2/60 ring-white' : active ? 'bg-navy/10 text-navy ring-navy' : 'bg-white/70 text-ink-2 ring-line',
+        )}
+        style={{ height }}
+      >
+        {active && lundi && (
+          <div key={bord.tour} className="remplir-bord absolute inset-0 bg-navy/15" style={{ animationDuration: `${bord.tour === 0 ? DELAI_BORD : DELAI_BORD_SUITE}ms` }} aria-hidden />
+        )}
+        <span className={cn('relative text-[11px] font-medium whitespace-nowrap [writing-mode:vertical-rl]', sens === -1 && 'rotate-180')}>
+          {lundi ? `${sens === -1 ? '← ' : ''}Semaine du ${fmtJourCourt(lundi)}${sens === 1 ? ' →' : ''}` : 'Fin du semestre'}
+        </span>
+      </div>
+    )
+  }
 
   return (
     <div ref={refGrille} className="overflow-x-auto pt-1 pb-3 scroll-thin">
       <div
         className="grid"
-        style={{ gridTemplateColumns: `3.25rem repeat(${days.length}, minmax(${days.length > 1 ? `${remJour}rem` : '0'}, 1fr))`, minWidth: days.length > 1 ? `${3.25 + days.length * remJour}rem` : undefined }}
+        style={{
+          gridTemplateColumns: `${bandes ? `${REM_BANDE}rem ` : ''}3.25rem repeat(${days.length}, minmax(${days.length > 1 ? `${remJour}rem` : '0'}, 1fr))${bandes ? ` ${REM_BANDE}rem` : ''}`,
+          minWidth: days.length > 1 ? `${3.25 + days.length * remJour + (bandes ? 2 * REM_BANDE : 0)}rem` : undefined,
+        }}
       >
         {/* En-têtes */}
+        {bandes && <div />}
         <div ref={refEnTete} />
         {days.map((d) => {
           const ferie = fermeture(db, d, idClasse)
@@ -280,8 +375,10 @@ export function WeekGrid({ db, days, seances, hide, selectedId, onSelect, editio
             </div>
           )
         })}
+        {bandes && <div />}
 
         {/* Heures */}
+        {bandes && bande(-1)}
         <div className="relative" style={{ height }}>
           {heuresLabels.map((m) => (
             <span key={m} className="absolute right-2 -translate-y-1/2 font-mono text-[11px] text-ink-2 tabular-nums" style={{ top: y(m) }}>
@@ -303,6 +400,10 @@ export function WeekGrid({ db, days, seances, hide, selectedId, onSelect, editio
               data-jour={d}
               onPointerDown={edition?.onSelection ? (e) => commencerSelection(e, d) : undefined}
               onContextMenu={edition?.onMenu ? (e) => menuContextuel(e, d) : undefined}
+              onPointerMove={edition?.onSurvol
+                ? (e) => edition.onSurvol!({ date: d, minute: start + ((e.clientY - e.currentTarget.getBoundingClientRect().top) / pxHeure) * 60 })
+                : undefined}
+              onPointerLeave={edition?.onSurvol ? () => edition.onSurvol!(null) : undefined}
               className={cn('relative mx-0.5 rounded-2xl bg-white/55 ring-1 ring-white', edition?.onSelection && 'cursor-cell select-none')}
               style={{ height }}
             >
@@ -351,9 +452,16 @@ export function WeekGrid({ db, days, seances, hide, selectedId, onSelect, editio
                 return (
                   <div
                     key={s.id_seance}
-                    data-seance
-                    className={cn('absolute p-0.5', glisse && (glisse.id_seance === s.id_seance ? 'opacity-30' : 'opacity-75'))}
+                    data-seance={s.id_seance}
+                    className={cn(
+                      'absolute p-0.5',
+                      glisse && (glisse.id_seance === s.id_seance ? 'opacity-30' : 'opacity-75'),
+                      edition?.copiee === s.id_seance && 'rounded-[1.1rem] outline-2 -outline-offset-1 outline-navy outline-dashed',
+                    )}
                     style={{ top, height: h, left: `${(p.lane / p.of) * 100}%`, width: `${100 / p.of}%` }}
+                    onContextMenu={edition?.onMenuSeance
+                      ? (e) => { e.preventDefault(); e.stopPropagation(); edition.onMenuSeance!(e.clientX, e.clientY, s) }
+                      : undefined}
                   >
                     <EventCard
                       s={s}
@@ -412,6 +520,7 @@ export function WeekGrid({ db, days, seances, hide, selectedId, onSelect, editio
             </div>
           )
         })}
+        {bandes && bande(1)}
       </div>
     </div>
   )

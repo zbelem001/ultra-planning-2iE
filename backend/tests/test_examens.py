@@ -54,6 +54,19 @@ def test_duree_et_enseignant(conn):
     assert poser(conn, k, LUNDI, "07:00", "09:00") and poser(conn, k, MARDI, "07:00", "10:00")
 
 
+def test_une_seance_de_cours_dure_jusqu_a_5_h(conn):
+    """Une matinée entière (7h-12h) se pose à la main ; au-delà de 5 h, la contrainte ck_seance_duree refuse"""
+    k = cours_de(conn, "L2INFO")
+    conn.execute("UPDATE programme p SET volume_cm = volume_cm + 10, volume_td = volume_td + 10, volume_tp = volume_tp + 10 "
+                 "FROM cours c WHERE c.id_cours = %s AND p.id_classe = c.id_classe AND p.id_matiere = c.id_matiere", (k,))
+    conn.execute("UPDATE cours SET volume_horaire = volume_horaire + 10 WHERE id_cours = %s", (k,))
+    assert poser(conn, k, LUNDI, "07:00", "12:00", nature="cours")
+    with conn.transaction():
+        # sans les déclencheurs (rôle de connexion, propriétaire de la base de test) : la seule contrainte de durée
+        conn.execute("SET LOCAL ROLE NONE; SET LOCAL session_replication_role = replica")
+        refuse(conn, "ck_seance_duree", k, MARDI, "07:00", "13:00", nature="cours")
+
+
 def test_une_epreuve_ne_compte_pas_dans_les_volumes(conn):
     k = cours_de(conn, "L2INFO")
     # Volume du cours déjà atteint : l'épreuve passe quand même

@@ -58,7 +58,7 @@ export function checkSeance(db: Db, s: SeanceDraft, seances: Seance[] = db.seanc
   if (epreuve) {
     if (duree < 2 || duree > 3) v.push({ code: 'DUREE', message: `Une épreuve dure de 2 h à 3 h (ici ${duree} h).` })
     if (s.id_enseignant !== null) v.push({ code: 'DUREE', message: "Une épreuve n'a pas d'enseignant." })
-  } else if (duree < 2 || duree > 4) v.push({ code: 'DUREE', message: `Une séance dure entre 2 h et 4 h (ici ${duree} h).` })
+  } else if (duree < 2 || duree > 5) v.push({ code: 'DUREE', message: `Une séance dure entre 2 h et 5 h (ici ${duree} h).` })
 
   // CD-10 : alignement sur la grille
   if (s.heure_debut !== creneau.heure_debut) {

@@ -1,8 +1,8 @@
 // Planification manuelle (BF-11 à BF-14) : glisser-déposer sur la grille,
 // contrôle des contraintes dures en temps réel et salles compatibles proposées.
 
-import { Ban, CalendarPlus, CalendarRange, CheckCircle2, CopyPlus, GripVertical, History, Lock, LockOpen, Trash2, Undo2, UserMinus, Users, XCircle } from 'lucide-react'
-import { useEffect, useMemo, useState, type DragEvent } from 'react'
+import { Ban, CalendarPlus, CalendarRange, CheckCircle2, ClipboardPaste, Copy, CopyPlus, GripVertical, History, Lock, LockOpen, SquareArrowOutUpRight, Trash2, Undo2, UserMinus, Users, X, XCircle } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState, type DragEvent } from 'react'
 import { toast } from 'sonner'
 import { BoutonPublier } from '@/components/BoutonPublier'
 import { Badge, Button, Card, cn, Combobox, Dialog, EmptyState, PageTitle, PillTabs, Select, type ComboOption } from '@/components/ui'
@@ -19,9 +19,9 @@ import { aPlacer } from '@/lib/aPlacer'
 import { useFiltre } from '@/lib/filtres'
 import { useGrandEcran } from '@/lib/hauteur'
 import { estEpreuve } from '@/lib/publics'
-import { checkSeance, creneauAt, decoupage, evaluerCreneau, examenAvecRattrapage, sallesCompatibles, sallesDuCours, sallesPourEpreuves, type SeanceDraft } from '@/lib/rules'
+import { checkSeance, creneauAt, decoupage, evaluerCreneau, examenAvecRattrapage, REGLES_SALLE, sallesCompatibles, sallesDuCours, sallesPourEpreuves, type SeanceDraft } from '@/lib/rules'
 import { edtTravail, nextId, useStore } from '@/lib/store'
-import { addDays, fmtDateHeure, fmtHeure, fmtJourCourt, fromMin, jourOf, mondayOf, todayIso, toMin, weeksBetween } from '@/lib/time'
+import { addDays, fmtDateHeure, fmtHeure, fmtJourCourt, fromMin, jourOf, mondayOf, parseDate, todayIso, toMin, weeksBetween } from '@/lib/time'
 import type { Seance } from '@/types/db'
 
 // decalage : minutes entre le haut de la séance et le pointeur, là où elle a été saisie
@@ -66,6 +66,11 @@ export default function Planification() {
   const [menu, setMenu] = useState<{ x: number; y: number; selection: SelectionGrille } | null>(null)
   const [epreuve, setEpreuve] = useState<DepartEpreuve | null>(null)
   const [seanceAPoser, setSeanceAPoser] = useState<DepartSeance | null>(null)
+  // Copier-coller : la séance copiée reste en mémoire d'une page à l'autre ; menu du clic droit sur une séance ;
+  // jour et minute sous le pointeur, là où Ctrl+V colle
+  const [idCopie, setIdCopie] = useFiltre<number | null>('planification.copie', null)
+  const [menuSeance, setMenuSeance] = useState<{ x: number; y: number; s: SeanceVue } | null>(null)
+  const survol = useRef<{ date: string; minute: number } | null>(null)
 
   const jours = joursGrille(db, semaine)
   const numeroChoisi = versionChoisie?.version.numero ?? null
@@ -77,9 +82,11 @@ export default function Planification() {
       .catch((e: Error) => { if (actif) toast.error('Version non chargée', { description: e.message }) })
     return () => { actif = false }
   }, [lecture, numeroChoisi, edt.id_edt])
+  const raccourci = useRef<(e: KeyboardEvent) => void>(() => {})
   useEffect(() => {
     const surTouche = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') { setMenu(null); setSelection(null) }
+      if (e.key === 'Escape') { setMenu(null); setMenuSeance(null); setSelection(null) }
+      raccourci.current(e)
     }
     document.addEventListener('keydown', surTouche)
     return () => document.removeEventListener('keydown', surTouche)
@@ -195,7 +202,22 @@ export default function Planification() {
     // différé : modifier la source pendant dragstart annule le glisser dans Chrome
     setTimeout(() => setDrag(d), 0)
   }
-  const endDrag = () => { setDrag(null); setCible(null) }
+  const endDrag = () => { setDrag(null); setCible(null); setHorsSource(false) }
+
+  // Séance glissée vers une autre semaine : sa carte n'est plus affichée et son « dragend » ne remonte plus.
+  // Si elle est lâchée hors de la grille, le premier mouvement de la souris après le glisser le remplace
+  // (pendant un glisser, le navigateur n'en envoie aucun).
+  const [horsSource, setHorsSource] = useState(false)
+  useEffect(() => {
+    if (!drag || !horsSource) return
+    const fin = () => { setDrag(null); setCible(null); setHorsSource(false) }
+    document.addEventListener('pointermove', fin)
+    document.addEventListener('pointerdown', fin)
+    return () => {
+      document.removeEventListener('pointermove', fin)
+      document.removeEventListener('pointerdown', fin)
+    }
+  }, [drag, horsSource])
 
   const onDrop = (c: Cible | null) => {
     if (!drag) return
@@ -266,6 +288,98 @@ export default function Planification() {
     mutate((x) => Object.assign(x.seance.find((k) => k.id_seance === sel.id_seance)!, patch))
     toast.success(msg)
   }
+
+  // ---------- Copier-coller d'une séance ----------
+
+  const copie = idCopie !== null ? db.seance.find((s) => s.id_seance === idCopie && s.id_edt === edt.id_edt) ?? null : null
+  const libelleSeance = (s: Seance) => db.matiere.find((m) => m.id_matiere === db.cours.find((c) => c.id_cours === s.id_cours)?.id_matiere)?.libelle ?? 'Séance'
+  const dureeSeance = (s: Seance) => (toMin(s.heure_fin) - toMin(s.heure_debut)) / 60
+
+  const copier = (s: Seance) => {
+    setIdCopie(s.id_seance)
+    setMenuSeance(null)
+    toast.success('Séance copiée', { description: `${libelleSeance(s)} · ${dureeSeance(s)} h. Ctrl+V la colle sous le pointeur ; clic droit sur une case : « Coller ».` })
+  }
+
+  /** Nouvelle séance comme `source`, le `date` à `heure` : même salle si elle est libre, sinon la plus ajustée ;
+   *  si seul son enseignant est pris ou absent, la séance est posée sans enseignant (à désigner). */
+  const poserCopie = (source: Seance, date: string, heure: string) => {
+    setMenu(null)
+    setMenuSeance(null)
+    setSelection(null) // réussi ou refusé, le prochain Ctrl+V vise le pointeur
+    const cr = creneauAt(db, date, heure)
+    const cours = db.cours.find((c) => c.id_cours === source.id_cours)
+    if (!cr || !cours) return void toast.error('Collage refusé', { description: "Ce jour n'a pas de créneau qui commence à cette heure." })
+    const draft: SeanceDraft = {
+      date_seance: date,
+      heure_debut: heure,
+      heure_fin: fromMin(toMin(heure) + dureeSeance(source) * 60),
+      statut: 'planifiee',
+      est_verrouillee: false,
+      id_cours: source.id_cours,
+      id_enseignant: source.id_enseignant,
+      id_salle: source.id_salle,
+      id_creneau: cr.id_creneau,
+      id_edt: edt.id_edt,
+      nature: source.nature,
+    }
+    const seances = db.seance.filter((s) => s.id_edt === edt.id_edt)
+    const salles = estEpreuve(source) ? sallesPourEpreuves(db) : sallesDuCours(db, cours)
+    let r = evaluerCreneau(db, draft, seances, salles, true)
+    let sansEnseignant = false
+    if (!r.ok && draft.id_enseignant !== null) {
+      const bloquantes = checkSeance(db, draft, seances).filter((v) => !REGLES_SALLE.has(v.code))
+      if (bloquantes.length && bloquantes.every((v) => v.code === 'CD-02' || v.code === 'CD-06')) {
+        const r2 = evaluerCreneau(db, { ...draft, id_enseignant: null }, seances, salles, true)
+        if (r2.ok) { r = r2; sansEnseignant = true }
+      }
+    }
+    if (!r.ok) return void toast.error('Collage refusé', { description: r.raison })
+    const id_salle = r.id_salle
+    const salle = db.salle.find((x) => x.id_salle === id_salle)
+    mutate((x) => {
+      x.seance.push({ ...(draft as Seance), id_seance: nextId(x.seance, 'id_seance'), id_salle, id_enseignant: sansEnseignant ? null : draft.id_enseignant })
+    })
+    toast.success(estEpreuve(source) ? 'Épreuve dupliquée' : 'Séance dupliquée', {
+      description: `${libelleSeance(source)} · ${fmtJourCourt(date)}, ${fmtHeure(heure)}–${fmtHeure(draft.heure_fin)} · ${salle?.nom_salle ?? ''}`
+        + (sansEnseignant ? " · enseignant à désigner : le sien n'est pas libre" : ''),
+    })
+  }
+
+  /** Où Ctrl+V colle : début des heures sélectionnées, sinon le créneau sous le pointeur, sinon le même jour de
+   *  la semaine et la même heure que la séance copiée, dans la semaine affichée */
+  const collerAuClavier = (source: Seance) => {
+    if (selection) return poserCopie(source, selection.date, fromMin(selection.debut))
+    const p = survol.current
+    if (p) {
+      const cr = db.creneau.find((c) => c.jour === jourOf(p.date) && toMin(c.heure_debut) <= p.minute && p.minute < toMin(c.heure_fin))
+      if (!cr) return void toast.error('Collage refusé', { description: "Pas de créneau à cet endroit : visez une heure de cours de la grille." })
+      return poserCopie(source, p.date, cr.heure_debut)
+    }
+    const jourSemaine = Math.round((parseDate(source.date_seance).getTime() - parseDate(mondayOf(source.date_seance)).getTime()) / 86_400_000)
+    poserCopie(source, addDays(semaine, jourSemaine), source.heure_debut)
+  }
+
+  // à chaque rendu : le raccourci voit l'état du moment
+  useEffect(() => { raccourci.current = (e: KeyboardEvent) => {
+    if (lecture || !(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return
+    const cible = e.target as HTMLElement | null
+    if (cible?.closest('input, textarea, select, [contenteditable="true"]')) return
+    const touche = e.key.toLowerCase()
+    if (touche === 'c') {
+      if (window.getSelection()?.toString()) return // du texte choisi : la copie habituelle
+      const carte = (document.activeElement?.closest('[data-seance]') ?? document.querySelector('[data-seance]:hover')) as HTMLElement | null
+      const idCarte = sel?.id_seance ?? (carte ? Number(carte.dataset.seance) : null)
+      const s = idCarte !== null ? db.seance.find((x) => x.id_seance === idCarte) : undefined
+      if (!s) return
+      e.preventDefault()
+      copier(s)
+    } else if (touche === 'v') {
+      if (!copie || id === null || sel || seanceAPoser || epreuve || confirmDup) return
+      e.preventDefault()
+      collerAuClavier(copie)
+    }
+  } })
 
   // ---------- Enseignant de la séance (aucune habilitation : tout enseignant libre convient) ----------
 
@@ -381,7 +495,7 @@ export default function Planification() {
           {/* Sur grand écran, le panneau ne dépasse pas la hauteur de la ligne : sa liste défile */}
           {!lecture && <div className="relative min-w-0"><div className="xl:absolute xl:inset-0"><Card className="flex max-h-96 flex-col p-4 xl:max-h-full xl:p-3">
             <p className="section-label px-1">Cours à placer</p>
-            <p className="mt-1 px-1 text-xs text-ink-2">Glissez une séance type sur la grille. Les créneaux verts respectent toutes les contraintes dures.</p>
+            <p className="mt-1 px-1 text-xs text-ink-2">Glissez une durée sur la grille (en foncé, celle des séances types du cours). Les créneaux verts respectent toutes les contraintes dures.</p>
             {res === 'salle' ? (
               <p className="mt-4 px-1 text-sm text-ink-2">Choisissez une classe ou un enseignant pour placer des cours. Ici, vous pouvez déplacer les séances de la salle.</p>
             ) : (
@@ -393,7 +507,7 @@ export default function Planification() {
                   const e = db.enseignant.find((x) => x.id_enseignant === c.id_enseignant)
                   const placees = toutes.filter((s) => s.id_cours === c.id_cours && s.statut !== 'annulee' && !estEpreuve(s) && s.date_seance >= semaine && s.date_seance <= addDays(semaine, 6))
                   const plan = heuresPlanifiees(db, edt.id_edt, c.id_cours)
-                  const { etat, durees, reste } = aPlacer({
+                  const { etat, options: durees, reste } = aPlacer({
                     volume: c.volume_horaire,
                     planifiees: plan,
                     maxSemaine: c.heures_semaine_max,
@@ -414,17 +528,29 @@ export default function Planification() {
                         {etat === 'semaine_complete' && <Badge tone="neutral" dot>Semaine complète</Badge>}
                         {etat === 'reste_trop_court' && <Badge tone="warning" dot>{reste} h restante : 2 h minimum</Badge>}
                         {etat === 'rythme_trop_court' && <Badge tone="warning" dot>{reste} h restantes, {c.heures_semaine_max} h par semaine</Badge>}
-                        {durees.map((d) => (
+                        {etat === 'a_placer' && durees.map((o) => o.ok ? (
                           <div
-                            key={d}
+                            key={o.duree}
                             draggable
-                            onDragStart={(ev) => startDrag({ kind: 'modele', id_cours: c.id_cours, duree: d, decalage: DECALAGE_MODELE }, ev)}
+                            onDragStart={(ev) => startDrag({ kind: 'modele', id_cours: c.id_cours, duree: o.duree, decalage: DECALAGE_MODELE }, ev)}
                             onDragEnd={endDrag}
-                            className="press flex cursor-grab items-center gap-1 rounded-full bg-navy px-2.5 py-1 text-xs font-medium text-white select-none active:cursor-grabbing"
-                            title="Glisser sur la grille"
+                            className={cn(
+                              'press flex cursor-grab items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium select-none active:cursor-grabbing',
+                              o.habituelle ? 'bg-navy text-white' : 'bg-white text-navy ring-1 ring-navy/40 hover:bg-subtle',
+                            )}
+                            title={`Glisser sur la grille : une séance de ${o.duree} h${o.habituelle ? ' (durée des séances types du cours)' : ''}`}
                           >
-                            <GripVertical className="size-3" />{d} h
+                            <GripVertical className="size-3" />{o.duree} h
                           </div>
+                        ) : (
+                          <span
+                            key={o.duree}
+                            aria-disabled
+                            className="flex cursor-not-allowed items-center rounded-full bg-muted px-2.5 py-1 text-xs text-ink-2/60 line-through decoration-ink-2/40 select-none"
+                            title={o.raison}
+                          >
+                            {o.duree} h
+                          </span>
                         ))}
                         <span className="ml-auto font-mono text-[11px] text-ink-2 tabular-nums">{plan}/{c.volume_horaire} h</span>
                       </div>
@@ -457,8 +583,19 @@ export default function Planification() {
               </div>
             ) : (
             <div className={cn('mb-3 flex min-h-10 items-center gap-2 rounded-full px-4 py-2 text-sm transition-colors xl:mb-1 xl:min-h-8 xl:shrink-0 xl:py-1 xl:text-xs', !drag ? 'bg-muted/70 text-ink-2' : hoverInfo?.ok ? 'bg-[#DCFCE7] text-[#166534]' : hoverInfo ? 'bg-[#FEE2E2] text-[#991B1B]' : 'bg-highlight text-ink')}>
-              {!drag && <>Cliquez une séance pour la modifier, ou glissez-la. Pour ajouter une séance ou un examen : sélectionnez 2 à 4 h sur une case vide, puis clic droit.</>}
-              {drag && !hoverInfo && <>Amenez la séance sur la grille : le bloc en pointillé montre où elle atterrit (vert = possible, rouge = refusé).</>}
+              {!drag && !copie && <>Cliquez une séance pour la modifier, glissez-la, ou clic droit pour la copier. Pour ajouter une séance ou un examen : sélectionnez 2 à 5 h sur une case vide, puis clic droit.</>}
+              {!drag && copie && (
+                <>
+                  <Copy className="size-4 shrink-0" />
+                  <span className="min-w-0 flex-1 truncate">
+                    <span className="font-medium text-ink">{libelleSeance(copie)}</span> copiée ({dureeSeance(copie)} h) : Ctrl+V la colle sous le pointeur, ou clic droit sur une case puis « Coller ».
+                  </span>
+                  <button type="button" className="press -mr-2 grid size-6 shrink-0 place-items-center rounded-full hover:bg-white" aria-label="Oublier la séance copiée" title="Oublier la séance copiée" onClick={() => setIdCopie(null)}>
+                    <X className="size-3.5" />
+                  </button>
+                </>
+              )}
+              {drag && !hoverInfo && <>Amenez la séance sur la grille : le bloc en pointillé montre où elle atterrit (vert = possible, rouge = refusé). Gardez-la sur la bande de gauche ou de droite pour changer de semaine.</>}
               {drag && cible && hoverInfo?.ok && (
                 <><CheckCircle2 className="size-4 shrink-0" />Possible · {fmtJourCourt(cible.date)}, {fmtHeure(cible.heure)}–{fmtHeure(fromMin(toMin(cible.heure) + dureeGlisse * 60))} · {hoverInfo.detail}</>
               )}
@@ -481,7 +618,12 @@ export default function Planification() {
                   : {
                       selection,
                       onSelection: setSelection,
-                      onMenu: (x, y, s) => setMenu({ x, y, selection: s }),
+                      onMenu: (x, y, s) => { setMenuSeance(null); setMenu({ x, y, selection: s }) },
+                      onMenuSeance: (x, y, s) => { setMenu(null); setMenuSeance({ x, y, s }) },
+                      onSurvol: (p) => { survol.current = p },
+                      copiee: copie?.id_seance ?? null,
+                      voisines: { avant: weeks[weeks.indexOf(semaine) - 1] ?? null, apres: weeks[weeks.indexOf(semaine) + 1] ?? null },
+                      onSemaine: (lundi) => { setSemaine(lundi); if (drag?.kind === 'seance') setHorsSource(true) },
                       glisse: drag && {
                         duree: dureeGlisse,
                         decalage: drag.decalage,
@@ -600,15 +742,48 @@ export default function Planification() {
             role="menu"
             aria-label="Programmer sur ces heures"
             className="fixed z-50 w-64 rounded-2xl bg-white p-1.5 text-sm shadow-xl ring-1 ring-line"
-            style={{ left: Math.min(menu.x, window.innerWidth - 264), top: Math.min(menu.y, window.innerHeight - 200) }}
+            style={{ left: Math.min(menu.x, window.innerWidth - 264), top: Math.min(menu.y, window.innerHeight - (copie ? 240 : 200)) }}
           >
             <p className="px-3 py-1.5 text-xs text-ink-2">
               {fmtJourCourt(menu.selection.date)}, {fmtHeure(fromMin(menu.selection.debut))}–{fmtHeure(fromMin(menu.selection.fin))}
             </p>
-            <button type="button" role="menuitem" className="press block w-full rounded-xl px-3 py-2 text-left font-medium hover:bg-muted" onClick={() => ouvrirSeance(menu.selection)}>Programmer une séance de cours</button>
+            {copie && (
+              <button type="button" role="menuitem" className="press flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left font-medium hover:bg-muted" onClick={() => poserCopie(copie, menu.selection.date, fromMin(menu.selection.debut))}>
+                <ClipboardPaste className="size-4 shrink-0 text-ink-2" />
+                <span className="min-w-0 flex-1 truncate">Coller {libelleSeance(copie)} ({dureeSeance(copie)} h)</span>
+                <kbd className="font-mono text-[10px] text-ink-2">Ctrl+V</kbd>
+              </button>
+            )}
+            <button type="button" role="menuitem" className={cn('press block w-full rounded-xl px-3 py-2 text-left hover:bg-muted', !copie && 'font-medium')} onClick={() => ouvrirSeance(menu.selection)}>Programmer une séance de cours</button>
             <button type="button" role="menuitem" className="press block w-full rounded-xl px-3 py-2 text-left hover:bg-muted" onClick={() => ouvrirEpreuve('examen', menu.selection)}>Programmer un examen</button>
             <button type="button" role="menuitem" className="press block w-full rounded-xl px-3 py-2 text-left hover:bg-muted" onClick={() => ouvrirEpreuve('rattrapage', menu.selection)}>Programmer un rattrapage</button>
             <button type="button" role="menuitem" className="press block w-full rounded-xl px-3 py-2 text-left text-ink-2 hover:bg-muted" onClick={() => { setMenu(null); setSelection(null) }}>Annuler la sélection</button>
+          </div>
+        </>
+      )}
+
+      {/* Menu du clic droit sur une séance */}
+      {menuSeance && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setMenuSeance(null)} onContextMenu={(e) => { e.preventDefault(); setMenuSeance(null) }} aria-hidden />
+          <div
+            role="menu"
+            aria-label="Séance"
+            className="fixed z-50 w-64 rounded-2xl bg-white p-1.5 text-sm shadow-xl ring-1 ring-line"
+            style={{ left: Math.min(menuSeance.x, window.innerWidth - 264), top: Math.min(menuSeance.y, window.innerHeight - 190) }}
+          >
+            <p className="truncate px-3 py-1.5 text-xs text-ink-2">
+              {menuSeance.s.matiere.libelle} · {fmtJourCourt(menuSeance.s.date_seance)}, {fmtHeure(menuSeance.s.heure_debut)}–{fmtHeure(menuSeance.s.heure_fin)}
+            </p>
+            <button type="button" role="menuitem" className="press flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left font-medium hover:bg-muted" onClick={() => copier(menuSeance.s)}>
+              <Copy className="size-4 shrink-0 text-ink-2" /><span className="flex-1">Copier</span><kbd className="font-mono text-[10px] text-ink-2">Ctrl+C</kbd>
+            </button>
+            <button type="button" role="menuitem" className="press flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left hover:bg-muted" onClick={() => poserCopie(menuSeance.s, addDays(menuSeance.s.date_seance, 7), menuSeance.s.heure_debut)}>
+              <CopyPlus className="size-4 shrink-0 text-ink-2" />Dupliquer la semaine suivante
+            </button>
+            <button type="button" role="menuitem" className="press flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left hover:bg-muted" onClick={() => { setSelected(menuSeance.s.id_seance); setMenuSeance(null) }}>
+              <SquareArrowOutUpRight className="size-4 shrink-0 text-ink-2" />Ouvrir la séance
+            </button>
           </div>
         </>
       )}

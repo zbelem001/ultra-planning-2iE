@@ -2,7 +2,7 @@
 --  Système de planification des cours et de génération automatique
 --  des emplois du temps
 --  Script de création de la base de données — PostgreSQL / Supabase
---  VERSION 13
+--  VERSION 14
 --
 --  Utilisation : Supabase > SQL Editor > New query > coller > Run
 --  Source      : fichier.md (section 7 : modèle de données / MLD)
@@ -131,6 +131,14 @@
 --      grande (jamais une épreuve et un cours). Dans un module, le rattrapage
 --      vient toujours après l'examen.
 --      Base existante en version 12 : migrations/013_examens.sql.
+--
+--  Changements de la version 14
+--  32. Une séance de cours peut durer 5 h (une matinée entière) : contrainte
+--      ck_seance_duree, de 2 h à 5 h. Ces séances se posent à la main ; la
+--      génération reste en séances de 2 à 4 h, comme les durées préférées
+--      d'un cours (COURS.duree_seance, COURS_SEANCE_MODELE). Une épreuve dure
+--      toujours de 2 h à 3 h.
+--      Base existante en version 13 : migrations/014_seance_5h.sql.
 --
 --  Hypothèses :
 --   * volume_horaire (COURS) et durées sont exprimés en HEURES.
@@ -292,7 +300,7 @@ CREATE TABLE sejour_enseignant (                                 -- SEJOURNER
 );
 
 -- Grille hebdomadaire de BASE (créneaux de 1 h par défaut, BF-05).
--- Une séance (2 h à 4 h) couvre plusieurs créneaux consécutifs.
+-- Une séance (2 h à 5 h) couvre plusieurs créneaux consécutifs.
 CREATE TABLE creneau (
     id_creneau   BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     jour         TEXT NOT NULL
@@ -662,9 +670,10 @@ CREATE TABLE seance (
     nature           TEXT NOT NULL DEFAULT 'cours'
                      CHECK (nature IN ('cours','examen','rattrapage')),
 
-    -- CD-10 : une séance dure de 2 h à 4 h
+    -- CD-10 : une séance dure de 2 h à 5 h (5 h : posée à la main ; la génération va jusqu'à 4 h)
     CHECK (heure_fin > heure_debut),
-    CHECK (heure_fin - heure_debut BETWEEN INTERVAL '2 hours' AND INTERVAL '4 hours'),
+    CONSTRAINT ck_seance_duree
+        CHECK (heure_fin - heure_debut BETWEEN INTERVAL '2 hours' AND INTERVAL '5 hours'),
     -- Une épreuve dure de 2 h à 3 h et n'a pas d'enseignant
     CONSTRAINT ck_seance_epreuve_duree
         CHECK (nature = 'cours' OR heure_fin - heure_debut <= INTERVAL '3 hours'),

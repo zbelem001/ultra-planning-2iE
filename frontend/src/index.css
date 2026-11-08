@@ -96,6 +96,10 @@ h1, h2, h3 { text-wrap: balance; line-height: 1.1; }
 @keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 .rise { animation: rise 220ms var(--ease) both; }
 
+/* Bord de la grille pendant un glisser : se remplit pendant l'attente avant le changement de semaine */
+@keyframes remplir-bord { from { transform: scaleY(0); } to { transform: scaleY(1); } }
+.remplir-bord { transform-origin: bottom; animation: remplir-bord 700ms linear both; }
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }

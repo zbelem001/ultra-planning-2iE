@@ -13,7 +13,7 @@ import { addDays, fmtHeure, fmtJourCourt, jourOf, mondayOf, toMin } from '@/lib/
 import type { Cours, EmploiDuTemps, Seance } from '@/types/db'
 import { finsPossibles } from './WeekGrid'
 
-const DUREES_SEANCE = [120, 180, 240] // minutes : une séance dure de 2 à 4 h
+const DUREES_SEANCE = [120, 180, 240, 300] // minutes : une séance dure de 2 à 5 h
 
 export interface DepartSeance {
   date: string
@@ -41,7 +41,7 @@ export function DialogSeance({ edt, depart, onFermer, onCreee }: {
   const [debutChoisi, setDebut] = useState(depart.heure_debut)
   const [finChoisie, setFin] = useState(depart.heure_fin)
 
-  // Heures possibles ce jour-là : 2 à 4 h de créneaux consécutifs ; une fin trop tardive est ramenée
+  // Heures possibles ce jour-là : 2 à 5 h de créneaux consécutifs ; une fin trop tardive est ramenée
   const jour = jourOf(date)
   const finsDe = (h: string) => finsPossibles(db, date, h, DUREES_SEANCE)
   const debuts = db.creneau.filter((c) => c.jour === jour).map((c) => c.heure_debut).sort().filter((h) => finsDe(h).length > 0)
