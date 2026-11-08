@@ -1,0 +1,9 @@
+﻿matricule;nom;prenom;email;grade;statut;nb_heures_max_semaine
+TST-IA701;KABORE;Aminata;aminata.kabore@example.org;Maître de conférences;permanent;16
+TST-IA702;ZONGO;Issa;issa.zongo@example.org;Maître-assistant;permanent;16
+TST-IA703;TRAORE;Mariam;mariam.traore@example.org;Maître-assistante;permanent;16
+TST-IA704;OUATTARA;Boukary;boukary.ouattara@example.org;Maître de conférences;permanent;16
+TST-IA705;SOME;Clarisse;clarisse.some@example.org;Maître-assistante;permanent;16
+TST-IA706;TAPSOBA;Rasmane;rasmane.tapsoba@example.org;Assistant;permanent;16
+TST-IA707;ILBOUDO;Pauline;pauline.ilboudo@example.org;Vacataire;vacataire_local;8
+TST-IA708;YAMEOGO;Jean;jean.yameogo@example.org;Vacataire;vacataire_local;8

@@ -9,6 +9,7 @@ import { bornesGrille } from '@/components/timetable/WeekGrid'
 import { Badge, Button, Card, cn, Combobox, Input, PageTitle } from '@/components/ui'
 import { enrichir, nomEnseignant } from '@/lib/queries'
 import { horsSejour } from '@/lib/rules'
+import { useFiltre } from '@/lib/filtres'
 import { edtTravail, nextId, useStore } from '@/lib/store'
 import { fmtHeure, fmtJourCourt, fmtJourMois, fromMin, jourOf, JOURS, toMin } from '@/lib/time'
 import type { NiveauDispo } from '@/types/db'
@@ -21,7 +22,9 @@ const NIVEAUX: Record<NiveauDispo, { label: string; icon: ReactNode; cell: strin
 
 export default function Disponibilites() {
   const { db, mutate } = useStore()
-  const [id, setId] = useState<number | null>(db.enseignant[0]?.id_enseignant ?? null)
+  // Rien de choisi par défaut ; l'enseignant choisi reste en place d'une page à l'autre
+  const [idChoisi, setId] = useFiltre<number | null>('disponibilites.enseignant', null)
+  const id = idChoisi !== null && db.enseignant.some((e) => e.id_enseignant === idChoisi) ? idChoisi : null
   const [pinceau, setPinceau] = useState<NiveauDispo>('indisponible')
   const [motif, setMotif] = useState('')
   const [peinture, setPeinture] = useState(false)

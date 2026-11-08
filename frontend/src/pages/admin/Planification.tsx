@@ -7,6 +7,7 @@ import { toast } from 'sonner'
 import { BoutonPublier } from '@/components/BoutonPublier'
 import { Badge, Button, Card, cn, Combobox, Dialog, EmptyState, PageTitle, PillTabs, Select, type ComboOption } from '@/components/ui'
 import { DialogEpreuve, type DepartEpreuve } from '@/components/timetable/DialogEpreuve'
+import { DialogSeance, type DepartSeance } from '@/components/timetable/DialogSeance'
 import { HistoriqueVersions, RestaurerVersion } from '@/components/timetable/HistoriqueVersions'
 import { SeanceDetail } from '@/components/timetable/SeanceDetail'
 import { joursGrille, WeekGrid, type Cible, type SelectionGrille, type SlotState } from '@/components/timetable/WeekGrid'
@@ -15,6 +16,7 @@ import { seancesVersion, type VersionEdt } from '@/lib/api'
 import { expandWeek } from '@/lib/generator'
 import { couleurMatiere, enrichir, filtrer, lieuSalle, heuresPlanifiees, nomEnseignant, publicCours, type Ressource, type SeanceVue } from '@/lib/queries'
 import { aPlacer } from '@/lib/aPlacer'
+import { useFiltre } from '@/lib/filtres'
 import { useGrandEcran } from '@/lib/hauteur'
 import { estEpreuve } from '@/lib/publics'
 import { checkSeance, creneauAt, decoupage, evaluerCreneau, examenAvecRattrapage, sallesCompatibles, sallesDuCours, sallesPourEpreuves, type SeanceDraft } from '@/lib/rules'
@@ -42,18 +44,28 @@ export default function Planification() {
   const semestre = db.semestre.find((s) => s.id_semestre === edt.id_semestre)!
   const weeks = useMemo(() => weeksBetween(semestre.date_debut, semestre.date_fin), [semestre])
 
-  const [res, setRes] = useState<Exclude<Ressource, 'matiere'>>('classe')
-  const [id, setId] = useState<number | null>(2)
-  const [idGroupe, setIdGroupe] = useState<number | null>(null)
-  const [semaine, setSemaine] = useState(() => (weeks.includes(mondayOf(todayIso())) ? mondayOf(todayIso()) : weeks[0]))
+  // Filtre : rien de choisi par défaut ; il reste en place d'une page à l'autre jusqu'à ce qu'on le change
+  const [res, setRes] = useFiltre<Exclude<Ressource, 'matiere'>>('planification.ressource', 'classe')
+  const [idChoisi, setId] = useFiltre<number | null>('planification.id', null)
+  const [idGroupeChoisi, setIdGroupe] = useFiltre<number | null>('planification.groupe', null)
+  const [semaineChoisie, setSemaine] = useFiltre<string | null>('planification.semaine', null)
+  // Une ressource, un groupe ou une semaine qui n'existe plus (supprimé, autre semestre) : plus de filtre
+  const existe = res === 'classe' ? db.classe.some((c) => c.id_classe === idChoisi)
+    : res === 'enseignant' ? idChoisi === 0 || db.enseignant.some((e) => e.id_enseignant === idChoisi)
+      : db.salle.some((s) => s.id_salle === idChoisi)
+  const id = idChoisi !== null && existe ? idChoisi : null
+  const idGroupe = idGroupeChoisi !== null && res === 'classe' && db.groupe.some((g) => g.id_groupe === idGroupeChoisi && g.id_classe === id) ? idGroupeChoisi : null
+  const semaine = semaineChoisie && weeks.includes(semaineChoisie) ? semaineChoisie
+    : weeks.includes(mondayOf(todayIso())) ? mondayOf(todayIso()) : weeks[0]
   const [drag, setDrag] = useState<Drag | null>(null)
   const [cible, setCible] = useState<Cible | null>(null)
   const [selected, setSelected] = useState<number | null>(null)
   const [confirmDup, setConfirmDup] = useState(false)
-  // Épreuves : heures choisies sur la grille, menu du clic droit, fenêtre des détails
+  // Heures choisies sur la grille, menu du clic droit, fenêtre des détails (séance de cours ou épreuve)
   const [selection, setSelection] = useState<SelectionGrille | null>(null)
   const [menu, setMenu] = useState<{ x: number; y: number; selection: SelectionGrille } | null>(null)
   const [epreuve, setEpreuve] = useState<DepartEpreuve | null>(null)
+  const [seanceAPoser, setSeanceAPoser] = useState<DepartSeance | null>(null)
 
   const jours = joursGrille(db, semaine)
   const numeroChoisi = versionChoisie?.version.numero ?? null
@@ -77,6 +89,14 @@ export default function Planification() {
     setEpreuve({
       nature, date: s.date, heure_debut: fromMin(s.debut), heure_fin: fromMin(s.fin),
       id_classe: res === 'classe' ? id : null, id_salle: res === 'salle' ? id : null,
+    })
+  }
+  const ouvrirSeance = (s: SelectionGrille) => {
+    setMenu(null)
+    setSeanceAPoser({
+      date: s.date, heure_debut: fromMin(s.debut), heure_fin: fromMin(s.fin), id_salle: res === 'salle' ? id : null,
+      // une salle : tous les cours du semestre ; sinon ceux de la classe ou de l'enseignant affiché
+      cours: res === 'salle' ? db.cours.filter((c) => c.id_semestre === semestre.id_semestre) : coursRes,
     })
   }
   const changerDeVue = (v: 'ajour' | 'historique') => {
@@ -310,7 +330,8 @@ export default function Planification() {
             </Button>
             <Button
               variant="outline"
-              disabled={!jours.length}
+              disabled={!jours.length || id === null}
+              title={id === null ? "Choisissez d'abord une classe, un enseignant ou une salle" : undefined}
               onClick={() => ouvrirEpreuve('examen', { date: jours[0], debut: 7 * 60, fin: 9 * 60 })}
             >
               <CalendarPlus />Programmer une épreuve
@@ -436,7 +457,7 @@ export default function Planification() {
               </div>
             ) : (
             <div className={cn('mb-3 flex min-h-10 items-center gap-2 rounded-full px-4 py-2 text-sm transition-colors xl:mb-1 xl:min-h-8 xl:shrink-0 xl:py-1 xl:text-xs', !drag ? 'bg-muted/70 text-ink-2' : hoverInfo?.ok ? 'bg-[#DCFCE7] text-[#166534]' : hoverInfo ? 'bg-[#FEE2E2] text-[#991B1B]' : 'bg-highlight text-ink')}>
-              {!drag && <>Cliquez une séance pour la modifier, ou glissez-la. Pour un examen : sélectionnez 2 ou 3 h sur une case vide, puis clic droit.</>}
+              {!drag && <>Cliquez une séance pour la modifier, ou glissez-la. Pour ajouter une séance ou un examen : sélectionnez 2 à 4 h sur une case vide, puis clic droit.</>}
               {drag && !hoverInfo && <>Amenez la séance sur la grille : le bloc en pointillé montre où elle atterrit (vert = possible, rouge = refusé).</>}
               {drag && cible && hoverInfo?.ok && (
                 <><CheckCircle2 className="size-4 shrink-0" />Possible · {fmtJourCourt(cible.date)}, {fmtHeure(cible.heure)}–{fmtHeure(fromMin(toMin(cible.heure) + dureeGlisse * 60))} · {hoverInfo.detail}</>
@@ -577,18 +598,28 @@ export default function Planification() {
           <div className="fixed inset-0 z-40" onClick={() => setMenu(null)} onContextMenu={(e) => { e.preventDefault(); setMenu(null) }} aria-hidden />
           <div
             role="menu"
-            aria-label="Programmer une épreuve"
-            className="fixed z-50 w-60 rounded-2xl bg-white p-1.5 text-sm shadow-xl ring-1 ring-line"
-            style={{ left: Math.min(menu.x, window.innerWidth - 248), top: Math.min(menu.y, window.innerHeight - 156) }}
+            aria-label="Programmer sur ces heures"
+            className="fixed z-50 w-64 rounded-2xl bg-white p-1.5 text-sm shadow-xl ring-1 ring-line"
+            style={{ left: Math.min(menu.x, window.innerWidth - 264), top: Math.min(menu.y, window.innerHeight - 200) }}
           >
             <p className="px-3 py-1.5 text-xs text-ink-2">
               {fmtJourCourt(menu.selection.date)}, {fmtHeure(fromMin(menu.selection.debut))}–{fmtHeure(fromMin(menu.selection.fin))}
             </p>
+            <button type="button" role="menuitem" className="press block w-full rounded-xl px-3 py-2 text-left font-medium hover:bg-muted" onClick={() => ouvrirSeance(menu.selection)}>Programmer une séance de cours</button>
             <button type="button" role="menuitem" className="press block w-full rounded-xl px-3 py-2 text-left hover:bg-muted" onClick={() => ouvrirEpreuve('examen', menu.selection)}>Programmer un examen</button>
             <button type="button" role="menuitem" className="press block w-full rounded-xl px-3 py-2 text-left hover:bg-muted" onClick={() => ouvrirEpreuve('rattrapage', menu.selection)}>Programmer un rattrapage</button>
             <button type="button" role="menuitem" className="press block w-full rounded-xl px-3 py-2 text-left text-ink-2 hover:bg-muted" onClick={() => { setMenu(null); setSelection(null) }}>Annuler la sélection</button>
           </div>
         </>
+      )}
+
+      {seanceAPoser && (
+        <DialogSeance
+          edt={edt}
+          depart={seanceAPoser}
+          onFermer={() => { setSeanceAPoser(null); setSelection(null) }}
+          onCreee={(date) => { setSeanceAPoser(null); setSelection(null); setSemaine(mondayOf(date)) }}
+        />
       )}
 
       {epreuve && (

@@ -8,9 +8,9 @@ import { Button, Dialog, Field, Input, PillTabs, Select } from '@/components/ui'
 import { effectifPublics, estEpreuve, LIBELLE_NATURE, publicsSeance } from '@/lib/publics'
 import { checkSeance, coursDuModule, creneauAt, REGLES_SALLE, sallesPourEpreuves, type SeanceDraft } from '@/lib/rules'
 import { nextId, useStore } from '@/lib/store'
-import { fmtHeure, fmtJourCourt, fromMin, jourOf, toMin } from '@/lib/time'
+import { fmtHeure, fmtJourCourt, jourOf, toMin } from '@/lib/time'
 import type { EmploiDuTemps, Seance } from '@/types/db'
-import { plageSelectionnee } from './WeekGrid'
+import { finsPossibles } from './WeekGrid'
 
 export interface DepartEpreuve {
   nature: 'examen' | 'rattrapage'
@@ -43,14 +43,12 @@ export function DialogEpreuve({ edt, depart, onFermer, onCreee }: {
 
   // Heures possibles ce jour-là : 2 ou 3 h de créneaux consécutifs
   const jour = jourOf(date)
-  const finsDe = (debut: string) => [120, 180].map((duree) => {
-    const d = toMin(debut)
-    return plageSelectionnee(db, date, d, d + duree - 1)?.fin === d + duree ? fromMin(d + duree) : null
-  }).filter((f): f is string => f !== null)
+  const finsDe = (debut: string) => finsPossibles(db, date, debut, [120, 180])
   const debuts = db.creneau.filter((c) => c.jour === jour).map((c) => c.heure_debut).sort().filter((h) => finsDe(h).length > 0)
   const debut = debuts.includes(debutChoisi) ? debutChoisi : debuts[0]
   const fins = debut ? finsDe(debut) : []
-  const fin = fins.includes(finChoisie) ? finChoisie : fins[0]
+  // Une épreuve dure 3 h au plus : une sélection plus longue est ramenée
+  const fin = fins.includes(finChoisie) ? finChoisie : [...fins].reverse().find((f) => toMin(f) <= toMin(finChoisie)) ?? fins[0]
 
   const modules = useMemo(() => {
     const ids = new Set(db.cours.filter((c) => c.id_classe === idClasse && c.id_semestre === edt.id_semestre).map((c) => c.id_matiere))

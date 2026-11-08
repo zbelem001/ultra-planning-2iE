@@ -1,0 +1,28 @@
+﻿matiere;type_cours;classe;groupe;enseignant;type_salle;volume_horaire;duree_seance;nb_seances_semaine;priorite;heures_semaine_min;heures_semaine_max;semestre
+IA7-MATH;CM;IIA-S7;;KABORE Aminata;;18;3;2;5;2;6;Semestre 1 2026-2027
+IA7-MATH;TD;IIA-S7;IIA-S7 · TD1;KABORE Aminata;;12;2;1;5;2;4;Semestre 1 2026-2027
+IA7-MATH;TD;IIA-S7;IIA-S7 · TD2;KABORE Aminata;;12;2;1;5;2;4;Semestre 1 2026-2027
+IA7-PROBA;CM;IIA-S7;;ZONGO Issa;;15;3;2;5;2;6;Semestre 1 2026-2027
+IA7-PROBA;TD;IIA-S7;IIA-S7 · TD1;ZONGO Issa;;12;2;1;5;2;4;Semestre 1 2026-2027
+IA7-PROBA;TD;IIA-S7;IIA-S7 · TD2;ZONGO Issa;;12;2;1;5;2;4;Semestre 1 2026-2027
+IA7-PY;CM;IIA-S7;;TRAORE Mariam;;9;3;2;4;2;6;Semestre 1 2026-2027
+IA7-PY;TP;IIA-S7;IIA-S7 · TP1;TRAORE Mariam;Salle informatique;21;3;1;4;3;6;Semestre 1 2026-2027
+IA7-PY;TP;IIA-S7;IIA-S7 · TP2;TRAORE Mariam;Salle informatique;21;3;1;4;3;6;Semestre 1 2026-2027
+IA7-ALGO;CM;IIA-S7;;TAPSOBA Rasmane;;12;3;2;4;2;6;Semestre 1 2026-2027
+IA7-ALGO;TD;IIA-S7;IIA-S7 · TD1;TAPSOBA Rasmane;;12;2;1;4;2;4;Semestre 1 2026-2027
+IA7-ALGO;TD;IIA-S7;IIA-S7 · TD2;TAPSOBA Rasmane;;12;2;1;4;2;4;Semestre 1 2026-2027
+IA7-BD;CM;IIA-S7;;SOME Clarisse;;12;3;2;3;2;6;Semestre 1 2026-2027
+IA7-BD;TD;IIA-S7;IIA-S7 · TD1;SOME Clarisse;;6;2;1;3;2;4;Semestre 1 2026-2027
+IA7-BD;TD;IIA-S7;IIA-S7 · TD2;SOME Clarisse;;6;2;1;3;2;4;Semestre 1 2026-2027
+IA7-BD;TP;IIA-S7;IIA-S7 · TP1;SOME Clarisse;Salle informatique;12;3;1;3;3;6;Semestre 1 2026-2027
+IA7-BD;TP;IIA-S7;IIA-S7 · TP2;SOME Clarisse;Salle informatique;12;3;1;3;3;6;Semestre 1 2026-2027
+IA7-ML;CM;IIA-S7;;OUATTARA Boukary;;18;3;2;2;2;6;Semestre 1 2026-2027
+IA7-ML;TD;IIA-S7;IIA-S7 · TD1;OUATTARA Boukary;;6;2;1;2;2;4;Semestre 1 2026-2027
+IA7-ML;TD;IIA-S7;IIA-S7 · TD2;OUATTARA Boukary;;6;2;1;2;2;4;Semestre 1 2026-2027
+IA7-ML;TP;IIA-S7;IIA-S7 · TP1;OUATTARA Boukary;Salle informatique;15;3;1;2;3;6;Semestre 1 2026-2027
+IA7-ML;TP;IIA-S7;IIA-S7 · TP2;OUATTARA Boukary;Salle informatique;15;3;1;2;3;6;Semestre 1 2026-2027
+IA7-ANG;TD;IIA-S7;IIA-S7 · TD1;ILBOUDO Pauline;;18;2;1;1;2;4;Semestre 1 2026-2027
+IA7-ANG;TD;IIA-S7;IIA-S7 · TD2;ILBOUDO Pauline;;18;2;1;1;2;4;Semestre 1 2026-2027
+IA7-GP;CM;IIA-S7;;YAMEOGO Jean;;12;3;2;1;2;6;Semestre 1 2026-2027
+IA7-GP;TD;IIA-S7;IIA-S7 · TD1;YAMEOGO Jean;;6;2;1;1;2;4;Semestre 1 2026-2027
+IA7-GP;TD;IIA-S7;IIA-S7 · TD2;YAMEOGO Jean;;6;2;1;1;2;4;Semestre 1 2026-2027

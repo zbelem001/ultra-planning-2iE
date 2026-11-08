@@ -63,10 +63,10 @@ export interface GridEdition {
   onDragEnd: () => void
 }
 
-const SELECTION_MAX = 180 // minutes : une épreuve dure 3 h au plus
+const SELECTION_MAX = 240 // minutes : une séance de cours dure 4 h au plus (une épreuve, 3 h)
 
 /** Créneaux consécutifs d'un jour, depuis celui de `ancre` jusqu'à `vise` : sans franchir une pause et sans
- *  dépasser 3 h. Null si `ancre` ne tombe sur aucun créneau. */
+ *  dépasser 4 h. Null si `ancre` ne tombe sur aucun créneau. */
 export function plageSelectionnee(db: Db, date: string, ancre: number, vise: number): { debut: number; fin: number } | null {
   const jour = jourOf(date)
   const cr = db.creneau.filter((c) => c.jour === jour).map((c) => [toMin(c.heure_debut), toMin(c.heure_fin)]).sort((a, b) => a[0] - b[0])
@@ -79,6 +79,13 @@ export function plageSelectionnee(db: Db, date: string, ancre: number, vise: num
     for (let j = i - 1; j >= 0 && cr[j][1] === debut && cr[j][1] > vise && fin - cr[j][0] <= SELECTION_MAX; j--) debut = cr[j][0]
   }
   return { debut, fin }
+}
+
+/** Fins possibles d'une plage qui commence à `debut` ce jour-là, pour ces durées (minutes) : des créneaux
+ *  consécutifs, sans franchir une pause */
+export function finsPossibles(db: Db, date: string, debut: string, durees: number[]): string[] {
+  const d = toMin(debut)
+  return durees.filter((duree) => plageSelectionnee(db, date, d, d + duree - 1)?.fin === d + duree).map((duree) => fromMin(d + duree))
 }
 
 /** Écart maximal entre le haut de la séance et le créneau retenu ; au-delà, rien n'est visé */
@@ -366,7 +373,7 @@ export function WeekGrid({ db, days, seances, hide, selectedId, onSelect, editio
               })}
               {list.length === 0 && !ferie && crs.length > 0 && renderEmptyDay?.(d)}
 
-              {/* heures sélectionnées, pour programmer une épreuve */}
+              {/* heures sélectionnées, pour programmer une séance de cours ou une épreuve */}
               {selection?.date === d && (
                 <div
                   data-selection
