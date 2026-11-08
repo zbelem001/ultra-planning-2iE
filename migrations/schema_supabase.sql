@@ -2,7 +2,7 @@
 --  Système de planification des cours et de génération automatique
 --  des emplois du temps
 --  Script de création de la base de données — PostgreSQL / Supabase
---  VERSION 14
+--  VERSION 16
 --
 --  Utilisation : Supabase > SQL Editor > New query > coller > Run
 --  Source      : fichier.md (section 7 : modèle de données / MLD)
@@ -139,6 +139,20 @@
 --      d'un cours (COURS.duree_seance, COURS_SEANCE_MODELE). Une épreuve dure
 --      toujours de 2 h à 3 h.
 --      Base existante en version 13 : migrations/014_seance_5h.sql.
+--
+--  Changements de la version 15
+--  33. Les mutualisations se publient avec l'emploi du temps : COURS_PUBLIC
+--      reste la table de travail, COURS_PUBLIC_PUBLIE en est la copie publiée
+--      (par version publiée), que lisent les invités. Une mutualisation
+--      ajoutée ou retirée n'apparaît pour eux qu'à la publication suivante.
+--      Base existante en version 14 : migrations/015_mutualisations_publiees.sql.
+--
+--  Changements de la version 16
+--  34. Site : une promotion n'a pas cours sur deux campus le même jour. Elle peut
+--      aller sur l'autre campus (cours mutualisé, salle libre), mais toute sa
+--      journée s'y passe. La salle n'a plus à être sur le campus de la promotion
+--      (classe.id_site), qui guide seulement la génération.
+--      Base existante en version 15 : migrations/016_un_campus_par_jour.sql.
 --
 --  Hypothèses :
 --   * volume_horaire (COURS) et durées sont exprimés en HEURES.
@@ -1040,14 +1054,31 @@ BEGIN
             USING ERRCODE = 'check_violation';
     END IF;
 
-    -- Site : la salle est sur le site de chaque promotion du cours (classe.id_site, s'il est fixé).
-    -- Le campus d'une épreuve se choisit à sa programmation.
-    IF NEW.nature = 'cours'
-       AND EXISTS (SELECT 1 FROM publics_du_cours(NEW.id_cours) p JOIN classe cl ON cl.id_classe = p.id_classe
-                   WHERE cl.id_site IS NOT NULL AND cl.id_site <> v_salle.id_site) THEN
-        RAISE EXCEPTION 'SITE : la salle % n''est pas sur le site de la promotion', v_salle.nom_salle
-            USING ERRCODE = 'check_violation';
-    END IF;
+    -- Site : une promotion n'a pas cours sur deux campus le même jour. Elle peut aller sur l'autre
+    -- campus (cours mutualisé, salle libre), mais toute sa journée s'y passe. Le campus de la
+    -- promotion (classe.id_site) guide la génération ; la base ne l'impose pas.
+    DECLARE
+        v_autre_site TEXT;
+    BEGIN
+        SELECT cl.code_classe || ' a déjà cours sur le ' || si.nom_site
+        INTO v_autre_site
+        FROM seance s
+        CROSS JOIN LATERAL publics_seance(s.id_cours, s.nature) ps
+        JOIN publics_seance(NEW.id_cours, NEW.nature) pn ON pn.id_classe = ps.id_classe
+        JOIN salle sa ON sa.id_salle = s.id_salle
+        JOIN site si ON si.id_site = sa.id_site
+        JOIN classe cl ON cl.id_classe = ps.id_classe
+        WHERE s.id_edt = NEW.id_edt
+          AND s.statut <> 'annulee'
+          AND s.date_seance = NEW.date_seance
+          AND s.id_seance IS DISTINCT FROM NEW.id_seance
+          AND sa.id_site <> v_salle.id_site
+        LIMIT 1;
+        IF v_autre_site IS NOT NULL THEN
+            RAISE EXCEPTION 'SITE : % ce jour-là (une promotion n''a cours que sur un campus par jour)', v_autre_site
+                USING ERRCODE = 'check_violation';
+        END IF;
+    END;
 
     -- CD-12 : salle réservée à certaines formations (SALLE_RESERVATION)
     IF EXISTS (SELECT 1 FROM salle_reservation r WHERE r.id_salle = NEW.id_salle)
@@ -1709,6 +1740,42 @@ CREATE POLICY "ecole du compte" ON publication_edt TO ultraplanning_app
 REVOKE ALL ON publication_edt FROM ultraplanning_app;
 GRANT SELECT, INSERT ON publication_edt TO ultraplanning_app;
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO ultraplanning_app;
+
+-- Copie publiée de COURS_PUBLIC, par version publiée : ce que lisent les invités.
+-- Seule la publication l'écrit (app/publication.py).
+CREATE TABLE IF NOT EXISTS cours_public_publie (
+    id_cours_public_publie BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    id_edt     BIGINT NOT NULL,                 -- la version publiée (copie)
+    id_cours   BIGINT NOT NULL,
+    id_classe  BIGINT NOT NULL,
+    id_groupe  BIGINT,                          -- NULL = classe entière
+    id_ecole   BIGINT NOT NULL DEFAULT app_ecole()
+               REFERENCES ecole(id_ecole) ON UPDATE CASCADE ON DELETE CASCADE,
+    FOREIGN KEY (id_edt, id_ecole) REFERENCES emploi_du_temps (id_edt, id_ecole)
+               ON UPDATE CASCADE ON DELETE CASCADE,
+    FOREIGN KEY (id_cours, id_ecole) REFERENCES cours (id_cours, id_ecole)
+               ON UPDATE CASCADE ON DELETE CASCADE,
+    FOREIGN KEY (id_classe, id_ecole) REFERENCES classe (id_classe, id_ecole)
+               ON UPDATE CASCADE ON DELETE CASCADE,
+    FOREIGN KEY (id_groupe, id_classe, id_ecole) REFERENCES groupe (id_groupe, id_classe, id_ecole)
+               ON UPDATE CASCADE ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS ix_cours_public_publie_edt ON cours_public_publie (id_edt);
+ALTER TABLE cours_public_publie ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "ecole du compte" ON cours_public_publie;
+CREATE POLICY "ecole du compte" ON cours_public_publie TO ultraplanning_app
+    USING (id_ecole = app_ecole()) WITH CHECK (id_ecole = app_ecole());
+REVOKE ALL ON cours_public_publie FROM ultraplanning_app;
+GRANT SELECT, INSERT, DELETE ON cours_public_publie TO ultraplanning_app;
+GRANT USAGE, SELECT ON SEQUENCE cours_public_publie_id_cours_public_publie_seq TO ultraplanning_app;
+DO $$
+DECLARE r TEXT;
+BEGIN
+    FOREACH r IN ARRAY ARRAY['anon', 'authenticated'] LOOP
+        CONTINUE WHEN NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r);
+        EXECUTE format('REVOKE ALL ON cours_public_publie FROM %I', r);
+    END LOOP;
+END $$;
 
 -- Historique d'un emploi du temps, lu dans le journal (que l'API ne peut pas lire
 -- directement) et limité à l'école de la requête. Une version = une transaction ;

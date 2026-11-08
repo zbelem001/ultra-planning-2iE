@@ -246,3 +246,17 @@ def test_la_suppression_laisse_les_epreuves_sauf_demande(ctx, conn):
     assert texte.startswith("Proposition"), texte
     ops = conn.execute("SELECT modifications FROM proposition WHERE id_proposition = %s", (ctx.propositions_creees[0],)).fetchone()[0]
     assert [o["id_seance"] for o in ops] == [examen]
+
+
+def test_une_promotion_n_a_cours_que_sur_un_campus_par_jour(conn):
+    """Contrôle SITE (version 16) : une promotion peut aller sur l'autre campus, pas sur les deux le même jour"""
+    k = cours_de(conn, "L2INFO")  # CM en amphithéâtre ; la promotion est au campus de Kamboinsé
+    conn.execute("UPDATE programme p SET volume_cm = volume_cm + 10, volume_td = volume_td + 10, volume_tp = volume_tp + 10 "
+                 "FROM cours c WHERE c.id_cours = %s AND p.id_classe = c.id_classe AND p.id_matiere = c.id_matiere", (k,))
+    conn.execute("UPDATE cours SET volume_horaire = volume_horaire + 10 WHERE id_cours = %s", (k,))
+    # à Ouagadougou : accepté (avant, la salle devait être sur le campus de la promotion)
+    assert poser(conn, k, LUNDI, "07:00", "09:00", id_salle=salle(conn, "O-AMPHI1"), nature="cours")
+    # le même jour, à Kamboinsé : refusé
+    refuse(conn, "SITE", k, LUNDI, "13:00", "15:00", id_salle=salle(conn, "K-AMPHI1"), nature="cours")
+    # un autre jour, à Kamboinsé : accepté
+    assert poser(conn, k, MARDI, "13:00", "15:00", id_salle=salle(conn, "K-AMPHI1"), nature="cours")

@@ -22,6 +22,7 @@ import { download, toIcs } from '@/lib/ics'
 import { couleurMatiere, enrichir, filtrer, nomEnseignant, type Ressource, type SeanceVue } from '@/lib/queries'
 import { useGrandEcran } from '@/lib/hauteur'
 import { ecoleCourante, edtPublie, useStore } from '@/lib/store'
+import { vueInvites } from '@/lib/versions'
 import { addDays, fmtDateHeure, fmtJourCourt, jourOf, mondayOf, todayIso, weeksBetween } from '@/lib/time'
 import type { TypeSeance } from '@/types/db'
 
@@ -109,7 +110,9 @@ function useEnLigne() {
 
 function Contenu() {
   const grandEcran = useGrandEcran()
-  const { db } = useStore()
+  // les mutualisations de la version publiée, même ouverte depuis la console (aperçu de l'espace invités)
+  const { db: base } = useStore()
+  const db = useMemo(() => vueInvites(base), [base])
   const enLigne = useEnLigne()
   const [params, setParams] = useSearchParams()
   const edt = edtPublie(db)

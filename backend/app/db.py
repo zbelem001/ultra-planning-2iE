@@ -130,6 +130,12 @@ def entrer_ecole(conn: psycopg.Connection, id_ecole: int, id_utilisateur: int | 
                  (str(id_ecole), str(id_utilisateur or "")))
 
 
+def mutualisations_publiees(conn: psycopg.Connection) -> bool:
+    """Base en version 15 ou plus : les mutualisations ont leur copie publiée (COURS_PUBLIC_PUBLIE). Avant, les
+    invités lisent COURS_PUBLIC directement."""
+    return conn.execute("SELECT to_regclass('public.cours_public_publie') IS NOT NULL").fetchone()[0]
+
+
 def origine(conn: psycopg.Connection, nom: str) -> None:
     """Origine des changements de séances inscrite au journal d'audit : console, generation, assistant."""
     conn.execute("SELECT set_config('app.origine', %s, false)", (nom,))

@@ -35,6 +35,63 @@ export const CODES_DURS: Record<string, string> = {
 
 const overlaps = (a1: number, a2: number, b1: number, b2: number) => a1 < b2 && b1 < a2
 
+// --- Index : checkSeance est appelé pour chaque salle, chaque enseignant, chaque créneau, chaque séance du
+// tableau de bord. Les séances se rangent une fois par liste (par date, par cours, par semaine) ; une liste
+// qui grandit (le générateur ajoute ses séances une à une) est rangée de nouveau.
+interface IndexSeances {
+  longueur: number
+  derniere: Seance | undefined
+  parDate: Map<string, Seance[]>
+  parCours: Map<number, Seance[]>
+  parLundi: Map<string, Seance[]>
+  epreuves: Seance[]
+}
+const index = new WeakMap<Seance[], IndexSeances>()
+const lundis = new Map<string, string>()
+export const lundiDe = (date: string) => {
+  let l = lundis.get(date)
+  if (l === undefined) lundis.set(date, (l = mondayOf(date)))
+  return l
+}
+const ajouter = <K,>(m: Map<K, Seance[]>, k: K, s: Seance) => {
+  const l = m.get(k)
+  if (l) l.push(s)
+  else m.set(k, [s])
+}
+function indexSeances(seances: Seance[]): IndexSeances {
+  const deja = index.get(seances)
+  if (deja && deja.longueur === seances.length && deja.derniere === seances[seances.length - 1]) return deja
+  const ix: IndexSeances = { longueur: seances.length, derniere: seances[seances.length - 1], parDate: new Map(), parCours: new Map(), parLundi: new Map(), epreuves: [] }
+  for (const x of seances) {
+    ajouter(ix.parDate, x.date_seance, x)
+    ajouter(ix.parCours, x.id_cours, x)
+    ajouter(ix.parLundi, lundiDe(x.date_seance), x)
+    if (estEpreuve(x)) ix.epreuves.push(x)
+  }
+  index.set(seances, ix)
+  return ix
+}
+const sallesIndex = new WeakMap<Salle[], Map<number, Salle>>()
+function salleIndex(db: Db): Map<number, Salle> {
+  let m = sallesIndex.get(db.salle)
+  if (!m) sallesIndex.set(db.salle, (m = new Map(db.salle.map((x) => [x.id_salle, x]))))
+  return m
+}
+
+/** Campus mère du cours : celui de sa classe, sinon celui de sa filière. La génération y place les cours ; à la main,
+ *  les salles de ce campus sont proposées d'abord. */
+export function campusMere(db: Db, cours: Cours): number | null {
+  const classe = db.classe.find((c) => c.id_classe === cours.id_classe)
+  return classe?.id_site ?? db.filiere.find((f) => f.id_filiere === classe?.id_filiere)?.id_site ?? null
+}
+
+const coursIndex = new WeakMap<Cours[], Map<number, Cours>>()
+function coursParId(db: Db): Map<number, Cours> {
+  let m = coursIndex.get(db.cours)
+  if (!m) coursIndex.set(db.cours, (m = new Map(db.cours.map((c) => [c.id_cours, c]))))
+  return m
+}
+
 /**
  * Renvoie toutes les violations de contraintes dures pour une séance.
  * `seances` permet de contrôler contre un autre ensemble que db.seance
@@ -43,7 +100,7 @@ const overlaps = (a1: number, a2: number, b1: number, b2: number) => a1 < b2 && 
 export function checkSeance(db: Db, s: SeanceDraft, seances: Seance[] = db.seance): Violation[] {
   if (s.statut === 'annulee') return []
   const v: Violation[] = []
-  const cours = db.cours.find((c) => c.id_cours === s.id_cours)
+  const cours = coursParId(db).get(s.id_cours)
   const salle = db.salle.find((x) => x.id_salle === s.id_salle)
   const creneau = db.creneau.find((x) => x.id_creneau === s.id_creneau)
   if (!cours || !salle || !creneau) return [{ code: 'REF', message: 'Cours, salle ou créneau introuvable' }]
@@ -90,7 +147,8 @@ export function checkSeance(db: Db, s: SeanceDraft, seances: Seance[] = db.seanc
   const conge = congeAt(db, s.date_seance, cours.id_classe, epreuve)
   if (conge) v.push({ code: 'CD-09', message: `Le ${s.date_seance} tombe pendant un congé (${conge.libelle}).` })
 
-  const autres = seances.filter(
+  const ix = indexSeances(seances)
+  const autres = (ix.parDate.get(s.date_seance) ?? []).filter(
     (x) =>
       x.id_edt === s.id_edt &&
       x.statut !== 'annulee' &&
@@ -98,7 +156,7 @@ export function checkSeance(db: Db, s: SeanceDraft, seances: Seance[] = db.seanc
       x.date_seance === s.date_seance &&
       overlaps(d1, d2, toMin(x.heure_debut), toMin(x.heure_fin)),
   )
-  const coursOf = (x: Seance) => db.cours.find((c) => c.id_cours === x.id_cours)!
+  const coursOf = (x: Seance) => coursParId(db).get(x.id_cours)!
 
   // CD-01 : salle. Des épreuves peuvent la partager (voir CD-04), jamais une épreuve et un cours.
   const conflitSalle = autres.find((x) => x.id_salle === s.id_salle && !(epreuve && estEpreuve(x)))
@@ -125,7 +183,24 @@ export function checkSeance(db: Db, s: SeanceDraft, seances: Seance[] = db.seanc
     v.push({ code: 'CD-03', message: `${classe.code_classe} a déjà une séance de ${conflitPublic.heure_debut} à ${conflitPublic.heure_fin}.` })
   }
 
-  // CD-04, CD-05, CD-12, site : ce qui ne dépend que de la salle et du cours
+  // Site : une promotion n'a cours que sur un campus par jour. Elle peut aller sur l'autre campus (cours
+  // mutualisé, salle libre), mais toute sa journée s'y passe (contrôle SITE de la base, version 16).
+  const sallesParId = salleIndex(db)
+  const autreCampus = (ix.parDate.get(s.date_seance) ?? []).find((x) => {
+    if (x.id_edt !== s.id_edt || x.statut === 'annulee' || x.id_seance === s.id_seance) return false
+    const sx = sallesParId.get(x.id_salle)
+    if (!sx || sx.id_site === salle.id_site) return false
+    const publicsX = publicsSeance(db, coursOf(x), x)
+    return publicsS.some((a) => publicsX.some((b) => b.id_classe === a.id_classe))
+  })
+  if (autreCampus) {
+    const commun = publicsSeance(db, coursOf(autreCampus), autreCampus).find((b) => publicsS.some((a) => a.id_classe === b.id_classe))
+    const code = db.classe.find((c) => c.id_classe === commun?.id_classe)?.code_classe
+    const site = db.site.find((x) => x.id_site === sallesParId.get(autreCampus.id_salle)?.id_site)?.nom_site
+    v.push({ code: 'SITE', message: `${code} a déjà cours sur le ${site} ce jour-là : une promotion n'a cours que sur un campus par jour.` })
+  }
+
+  // CD-04, CD-05, CD-12 : ce qui ne dépend que de la salle et du cours
   v.push(...violationsSalle(db, cours, salle, epreuve))
   if (epreuve) {
     // CD-04 : toute la classe, et les autres épreuves qui partagent la salle
@@ -157,7 +232,7 @@ export function checkSeance(db: Db, s: SeanceDraft, seances: Seance[] = db.seanc
   // Une épreuve ne compte ni dans le volume, ni dans le rythme, ni dans les matières de la semaine
   if (!epreuve) {
     // CD-08 : volume horaire
-    const deja = seances
+    const deja = (ix.parCours.get(s.id_cours) ?? [])
       .filter((x) => x.id_cours === s.id_cours && x.id_edt === s.id_edt && x.statut !== 'annulee' && x.id_seance !== s.id_seance && !estEpreuve(x))
       .reduce((acc, x) => acc + hours(x.heure_debut, x.heure_fin), 0)
     if (deja + duree > cours.volume_horaire) {
@@ -165,10 +240,11 @@ export function checkSeance(db: Db, s: SeanceDraft, seances: Seance[] = db.seanc
     }
 
     // CD-14 : rythme hebdomadaire maximal du cours
-    const lundi = mondayOf(s.date_seance)
+    // séances de la même semaine (l'index les range par lundi)
+    const laSemaine = ix.parLundi.get(lundiDe(s.date_seance)) ?? []
     const memeSemaine = (x: Seance) =>
-      x.id_edt === s.id_edt && x.statut !== 'annulee' && x.id_seance !== s.id_seance && mondayOf(x.date_seance) === lundi && !estEpreuve(x)
-    const semaine = seances.filter((x) => memeSemaine(x) && x.id_cours === s.id_cours).reduce((a, x) => a + hours(x.heure_debut, x.heure_fin), 0)
+      x.id_edt === s.id_edt && x.statut !== 'annulee' && x.id_seance !== s.id_seance && !estEpreuve(x)
+    const semaine = laSemaine.filter((x) => memeSemaine(x) && x.id_cours === s.id_cours).reduce((a, x) => a + hours(x.heure_debut, x.heure_fin), 0)
     if (semaine + duree > cours.heures_semaine_max) {
       v.push({ code: 'CD-14', message: `Le cours dépasserait ${semaine + duree} h cette semaine (maximum ${cours.heures_semaine_max} h).` })
     }
@@ -177,7 +253,7 @@ export function checkSeance(db: Db, s: SeanceDraft, seances: Seance[] = db.seanc
     const max = maxMatieresSemaine(db, s.id_edt)
     if (max !== null) {
       for (const id_classe of new Set(publics.map((p) => p.id_classe))) {
-        const matieres = new Set(seances.filter((x) => memeSemaine(x) && publicsDuCours(db, coursOf(x)).some((p) => p.id_classe === id_classe))
+        const matieres = new Set(laSemaine.filter((x) => memeSemaine(x) && publicsDuCours(db, coursOf(x)).some((p) => p.id_classe === id_classe))
           .map((x) => coursOf(x).id_matiere))
         matieres.add(cours.id_matiere)
         if (matieres.size > max) {
@@ -191,7 +267,7 @@ export function checkSeance(db: Db, s: SeanceDraft, seances: Seance[] = db.seanc
   // Dans un module (matière d'une classe), le rattrapage vient après l'examen
   if (epreuve) {
     const debut = `${s.date_seance} ${s.heure_debut}`
-    const duModule = seances.filter((x) => x.id_edt === s.id_edt && x.statut !== 'annulee' && x.id_seance !== s.id_seance && estEpreuve(x)
+    const duModule = ix.epreuves.filter((x) => x.id_edt === s.id_edt && x.statut !== 'annulee' && x.id_seance !== s.id_seance
       && coursOf(x).id_matiere === cours.id_matiere && coursOf(x).id_classe === cours.id_classe)
     if (s.nature === 'rattrapage' && !duModule.some((x) => x.nature === 'examen' && `${x.date_seance} ${x.heure_fin}` <= debut)) {
       v.push({ code: 'EXAMEN', message: "Le rattrapage vient après l'examen du module : programmez d'abord l'examen, à une date antérieure." })
@@ -226,14 +302,6 @@ export function violationsSalle(db: Db, cours: Cours, salle: Salle, epreuve = fa
     v.push({ code: 'CD-05', message: `Ce cours exige une salle de type « ${attendus} ».` })
   }
 
-  // Site : la salle est sur le site de chaque promotion du cours (s'il est fixé)
-  const horsSite = publics.map((p) => db.classe.find((c) => c.id_classe === p.id_classe))
-    .find((c) => c?.id_site != null && c.id_site !== salle.id_site)
-  if (!epreuve && horsSite) {
-    const site = db.site.find((x) => x.id_site === horsSite.id_site)?.nom_site
-    v.push({ code: 'SITE', message: `${horsSite.code_classe} a tous ses cours sur le site ${site} : ${salle.nom_salle} n'y est pas.` })
-  }
-
   // CD-12 : salle réservée à certaines formations
   const reservations = db.salle_reservation.filter((r) => r.id_salle === salle.id_salle)
   if (reservations.length && !reservations.some((r) => publics.some((p) => p.id_classe === r.id_classe))) {
@@ -244,7 +312,9 @@ export function violationsSalle(db: Db, cours: Cours, salle: Salle, epreuve = fa
 
 /** Salles qui conviennent à un cours, quel que soit le créneau, de la plus ajustée à la plus grande */
 export function sallesDuCours(db: Db, cours: Cours): Salle[] {
-  return db.salle.filter((salle) => violationsSalle(db, cours, salle).length === 0).sort((a, b) => a.capacite - b.capacite)
+  const mere = campusMere(db, cours)
+  return db.salle.filter((salle) => violationsSalle(db, cours, salle).length === 0)
+    .sort((a, b) => Number(a.id_site !== mere) - Number(b.id_site !== mere) || a.capacite - b.capacite)
 }
 
 // Règles qui dépendent de la salle choisie : les autres valent pour toutes les salles d'un créneau
@@ -380,4 +450,25 @@ export function decoupage(db: Db, id_cours: number): { rang: number; duree_heure
   if (lignes.length) return lignes
   const c = db.cours.find((x) => x.id_cours === id_cours)!
   return Array.from({ length: c.nb_seances_semaine }, (_, i) => ({ rang: i + 1, duree_heures: c.duree_seance }))
+}
+
+/** Une salle dont la capacité n'est pas renseignée (importée sans elle) porte 1 place */
+export const capaciteConnue = (s: Salle) => s.capacite > 1
+
+/**
+ * Salles où une séance peut avoir lieu à son horaire (détail d'une séance) : libres (CD-01), du type exigé
+ * (CD-05), ni indisponibles ni réservées (CD-12), assez grandes (CD-04), sur un campus où ses promotions n'ont
+ * pas déjà cours autre part ce jour-là (SITE). Les règles qui ne dépendent pas de la salle (classe, enseignant...)
+ * ne vident pas la liste. Comme dans la base, une classe sans effectif renseigné (0) ne fait écarter aucune salle
+ * pour sa capacité. Ordre : la salle actuelle, puis le campus mère du cours, puis l'autre campus.
+ */
+export function sallesLibresSeance(db: Db, s: SeanceDraft, seances: Seance[] = db.seance): { salles: Salle[]; id_site: number | null } {
+  const cours = db.cours.find((c) => c.id_cours === s.id_cours)
+  if (!cours) return { salles: [], id_site: null }
+  const id_site = campusMere(db, cours) ?? db.salle.find((x) => x.id_salle === s.id_salle)?.id_site ?? null
+  const salles = db.salle
+    .filter((salle) => !checkSeance(db, { ...s, id_salle: salle.id_salle }, seances).some((v) => REGLES_SALLE.has(v.code)))
+    .sort((a, b) => (a.id_salle === s.id_salle ? -1 : b.id_salle === s.id_salle ? 1
+      : Number(a.id_site !== id_site) - Number(b.id_site !== id_site) || a.capacite - b.capacite || a.nom_salle.localeCompare(b.nom_salle)))
+  return { salles, id_site }
 }

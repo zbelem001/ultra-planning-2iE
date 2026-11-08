@@ -45,7 +45,11 @@ def charger(conn: psycopg.Connection, id_edt: int) -> Donnees:
         cur.execute(f"SELECT * FROM {table} WHERE id_ecole = %s {suite}", (ecole, *params))
         return cur.fetchall()
 
-    classes = {r["id_classe"]: Classe(r["id_classe"], r["code_classe"], r["effectif"], r["id_filiere"], r.get("id_site"))
+    # Campus mère d'une promotion : le sien, sinon celui de sa filière. La génération y place ses cours ;
+    # une promotion n'a cours que sur un campus par jour (contrôle SITE de la base, version 16)
+    site_filiere = {r["id_filiere"]: r.get("id_site") for r in tout("filiere")}
+    classes = {r["id_classe"]: Classe(r["id_classe"], r["code_classe"], r["effectif"], r["id_filiere"],
+                                      r.get("id_site") or site_filiere.get(r["id_filiere"]))
                for r in tout("classe")}
     groupes = {
         r["id_groupe"]: Groupe(r["id_groupe"], r["code_groupe"], r["type_groupe"], r["effectif"], r["id_classe"],

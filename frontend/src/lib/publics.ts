@@ -5,18 +5,32 @@
 // en plus (COURS_PUBLIC). Chaque classe est un arbre de groupes : TD ou options, puis demi-groupes
 // de TP ou sous-options. Deux frères du même type (TD1 et TD2, deux options) sont disjoints.
 
-import type { Cours, Db, Groupe, NatureSeance } from '@/types/db'
+import type { Cours, CoursPublic, Db, Groupe, NatureSeance } from '@/types/db'
 
 export interface Public {
   id_classe: number
   id_groupe: number | null
 }
 
+// Mutualisations rangées par cours, calculées une fois par table (une modification en fait une nouvelle)
+const parCours = new WeakMap<CoursPublic[], Map<number, Public[]>>()
+
+function mutualisationsDe(db: Db, id_cours: number): Public[] {
+  let m = parCours.get(db.cours_public)
+  if (!m) {
+    m = new Map()
+    for (const p of db.cours_public) {
+      const l = m.get(p.id_cours)
+      if (l) l.push({ id_classe: p.id_classe, id_groupe: p.id_groupe })
+      else m.set(p.id_cours, [{ id_classe: p.id_classe, id_groupe: p.id_groupe }])
+    }
+    parCours.set(db.cours_public, m)
+  }
+  return m.get(id_cours) ?? []
+}
+
 export function publicsDuCours(db: Db, c: Cours): Public[] {
-  return [
-    { id_classe: c.id_classe, id_groupe: c.id_groupe },
-    ...db.cours_public.filter((p) => p.id_cours === c.id_cours).map((p) => ({ id_classe: p.id_classe, id_groupe: p.id_groupe })),
-  ]
+  return [{ id_classe: c.id_classe, id_groupe: c.id_groupe }, ...mutualisationsDe(db, c.id_cours)]
 }
 
 export const LIBELLE_NATURE: Record<NatureSeance, string> = { cours: 'Cours', examen: 'Examen', rattrapage: 'Rattrapage' }

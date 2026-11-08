@@ -1,4 +1,4 @@
-import { Lock, MapPin, User, Users } from 'lucide-react'
+import { Lock, MapPin, Plus, User, Users } from 'lucide-react'
 import type { DragEvent, KeyboardEvent } from 'react'
 import { cn } from '@/components/ui'
 import { estEpreuve, LIBELLE_NATURE } from '@/lib/publics'
@@ -21,7 +21,7 @@ const LIGNE_TITRE = 19
 const LIGNE_DETAIL = 18.5
 const BADGE_ANNULEE = 18
 
-export function EventCard({ s, hide = [], selected, compact, hauteur = Infinity, draggable, onDragStart, onDragEnd, onClick }: {
+export function EventCard({ s, hide = [], selected, compact, hauteur = Infinity, draggable, onDragStart, onDragEnd, onClick, onPlus, plusTitre }: {
   s: SeanceVue
   hide?: Champ[]
   selected?: boolean
@@ -32,6 +32,9 @@ export function EventCard({ s, hide = [], selected, compact, hauteur = Infinity,
   onDragStart?: (e: DragEvent) => void
   onDragEnd?: () => void
   onClick?: () => void
+  /** Petit « + » en bas à droite : allonger la séance (Planification) */
+  onPlus?: () => void
+  plusTitre?: string
 }) {
   const color = couleurMatiere(s.matiere.id_matiere)
   const annulee = s.statut === 'annulee'
@@ -93,6 +96,21 @@ export function EventCard({ s, hide = [], selected, compact, hauteur = Infinity,
             <p className="flex items-center gap-1 truncate"><MapPin className="size-3 shrink-0" />{s.salle.nom_salle}</p>
           )}
         </div>
+      )}
+      {onPlus && !bouton && (
+        <button
+          type="button"
+          data-plus
+          aria-label={plusTitre ?? "Allonger la séance d'une heure"}
+          title={plusTitre}
+          // ni ouvrir le détail, ni commencer une sélection d'heures
+          onClick={(e) => { e.stopPropagation(); onPlus() }}
+          onKeyDown={(e) => e.stopPropagation()}
+          onPointerDown={(e) => e.stopPropagation()}
+          className="press absolute right-1 bottom-1 z-10 grid size-5 place-items-center rounded-full bg-white text-navy opacity-70 shadow-sm ring-1 ring-navy/25 transition-opacity group-hover:opacity-100 hover:bg-navy hover:text-white focus-visible:opacity-100"
+        >
+          <Plus className="size-3" strokeWidth={2.5} />
+        </button>
       )}
     </Tag>
   )

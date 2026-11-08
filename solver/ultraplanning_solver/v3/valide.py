@@ -56,6 +56,7 @@ def valider(data: dict, seances: list[dict]) -> list[str]:
     par_heure = defaultdict(list)
     h_jour_ens = defaultdict(int)
     h_classe_jour = defaultdict(list)
+    classe_jour_sites = defaultdict(set)
     fait = defaultdict(int)
     fin_matiere, debut_matiere = {}, {}
     for s in seances:
@@ -87,9 +88,8 @@ def valider(data: dict, seances: list[dict]) -> list[str]:
         types = c.get("types_salle") or ([c["id_type_salle"]] if c.get("id_type_salle") is not None else [])
         if types and sa["id_type_salle"] not in types:
             v.append(f"{tag} : mauvais type de salle")
-        for p in c["publics"]:
-            if classes[p["id_classe"]].get("id_site") not in (None, sa["id_site"]):
-                v.append(f"{tag} : salle hors du site de la promotion {p['id_classe']}")
+        for p in c["publics"]:   # une promotion n'a cours que sur un campus par jour
+            classe_jour_sites[p["id_classe"], d].add(sa["id_site"])
         if sa.get("reservee_a") and not set(sa["reservee_a"]) & {p["id_classe"] for p in c["publics"]}:
             v.append(f"{tag} : salle réservée à d'autres promotions")
         # enseignant de la séance
@@ -149,6 +149,9 @@ def valider(data: dict, seances: list[dict]) -> list[str]:
             for j in range(i + 1, len(liste)):
                 if any(chevauche_public(p, q) for p in liste[i]["publics"] for q in liste[j]["publics"]):
                     v.append(f"le {d} à {h}h : cours {liste[i]['id_cours']} et {liste[j]['id_cours']} ont des étudiants communs")
+    for (ic, d), sites in classe_jour_sites.items():
+        if len(sites) > 1:
+            v.append(f"promotion {ic} le {d} : cours sur deux campus le même jour")
     # temps de trajet entre deux sites le même jour
     for (k, d), liste in ens_jour_sites.items():
         for a0, a1, sa in liste:

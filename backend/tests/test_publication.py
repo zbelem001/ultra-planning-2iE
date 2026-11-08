@@ -264,3 +264,37 @@ def test_base_complete_avec_etiquette(client):
     r = client.get("/api/base", headers=ADMIN)
     assert r.status_code == 200 and r.headers["ETag"] and "private" in r.headers["Cache-Control"]
     assert client.get("/api/base", headers={**ADMIN, "If-None-Match": r.headers["ETag"]}).status_code == 304
+
+
+def test_une_mutualisation_n_apparait_aux_invites_qu_une_fois_publiee(client):
+    publier(client)
+    base = client.get("/api/base", headers=ADMIN).json()
+    s = seances(client)[0]
+    cours = next(c for c in base["cours"] if c["id_cours"] == s["id_cours"])
+    autre = next(c["id_classe"] for c in base["classe"] if c["id_classe"] != cours["id_classe"])
+    ligne = {"id_cours_public": max([p["id_cours_public"] for p in base["cours_public"]] + [0]) + 1,
+             "id_cours": cours["id_cours"], "id_classe": autre, "id_groupe": None}
+    mutualisation = (cours["id_cours"], autre)
+    invites = lambda: [(p["id_cours"], p["id_classe"]) for p in client.get("/api/base/public?ecole=2IE").json()["cours_public"]]  # noqa: E731
+    sync = lambda upsert=(), supprimer=(): client.post(  # noqa: E731
+        "/api/base/sync", headers=ADMIN, json={"tables": {"cours_public": {"upsert": list(upsert), "supprimer": list(supprimer)}}})
+
+    # Ajoutée dans la console (Planification ou Référentiel) : pas encore pour les invités
+    assert sync([ligne]).status_code == 200
+    console = client.get("/api/base", headers=ADMIN).json()
+    assert mutualisation in [(p["id_cours"], p["id_classe"]) for p in console["cours_public"]]
+    assert mutualisation not in [(p["id_cours"], p["id_classe"]) for p in console["cours_public_publie"]]
+    assert mutualisation not in invites()
+    # Publiée seule, sans séance changée : les invités la voient
+    r = publier(client)
+    assert (r["ajoutees"], r["retirees"], r["modifiees"], r["mutualisations"]) == (0, 0, 0, 1)
+    assert mutualisation in invites()
+
+    # Retirée : les invités la voient encore jusqu'à la publication suivante
+    id_ligne = next(p["id_cours_public"] for p in client.get("/api/base", headers=ADMIN).json()["cours_public"]
+                    if (p["id_cours"], p["id_classe"]) == mutualisation)
+    assert sync(supprimer=[{"id_cours_public": id_ligne}]).status_code == 200
+    assert mutualisation in invites()
+    assert publier(client)["mutualisations"] == 1
+    assert mutualisation not in invites()
+    assert client.post("/api/emplois-du-temps/1/publier", headers=ADMIN).status_code == 409

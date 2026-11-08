@@ -203,12 +203,37 @@ class TestMoteur(unittest.TestCase):
             {"id_cours": 1, "date": "2026-09-14", "heure_debut": "07:00", "heure_fin": "09:00", "id_salle": 1},
             {"id_cours": 2, "date": "2026-09-14", "heure_debut": "08:00", "heure_fin": "10:00", "id_salle": 2},
             {"id_cours": 2, "date": "2026-09-19", "heure_debut": "13:00", "heure_fin": "15:00", "id_salle": 5},
+            # la promotion 1 a déjà cours au site 1 ce lundi : le site 2 l'après-midi est refusé
+            {"id_cours": 2, "date": "2026-09-14", "heure_debut": "13:00", "heure_fin": "15:00", "id_salle": 5},
         ]
         v = " | ".join(valider(d, mauvaises))
         self.assertIn("étudiants communs", v)
         self.assertIn("salle trop petite", v)
         self.assertIn("hors des plages", v)
-        self.assertIn("hors du site", v)
+        self.assertIn("deux campus le même jour", v)
+
+    def test_cours_mutualise_entre_deux_campus(self):
+        """Une promotion peut aller sur l'autre campus pour un cours mutualisé, jamais sur les deux le même jour ;
+        ses autres cours restent sur son campus."""
+        classes = [{"id_classe": 1, "code_classe": "A", "id_site": 1, "effectif": 30},
+                   {"id_classe": 2, "code_classe": "B", "id_site": 2, "effectif": 30}]
+        salles = [{"id_salle": 1, "id_site": 1, "id_type_salle": STD, "capacite": 80, "reservee_a": []},
+                  {"id_salle": 2, "id_site": 1, "id_type_salle": STD, "capacite": 40, "reservee_a": []},
+                  {"id_salle": 5, "id_site": 2, "id_type_salle": STD, "capacite": 80, "reservee_a": []}]
+        d = mini([cours(1, 1, 8, 1, publics=[{"id_classe": 1, "id_groupe": None}, {"id_classe": 2, "id_groupe": None}]),
+                  cours(2, 2, 12, 2), cours(3, 1, 8, 3)], classes=classes, salles=salles)
+        res, v = lancer(d)
+        self.assertEqual(v, [])
+        self.assertEqual((heures(res, 1), heures(res, 2), heures(res, 3)), (8, 12, 8))
+        site = {x["id_salle"]: x["id_site"] for x in salles}
+        par_jour = {}
+        for x in res["seances"]:
+            for p in next(c for c in d["cours"] if c["id_cours"] == x["id_cours"])["publics"]:
+                par_jour.setdefault((p["id_classe"], x["date"]), set()).add(site[x["id_salle"]])
+        self.assertTrue(all(len(s) == 1 for s in par_jour.values()))
+        # le cours mutualisé a lieu au campus de sa classe (A) ; les cours de B restent au sien
+        self.assertTrue(all(site[x["id_salle"]] == 1 for x in res["seances"] if x["id_cours"] == 1))
+        self.assertTrue(all(site[x["id_salle"]] == 2 for x in res["seances"] if x["id_cours"] == 2))
 
     def test_instance_2ie_complete(self):
         d = generate(seed=3, promotions=["S1", "S5 D", "S5 S", "CPGE 1", "S9 IAA"])

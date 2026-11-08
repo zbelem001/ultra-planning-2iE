@@ -26,7 +26,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from . import config
 from .auth import Utilisateur, utilisateur_courant
-from .db import connexion, origine
+from .db import connexion, mutualisations_publiees, origine
 
 routeur = APIRouter()
 journal = logging.getLogger("ultraplanning.notifications")
@@ -104,6 +104,20 @@ def _seances(conn: psycopg.Connection, id_edt: int | None) -> list[dict]:
     cles = ("id_seance", "id_cours", "date_seance", "heure_debut", "heure_fin", "id_salle", "statut",
             "type_cours", "id_enseignant", "matiere", "classe", "salle", "nature")
     return [dict(zip(cles, r)) for r in rows]
+
+
+def _mutualisations(conn: psycopg.Connection, id_semestre: int) -> set[tuple]:
+    """Mutualisations de travail des cours du semestre : (cours, classe, groupe)"""
+    return set(conn.execute(
+        "SELECT p.id_cours, p.id_classe, p.id_groupe FROM cours_public p JOIN cours c ON c.id_cours = p.id_cours "
+        "WHERE c.id_semestre = %s", (id_semestre,)).fetchall())
+
+
+def _mutualisations_copie(conn: psycopg.Connection, id_copie: int | None) -> set[tuple]:
+    """Mutualisations de la copie publiée, celles que voient les invités"""
+    if id_copie is None:
+        return set()
+    return set(conn.execute("SELECT id_cours, id_classe, id_groupe FROM cours_public_publie WHERE id_edt = %s", (id_copie,)).fetchall())
 
 
 # Ce que voient les invités : le verrouillage, propre au travail de planification, n'en fait pas partie
@@ -265,7 +279,11 @@ def publier(id_edt: int, conn: psycopg.Connection = Depends(connexion), u: Utili
         ).fetchone()
         avant = _seances(conn, copie[0] if copie else None)
         d = comparer(avant, _seances(conn, id_edt))
-        if d.vide and (copie is None or copie[1] == "publie"):
+        # Mutualisations (base en version 15) : elles aussi ne changent pour les invités qu'à la publication
+        versionnees = mutualisations_publiees(conn)
+        mutualisations = (len(_mutualisations(conn, id_semestre) ^ _mutualisations_copie(conn, copie[0] if copie else None))
+                          if versionnees else 0)
+        if d.vide and not mutualisations and (copie is None or copie[1] == "publie"):
             raise HTTPException(409, "Rien à publier : les invités voient déjà cette version")
 
         origine(conn, "publication")  # seule une publication peut changer la copie publiée
@@ -289,6 +307,13 @@ def publier(id_edt: int, conn: psycopg.Connection = Depends(connexion), u: Utili
         conn.execute("DELETE FROM seance WHERE id_seance = ANY(%s)", (a_retirer,))
         _copier_seances(conn, id_copie, sorted(d.ajoutees + [b for _, b in d.modifiees],
                                                key=lambda s: (s["date_seance"], s["heure_debut"], s["id_seance"])))
+        if versionnees:
+            conn.execute("DELETE FROM cours_public_publie WHERE id_edt = %s", (id_copie,))
+            conn.execute(
+                "INSERT INTO cours_public_publie (id_edt, id_cours, id_classe, id_groupe) "
+                "SELECT %s, p.id_cours, p.id_classe, p.id_groupe FROM cours_public p JOIN cours c ON c.id_cours = p.id_cours "
+                "WHERE c.id_semestre = %s ORDER BY p.id_cours_public", (id_copie, id_semestre),
+            )
         conn.execute("UPDATE emploi_du_temps SET statut = 'archive' WHERE statut = 'publie' AND id_edt <> %s", (id_copie,))
         conn.execute("UPDATE emploi_du_temps SET statut = 'publie', date_publication = now() WHERE id_edt = %s", (id_copie,))
         conn.execute(
@@ -308,4 +333,4 @@ def publier(id_edt: int, conn: psycopg.Connection = Depends(connexion), u: Utili
         planifier(messages)
         notification = {"statut": "en_cours", "destinataires": len(messages), "sans_adresse": sans_adresse}
     return {"id_edt": id_edt, "id_publie": id_copie, "ajoutees": len(d.ajoutees), "retirees": len(d.retirees),
-            "modifiees": len(d.modifiees), "notification": notification}
+            "modifiees": len(d.modifiees), "mutualisations": mutualisations, "notification": notification}

@@ -30,32 +30,47 @@ export default function Dashboard() {
   const { db } = useStore()
   const edt = edtTravail(db)
   const semestre = db.semestre.find((s) => s.id_semestre === edt.id_semestre)!
+  // Calculs sur toutes les séances : une fois par changement de la base, pas à chaque rendu
   const seances = useMemo(() => db.seance.filter((s) => s.id_edt === edt.id_edt), [db, edt])
-  const actives = seances.filter((s) => s.statut !== 'annulee')
+  const actives = useMemo(() => seances.filter((s) => s.statut !== 'annulee'), [seances])
   const today = todayIso()
   const lundi = mondayOf(today >= semestre.date_debut ? today : semestre.date_debut)
   const [tri, setTri] = useState<'ecart' | 'matiere'>('ecart')
+  const [toutesLesLignes, setToutesLesLignes] = useState(false)
 
-  const coursSemestre = db.cours.filter((c) => c.id_semestre === semestre.id_semestre)
-  const manques = couverture(db, semestre.id_semestre).filter((e) => e.couvert < e.prevu)
+  const coursSemestre = useMemo(() => db.cours.filter((c) => c.id_semestre === semestre.id_semestre), [db.cours, semestre.id_semestre])
+  const manques = useMemo(() => couverture(db, semestre.id_semestre).filter((e) => e.couvert < e.prevu), [db, semestre.id_semestre])
   const prevues = coursSemestre.reduce((a, c) => a + c.volume_horaire, 0)
-  const cours = actives.filter((s) => !estEpreuve(s)) // les épreuves ne comptent pas dans les volumes
-  const planifiees = cours.reduce((a, s) => a + hours(s.heure_debut, s.heure_fin), 0)
+  const cours = useMemo(() => actives.filter((s) => !estEpreuve(s)), [actives]) // les épreuves ne comptent pas dans les volumes
+  const planifiees = useMemo(() => cours.reduce((a, s) => a + hours(s.heure_debut, s.heure_fin), 0), [cours])
 
   const violations = useMemo(() => actives.reduce((n, s) => n + (checkSeance(db, s).length ? 1 : 0), 0), [db, actives])
 
-  const lignes = coursSemestre
-    .map((c) => {
-      const list = cours.filter((s) => s.id_cours === c.id_cours)
-      const plan = list.reduce((a, s) => a + hours(s.heure_debut, s.heure_fin), 0)
-      const faites = list.filter((s) => s.date_seance < today).reduce((a, s) => a + hours(s.heure_debut, s.heure_fin), 0)
-      const m = db.matiere.find((x) => x.id_matiere === c.id_matiere)!
-      const cl = db.classe.find((x) => x.id_classe === c.id_classe)!
-      const g = db.groupe.find((x) => x.id_groupe === c.id_groupe) ?? null
-      const e = db.enseignant.find((x) => x.id_enseignant === c.id_enseignant)
-      return { c, m, public: publicCours(cl, g), ens: nomEnseignant(e), plan, faites, reste: c.volume_horaire - plan }
-    })
-    .sort((a, b) => (tri === 'ecart' ? b.reste - a.reste : a.m.libelle.localeCompare(b.m.libelle)))
+  const lignes = useMemo(() => {
+    // heures planifiées et effectuées de chaque cours, en un passage sur les séances
+    const parCours = new Map<number, { plan: number; faites: number }>()
+    for (const s of cours) {
+      const h = hours(s.heure_debut, s.heure_fin)
+      const a = parCours.get(s.id_cours) ?? { plan: 0, faites: 0 }
+      a.plan += h
+      if (s.date_seance < today) a.faites += h
+      parCours.set(s.id_cours, a)
+    }
+    const mat = new Map(db.matiere.map((x) => [x.id_matiere, x]))
+    const cla = new Map(db.classe.map((x) => [x.id_classe, x]))
+    const grp = new Map(db.groupe.map((x) => [x.id_groupe, x]))
+    const ens = new Map(db.enseignant.map((x) => [x.id_enseignant, x]))
+    return coursSemestre
+      .map((c) => {
+        const { plan, faites } = parCours.get(c.id_cours) ?? { plan: 0, faites: 0 }
+        const m = mat.get(c.id_matiere)!
+        const g = c.id_groupe !== null ? grp.get(c.id_groupe) ?? null : null
+        const e = c.id_enseignant !== null ? ens.get(c.id_enseignant) : undefined
+        return { c, m, public: publicCours(cla.get(c.id_classe)!, g), ens: nomEnseignant(e), plan, faites, reste: c.volume_horaire - plan }
+      })
+      .sort((a, b) => (tri === 'ecart' ? b.reste - a.reste : a.m.libelle.localeCompare(b.m.libelle)))
+  }, [db.matiere, db.classe, db.groupe, db.enseignant, cours, coursSemestre, today, tri])
+  const LIGNES_VISIBLES = 40
 
   // Semaine courante
   const semaine = enrichir(db, actives.filter((s) => s.date_seance >= lundi && s.date_seance <= addDays(lundi, 6)))
@@ -106,7 +121,7 @@ export default function Dashboard() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-line/70">
-                {lignes.map((l) => (
+                {(toutesLesLignes ? lignes : lignes.slice(0, LIGNES_VISIBLES)).map((l) => (
                   <tr key={l.c.id_cours}>
                     <td className="py-2.5 pr-3">
                       <span className="flex items-center gap-2">
@@ -129,6 +144,11 @@ export default function Dashboard() {
               </tbody>
             </table>
           </div>
+          {lignes.length > LIGNES_VISIBLES && (
+            <button type="button" className="press mt-3 rounded-full px-3 py-1.5 text-sm font-medium text-navy hover:bg-muted" onClick={() => setToutesLesLignes((x) => !x)}>
+              {toutesLesLignes ? 'Afficher moins' : `Afficher les ${lignes.length - LIGNES_VISIBLES} autres cours`}
+            </button>
+          )}
         </Card>
 
         <div className="grid grid-cols-1 content-start gap-6">

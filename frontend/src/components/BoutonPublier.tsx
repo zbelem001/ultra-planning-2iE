@@ -4,7 +4,7 @@
 import { CheckCircle2, Loader2, Send } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { toast } from 'sonner'
-import { Button, Dialog } from '@/components/ui'
+import { Button, cn, Dialog } from '@/components/ui'
 import { publierEdt } from '@/lib/api'
 import { useStore } from '@/lib/store'
 import { fmtDateHeure } from '@/lib/time'
@@ -60,6 +60,7 @@ export function BoutonPublier({ travail }: { travail: EmploiDuTemps }) {
     ['Annulées', diff.annulees],
     ['Retirées', diff.retirees],
     ['Modifiées', diff.modifiees],
+    ...(diff.mutualisations ? [['Mutualisations', diff.mutualisations] as [string, number]] : []),
   ]
 
   return (
@@ -85,7 +86,7 @@ export function BoutonPublier({ travail }: { travail: EmploiDuTemps }) {
           </>
         }
       >
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <div className={cn('grid grid-cols-2 gap-3', diff.mutualisations ? 'sm:grid-cols-5' : 'sm:grid-cols-4')}>
           {compteurs.map(([l, v]) => (
             <div key={l} className="rounded-2xl bg-subtle p-3">
               <p className="section-label">{l}</p>
@@ -93,6 +94,11 @@ export function BoutonPublier({ travail }: { travail: EmploiDuTemps }) {
             </div>
           ))}
         </div>
+        {diff.mutualisations > 0 && (
+          <p className="mt-4 text-sm text-ink-2">
+            {diff.mutualisations > 1 ? `${diff.mutualisations} classes ajoutées ou retirées` : 'Une classe ajoutée ou retirée'} d'un cours mutualisé : les invités ne voient ce changement qu'une fois publié.
+          </p>
+        )}
         <p className="mt-4 text-sm text-ink-2">
           {diff.enseignants
             ? `${concernes(diff.enseignants)} par un changement ${diff.enseignants > 1 ? 'seront prévenus par e-mail, chacun avec ses seules séances touchées' : 'sera prévenu par e-mail, avec ses seules séances touchées'}. Les autres ne reçoivent rien.`

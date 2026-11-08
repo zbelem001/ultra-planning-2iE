@@ -30,7 +30,7 @@ interface Store {
 const Ctx = createContext<Store | null>(null)
 
 /** Clé primaire de chaque table (mêmes colonnes que schema_supabase.sql) */
-const CLES: Record<Exclude<keyof Db, 'ecole'>, string[]> = {
+const CLES: Record<Exclude<keyof Db, 'ecole' | 'cours_public_publie'>, string[]> = {
   site: ['id_site'], filiere: ['id_filiere'], classe: ['id_classe'], groupe: ['id_groupe'], matiere: ['id_matiere'],
   enseignant: ['id_enseignant'], absence_enseignant: ['id_absence'],
   sejour_enseignant: ['id_sejour'], creneau: ['id_creneau'], pause: ['id_pause'], jour_ferie: ['date_ferie'],
@@ -45,7 +45,64 @@ const CLES: Record<Exclude<keyof Db, 'ecole'>, string[]> = {
 
 const vide = (): Db => Object.fromEntries(Object.keys(CLES).map((t) => [t, []])) as unknown as Db
 
-/** Différence entre deux images de la base, au format de /api/base/sync */
+// --- Modifications : seules les tables qu'une modification lit sont copiées, et les lignes inchangées gardent
+// leur objet. Les autres tables restent les mêmes : les calculs qui en dépendent (useMemo) ne se refont pas,
+// et enrichir() ne refait que les séances changées. Copier toute la base à chaque clic coûtait cher (4 000
+// séances et plus).
+
+type Lignes = Record<string, unknown>[]
+const jsonDe = new WeakMap<object, string>()
+const json = (r: object) => {
+  let j = jsonDe.get(r)
+  if (j === undefined) jsonDe.set(r, (j = JSON.stringify(r)))
+  return j
+}
+
+/** Brouillon d'une modification : une table n'est copiée (en profondeur) qu'au moment où on la lit */
+function brouillonDe(avant: Db): { brouillon: Db; touchees: Set<string> } {
+  const touchees = new Set<string>()
+  const brouillon = {} as Record<string, unknown>
+  const fixer = (k: string, v: unknown) => Object.defineProperty(brouillon, k, { value: v, writable: true, enumerable: true, configurable: true })
+  for (const k of Object.keys(avant)) {
+    Object.defineProperty(brouillon, k, {
+      enumerable: true,
+      configurable: true,
+      get() { touchees.add(k); const v = structuredClone((avant as unknown as Record<string, unknown>)[k]); fixer(k, v); return v },
+      set(v) { touchees.add(k); fixer(k, v) },
+    })
+  }
+  return { brouillon: brouillon as unknown as Db, touchees }
+}
+
+/** Image après la modification : les tables non lues et les lignes inchangées reprennent leur objet d'avant */
+function partager(avant: Db, brouillon: Db, touchees: Set<string>): Db {
+  const apres = { ...avant } as unknown as Record<string, unknown>
+  const anc = avant as unknown as Record<string, unknown>
+  const nouv = brouillon as unknown as Record<string, unknown>
+  for (const t of touchees) {
+    const a = anc[t]
+    const n = nouv[t]
+    const pk = (CLES as Record<string, string[]>)[t]
+    if (!pk || !Array.isArray(a) || !Array.isArray(n)) { apres[t] = JSON.stringify(a) === JSON.stringify(n) ? a : n; continue }
+    const cle = (r: Record<string, unknown>) => pk.map((c) => String(r[c])).join('|')
+    const anciennes = new Map((a as Lignes).map((r) => [cle(r), r]))
+    let pareil = a.length === n.length
+    const lignes = (n as Lignes).map((r, i) => {
+      const r0 = anciennes.get(cle(r))
+      if (r0 !== undefined && json(r0) === JSON.stringify(r)) {
+        if (a[i] !== r0) pareil = false
+        return r0
+      }
+      pareil = false
+      return r
+    })
+    apres[t] = pareil ? a : lignes
+  }
+  return apres as unknown as Db
+}
+
+/** Différence entre deux images de la base, au format de /api/base/sync. Les lignes inchangées ayant gardé
+ *  leur objet (partager), une ligne à envoyer est une ligne qui n'est plus le même objet. */
 function difference(avant: Db, apres: Db): Changements | null {
   const out: Changements = {}
   for (const table of Object.keys(CLES) as (keyof typeof CLES)[]) {
@@ -54,18 +111,33 @@ function difference(avant: Db, apres: Db): Changements | null {
     const cle = (r: Record<string, unknown>) => pk.map((c) => String(r[c])).join('|')
     const anciennes = new Map((avant[table] as unknown as Record<string, unknown>[]).map((r) => [cle(r), r]))
     const nouvelles = new Map((apres[table] as unknown as Record<string, unknown>[]).map((r) => [cle(r), r]))
-    const upsert = [...nouvelles].filter(([k, r]) => JSON.stringify(anciennes.get(k)) !== JSON.stringify(r)).map(([, r]) => r)
+    const upsert = [...nouvelles].filter(([k, r]) => anciennes.get(k) !== r).map(([, r]) => r)
     const supprimer = [...anciennes].filter(([k]) => !nouvelles.has(k)).map(([, r]) => Object.fromEntries(pk.map((c) => [c, r[c]])))
     if (upsert.length || supprimer.length) out[table] = { upsert, supprimer }
   }
   return Object.keys(out).length ? out : null
 }
 
+/** Mode simulé : copie publiée des mutualisations, comme la migration 015 la crée (celles du moment, pour chaque
+ *  version publiée) quand la base simulée n'en a pas encore */
+function avecMutualisationsPubliees(db: Db): Db {
+  if (db.cours_public_publie !== undefined) return db
+  let id = 1
+  const cours_public_publie = db.emploi_du_temps
+    .filter((e) => e.statut === 'publie' || e.statut === 'archive')
+    .flatMap((e) => {
+      const duSemestre = new Set(db.cours.filter((c) => c.id_semestre === e.id_semestre).map((c) => c.id_cours))
+      return db.cours_public.filter((p) => duSemestre.has(p.id_cours))
+        .map((p) => ({ id_cours_public_publie: id++, id_edt: e.id_edt, id_cours: p.id_cours, id_classe: p.id_classe, id_groupe: p.id_groupe }))
+    })
+  return { ...db, cours_public_publie }
+}
+
 /** Mode simulé : base gardée dans le navigateur, sinon null (jeu de test à charger) */
 function chargerLocal(): Db | null {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
-    if (raw) return JSON.parse(raw) as Db
+    if (raw) return avecMutualisationsPubliees(JSON.parse(raw) as Db)
   } catch {
     /* stockage indisponible : on repart du jeu de test */
   }
@@ -78,7 +150,7 @@ const jeuDeTest = () => import('@/data/mock').then((m) => m.createMockDb())
 export function StoreProvider({ children }: { children: ReactNode }) {
   const session = useSession()
   const [db, setDb] = useState<Db>(() => (MODE_CONNECTE ? vide() : chargerLocal() ?? vide()))
-  const [etat, setEtat] = useState<Etat>(MODE_CONNECTE || chargerLocal() === null ? 'chargement' : 'pret')
+  const [etat, setEtat] = useState<Etat>(() => (MODE_CONNECTE || chargerLocal() === null ? 'chargement' : 'pret'))
   const [erreur, setErreur] = useState('')
   const [ecoleAChoisir, setEcoleAChoisir] = useState(false)
   const courant = useRef(db)
@@ -154,7 +226,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   // Mode simulé, première visite : jeu de test
   useEffect(() => {
     if (MODE_CONNECTE || etat !== 'chargement') return
-    void jeuDeTest().then((d) => { appliquer(d); setEtat('pret') })
+    void jeuDeTest().then((d) => { appliquer(avecMutualisationsPubliees(d)); setEtat('pret') })
   }, [etat, appliquer])
 
   // Au démarrage et à chaque connexion / déconnexion : image publique ou complète
@@ -175,8 +247,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const mutate = useCallback((fn: (draft: Db) => void) => {
     const avant = courant.current
-    const apres = structuredClone(avant)
-    fn(apres)
+    const { brouillon, touchees } = brouillonDe(avant)
+    fn(brouillon)
+    const apres = partager(avant, brouillon, touchees)
     appliquer(apres)
     if (!MODE_CONNECTE) return
     const changements = difference(avant, apres)

@@ -34,6 +34,12 @@ def premiere_seance(conn, code_classe):
     ).fetchone()
 
 
+# Fenêtre pour replacer les séances d'un lundi sans perdre d'heure : elle déborde sur une semaine que la génération
+# des tests laisse vide (elle s'arrête au bout d'un mois). Chaque promotion reste sur son campus mère : trois
+# semaines pleines ne suffisent plus toujours.
+FENETRE_LIBRE = timedelta(days=33)
+
+
 def classe_avec_cours_un_lundi(conn):
     return conn.execute(
         """SELECT cl.code_classe, s.date_seance FROM seance s JOIN cours c USING (id_cours) JOIN classe cl USING (id_classe)
@@ -220,7 +226,9 @@ def test_une_seance_sans_place_reste_ou_elle_est(ctx, conn, cours_etale):
 def test_reprogrammer_verifie_le_cours_et_ne_va_pas_dans_le_passe(ctx, conn, cours_etale):
     k, _ = cours_etale
     assert proposer_reprogrammation_cours(ctx, "x", [999999], "2026-11-23", "2026-12-05").startswith("Demande invalide")
-    # Période commencée : rien avant demain, même si la semaine a débuté lundi
+    # Période commencée : rien avant demain, même si la semaine a débuté lundi (semaine libérée pour la L2INFO)
+    conn.execute("""DELETE FROM seance s USING cours c, classe cl WHERE c.id_cours = s.id_cours AND cl.id_classe = c.id_classe
+                    AND cl.code_classe = 'L2INFO' AND s.date_seance BETWEEN '2026-11-02' AND '2026-11-07'""")
     proposer_reprogrammation_cours(ctx, "x", [k], "2026-11-04", "2026-11-07")
     ops = conn.execute("SELECT modifications FROM proposition WHERE id_proposition = %s", (ctx.propositions_creees[0],)).fetchone()[0]
     assert all(o["apres"]["date_seance"] > "2026-11-04" for o in ops if o["action"] == "creer")
@@ -232,9 +240,9 @@ def test_un_changement_de_seances_s_applique_directement(edt_a_remettre, ctx, co
     classe, lundi = classe_avec_cours_un_lundi(conn)
     avant = conn.execute("SELECT count(*) FROM seance WHERE id_edt = 1 AND date_seance = %s", (lundi,)).fetchone()[0]
     outils = {o.nom: o for o in construire_outils(ctx)}
-    # Trois semaines pour replacer les séances de ce seul lundi : aucune heure perdue
+    # Assez de place pour replacer les séances de ce seul lundi : aucune heure perdue
     texte = executer_outil(ctx, outils, "proposer_replanification", json.dumps({
-        "description": "Libérer le lundi", "du": lundi.isoformat(), "au": (lundi + timedelta(days=19)).isoformat(), "classes": [classe],
+        "description": "Libérer le lundi", "du": lundi.isoformat(), "au": (lundi + FENETRE_LIBRE).isoformat(), "classes": [classe],
         "contraintes": [{"type": "interdire", "code_classe": classe, "date_debut": lundi.isoformat(), "date_fin": lundi.isoformat()}]}))
     id_prop = ctx.propositions_creees[0]
     id_prompt = ctx.id_prompt
@@ -269,7 +277,7 @@ def test_ce_qui_perd_des_heures_attend_une_confirmation(ctx, conn):
 
 def test_une_application_refusee_est_rapportee(ctx, conn, monkeypatch):
     classe, lundi = classe_avec_cours_un_lundi(conn)
-    proposer_replanification(ctx, "x", lundi.isoformat(), (lundi + timedelta(days=19)).isoformat(), classes=[classe],
+    proposer_replanification(ctx, "x", lundi.isoformat(), (lundi + FENETRE_LIBRE).isoformat(), classes=[classe],
                              contraintes=[{"type": "interdire", "code_classe": classe, "date_debut": lundi.isoformat(), "date_fin": lundi.isoformat()}])
 
     def refuser(*a):

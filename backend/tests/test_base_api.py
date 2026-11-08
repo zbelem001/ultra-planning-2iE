@@ -134,9 +134,10 @@ def test_donnees_2ie_par_la_console(client):
     b = client.get("/api/base", headers=ADMIN).json()
     assert [(p["id_cours"], p["id_classe"]) for p in b["cours_public"]] == [(cours["id_cours"], autre["id_classe"])]
     assert b["salle_reservation"] and b["cours_type_salle"] and b["site_trajet"][0]["minutes"] == 75
-    # Les invités voient les publics des cours mutualisés, pas les réservations
+    # Les invités ne voient pas les réservations, ni une mutualisation tant qu'elle n'est pas publiée
+    # (test_publication.py : une fois publiée, si)
     p = client.get("/api/base/public?ecole=2IE").json()
-    assert p["cours_public"] and p["salle_reservation"] == []
+    assert p["cours_public"] == [] and p["salle_reservation"] == []
     # Trajet dans le mauvais sens : refusé par la base (id_site_a < id_site_b)
     r = client.post("/api/base/sync", headers=ADMIN, json={"tables": {"site_trajet": {"upsert": [
         {"id_site_trajet": 900002, "id_site_a": sites[1], "id_site_b": sites[0], "minutes": 10}], "supprimer": []}}})

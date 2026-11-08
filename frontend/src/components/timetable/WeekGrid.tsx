@@ -8,6 +8,7 @@ import { cn } from '@/components/ui'
 import type { Db } from '@/types/db'
 import type { SeanceVue } from '@/lib/queries'
 import { fermeture } from '@/lib/rules'
+import { estEpreuve } from '@/lib/publics'
 import { addDays, fmtHeure, fmtJourCourt, fromMin, jourOf, todayIso, toMin } from '@/lib/time'
 import { EventCard, type Champ } from './EventCard'
 
@@ -58,6 +59,8 @@ export interface GridEdition {
   onSurvol?: (p: { date: string; minute: number } | null) => void
   /** Séance copiée : encadrée en pointillé */
   copiee?: number | null
+  /** Petit « + » d'une séance : l'allonger d'une heure */
+  onAllonger?: (s: SeanceVue) => void
   /** Pendant un glisser : lundis des semaines voisines (null au bord du semestre). S'attarder sur la bande de
    *  gauche ou de droite de la grille passe à la semaine précédente ou suivante, où l'on peut lâcher la séance. */
   voisines?: { avant: string | null; apres: string | null }
@@ -449,6 +452,11 @@ export function WeekGrid({ db, days, seances, hide, selectedId, onSelect, editio
                 const top = y(toMin(s.heure_debut))
                 const h = y(toMin(s.heure_fin)) - top
                 const canDrag = !!edition && s.statut !== 'annulee' && !s.est_verrouillee
+                // « + » seulement si l'heure suivante existe ce jour-là, sans pause, et sous la durée maximale
+                const fin = toMin(s.heure_fin) + 60
+                const peutAllonger = canDrag && !glisse && !!edition?.onAllonger
+                  && s.duree + 1 <= (estEpreuve(s) ? 3 : 5)
+                  && finsPossibles(db, s.date_seance, s.heure_debut, [fin - toMin(s.heure_debut)]).length > 0
                 return (
                   <div
                     key={s.id_seance}
@@ -475,6 +483,8 @@ export function WeekGrid({ db, days, seances, hide, selectedId, onSelect, editio
                         : undefined}
                       onDragEnd={edition?.onDragEnd}
                       onClick={onSelect ? () => onSelect(s) : undefined}
+                      onPlus={peutAllonger ? () => edition!.onAllonger!(s) : undefined}
+                      plusTitre={`Allonger d'une heure (jusqu'à ${fmtHeure(fromMin(fin))})`}
                     />
                   </div>
                 )

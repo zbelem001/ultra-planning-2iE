@@ -67,6 +67,16 @@ export interface CoursPublic {
   id_groupe: number | null
 }
 
+/** Copie publiée d'une mutualisation (COURS_PUBLIC_PUBLIE) : ce que voient les invités, écrite par la publication */
+export interface CoursPublicPublie {
+  id_cours_public_publie: number
+  /** Version publiée (copie) */
+  id_edt: number
+  id_cours: number
+  id_classe: number
+  id_groupe: number | null
+}
+
 /** Type de salle accepté en plus du type exigé par le cours */
 export interface CoursTypeSalle {
   id_cours_type_salle: number
@@ -405,6 +415,9 @@ export interface Db {
   programme: Programme[]
   cours: Cours[]
   cours_public: CoursPublic[]
+  /** Lecture seule, jamais synchronisée : mutualisations publiées (console ; null : base avant la version 15,
+   *  sans copie publiée ; absente en mode simulé tant que rien n'est publié) */
+  cours_public_publie?: CoursPublicPublie[] | null
   cours_type_salle: CoursTypeSalle[]
   cours_seance_modele: CoursSeanceModele[]
   disponibilite: Disponibilite[]

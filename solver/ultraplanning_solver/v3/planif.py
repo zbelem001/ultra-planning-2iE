@@ -11,8 +11,9 @@ Pour chaque semaine, dans l'ordre :
 3. ce qui n'a pas pu être placé reste dû et redevient demandé la semaine suivante.
 
 Règles dures : pas de chevauchement (salle, enseignant de la séance, atomes d'étudiants),
-salle du site de la promotion, du bon type, assez grande, réservée seulement à ses ayants
-droit, plages horaires, jours ouverts, séjour et indisponibilités de l'enseignant,
+salle sur le campus de la promotion (cours mutualisé entre deux campus : celui de la classe du
+cours), une promotion sur un seul campus par jour, salle du bon type, assez grande, réservée
+seulement à ses ayants droit, plages horaires, jours ouverts, séjour et indisponibilités de l'enseignant,
 plafond journalier, rythme maximal (CD-14), matières par semaine (CD-13), règles
 « interdire », « imposer » et « precede ». Le reste est un coût.
 
@@ -38,6 +39,8 @@ class Etat:
         self.ens_h: dict[tuple[int, int], set[int]] = defaultdict(set)
         self.ens_site: dict[tuple[int, int], Counter] = defaultdict(Counter)
         self.ens_heure_site: dict[tuple[int, int], dict[int, int]] = defaultdict(dict)   # heure -> site
+        # (promotion, jour) -> campus de ses séances : une promotion n'a cours que sur un campus par jour
+        self.classe_site: dict[tuple[int, int], Counter] = defaultdict(Counter)
         self.ens_sem: dict[tuple[int, int], int] = defaultdict(int)
         self.occupe: dict[tuple[int, int], int] = defaultdict(int)     # (jour, heure) -> atomes
         self.atome_h: dict[tuple[int, int], int] = defaultdict(int)    # (jour, atome) -> heures
@@ -53,6 +56,10 @@ class Etat:
             self.reste_matiere[c.matiere] += c.volume
         self.seances: list[dict] = []
         self.cout = 0.0
+
+    def autre_site(self, c: Cours, di: int, site: int) -> bool:
+        """Une promotion du cours a déjà cours sur un autre campus ce jour-là"""
+        return any(n > 0 and x != site for ic in c.classes for x, n in self.classe_site.get((ic, di), {}).items())
 
     def poser(self, c: Cours, di: int, debut: int, duree: int, salle: int, cout: float = 0.0,
               ens=_DU_COURS, fixe: bool = False):
@@ -72,6 +79,7 @@ class Etat:
             self.ens_sem[ens, w] += duree
         for ic in c.classes:
             self.mat_sem[ic, w][c.matiere] += 1
+            self.classe_site[ic, di][site] += 1
         self.cours_jour[c.id, di] += 1
         self.cours_sem[c.id, w] += duree
         m = c.matiere
@@ -107,6 +115,7 @@ class Etat:
             m[c.matiere] -= 1
             if m[c.matiere] <= 0:
                 del m[c.matiere]
+            self.classe_site[ic, di][self.inst.salles[s["id_salle"]]["id_site"]] -= 1
         self.cours_jour[c.id, di] -= 1
         self.cours_sem[c.id, w] -= duree
         self.reste[c.id] += duree
@@ -186,6 +195,9 @@ def placer_seance(inst: Instance, e: Etat, c: Cours, duree: int, w: int, rnd: ra
         if c.site is not None and site_possible(c.site) is None:
             echecs["enseignant déjà sur l'autre site ce jour"] += 1
             continue
+        if c.site is not None and e.autre_site(c, di, c.site):
+            echecs["promotion déjà sur l'autre campus ce jour"] += 1
+            continue
         for demi, (a, b) in enumerate(inst.plages[di]):
             if (jour, demi) in indispo:
                 echecs["indisponibilité de l'enseignant"] += 1
@@ -218,7 +230,7 @@ def placer_seance(inst: Instance, e: Etat, c: Cours, duree: int, w: int, rnd: ra
                     if any((r, di, h) in e.salle_occ for h in hs):
                         continue
                     sp = site_possible(inst.salles[r]["id_site"])
-                    if sp is None:
+                    if sp is None or e.autre_site(c, di, inst.salles[r]["id_site"]):
                         continue
                     if not trajet_ok(sp[0], s, duree, inst.trajet_h):
                         trajet_court = True

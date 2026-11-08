@@ -1,27 +1,29 @@
 // Planification manuelle (BF-11 à BF-14) : glisser-déposer sur la grille,
 // contrôle des contraintes dures en temps réel et salles compatibles proposées.
 
-import { Ban, CalendarPlus, CalendarRange, CheckCircle2, ClipboardPaste, Copy, CopyPlus, GripVertical, History, Lock, LockOpen, SquareArrowOutUpRight, Trash2, Undo2, UserMinus, Users, X, XCircle } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState, type DragEvent } from 'react'
+import { Ban, CalendarPlus, CalendarRange, CheckCircle2, ClipboardPaste, Copy, CopyPlus, History, Lock, LockOpen, SquareArrowOutUpRight, Trash2, Undo2, UserMinus, Users, X, XCircle } from 'lucide-react'
+import { Fragment, useEffect, useMemo, useRef, useState, type DragEvent } from 'react'
 import { toast } from 'sonner'
 import { BoutonPublier } from '@/components/BoutonPublier'
-import { Badge, Button, Card, cn, Combobox, Dialog, EmptyState, PageTitle, PillTabs, Select, type ComboOption } from '@/components/ui'
+import { Button, Card, cn, Combobox, Dialog, EmptyState, PageTitle, PillTabs, Select, type ComboOption } from '@/components/ui'
 import { DialogEpreuve, type DepartEpreuve } from '@/components/timetable/DialogEpreuve'
 import { DialogSeance, type DepartSeance } from '@/components/timetable/DialogSeance'
+import { LigneAPlacer } from '@/components/timetable/LigneAPlacer'
 import { HistoriqueVersions, RestaurerVersion } from '@/components/timetable/HistoriqueVersions'
 import { SeanceDetail } from '@/components/timetable/SeanceDetail'
-import { joursGrille, WeekGrid, type Cible, type SelectionGrille, type SlotState } from '@/components/timetable/WeekGrid'
+import { finsPossibles, joursGrille, WeekGrid, type Cible, type SelectionGrille, type SlotState } from '@/components/timetable/WeekGrid'
 import { WeekStrip } from '@/components/timetable/WeekStrip'
 import { seancesVersion, type VersionEdt } from '@/lib/api'
 import { expandWeek } from '@/lib/generator'
-import { couleurMatiere, enrichir, filtrer, lieuSalle, heuresPlanifiees, nomEnseignant, publicCours, type Ressource, type SeanceVue } from '@/lib/queries'
+import { enrichir, filtrer, lieuSalle, nomEnseignant, publicCours, type Ressource, type SeanceVue } from '@/lib/queries'
 import { aPlacer } from '@/lib/aPlacer'
 import { useFiltre } from '@/lib/filtres'
 import { useGrandEcran } from '@/lib/hauteur'
 import { estEpreuve } from '@/lib/publics'
-import { checkSeance, creneauAt, decoupage, evaluerCreneau, examenAvecRattrapage, REGLES_SALLE, sallesCompatibles, sallesDuCours, sallesPourEpreuves, type SeanceDraft } from '@/lib/rules'
+import { capaciteConnue, checkSeance, creneauAt, decoupage, evaluerCreneau, examenAvecRattrapage, REGLES_SALLE, sallesDuCours, sallesLibresSeance, sallesPourEpreuves, type SeanceDraft } from '@/lib/rules'
+import { disponibiliteMutualisation } from '@/lib/mutualisation'
 import { edtTravail, nextId, useStore } from '@/lib/store'
-import { addDays, fmtDateHeure, fmtHeure, fmtJourCourt, fromMin, jourOf, mondayOf, parseDate, todayIso, toMin, weeksBetween } from '@/lib/time'
+import { addDays, fmtDateHeure, fmtHeure, fmtJourCourt, fromMin, hours, jourOf, mondayOf, parseDate, todayIso, toMin, weeksBetween } from '@/lib/time'
 import type { Seance } from '@/types/db'
 
 // decalage : minutes entre le haut de la séance et le pointeur, là où elle a été saisie
@@ -126,12 +128,88 @@ export default function Planification() {
   }, [vues])
 
   // Cours concernés par la ressource affichée (panneau « à placer »)
-  const coursRes = db.cours.filter((c) => {
+  const coursRes = useMemo(() => db.cours.filter((c) => {
     if (c.id_semestre !== semestre.id_semestre || id === null) return false
     if (res === 'classe') return c.id_classe === id && (idGroupe === null || c.id_groupe === null || c.id_groupe === idGroupe)
     if (res === 'enseignant') return c.id_enseignant === id
     return false
-  })
+  }), [db.cours, semestre.id_semestre, id, res, idGroupe])
+
+  // Heures de chaque cours dans la version à jour, en un seul passage sur les séances : planifiées (une séance
+  // annulée ne compte plus, ses heures redeviennent à placer), posées dans la semaine affichée, annulées
+  const heuresParCours = useMemo(() => {
+    const m = new Map<number, { plan: number; semaine: number; annulees: number }>()
+    const dimanche = addDays(semaine, 6)
+    for (const s of db.seance) {
+      if (s.id_edt !== edt.id_edt || estEpreuve(s)) continue
+      const h = hours(s.heure_debut, s.heure_fin)
+      const a = m.get(s.id_cours) ?? { plan: 0, semaine: 0, annulees: 0 }
+      if (s.statut === 'annulee') a.annulees += h
+      else {
+        a.plan += h
+        if (s.date_seance >= semaine && s.date_seance <= dimanche) a.semaine += h
+      }
+      m.set(s.id_cours, a)
+    }
+    return m
+  }, [db.seance, edt.id_edt, semaine])
+  // Ce qui reste à placer en haut ; les cours terminés, regroupés en bas
+  const lignesAPlacer = useMemo(() => coursRes
+    .map((c) => {
+      const h = heuresParCours.get(c.id_cours) ?? { plan: 0, semaine: 0, annulees: 0 }
+      const r = aPlacer({
+        volume: c.volume_horaire,
+        planifiees: h.plan,
+        maxSemaine: c.heures_semaine_max,
+        semaine: h.semaine,
+        modele: decoupage(db, c.id_cours).map((x) => x.duree_heures),
+      })
+      return { c, plan: h.plan, annulees: h.annulees, ...r }
+    })
+    .sort((a, b) => Number(a.etat === 'volume_atteint') - Number(b.etat === 'volume_atteint')),
+  [coursRes, heuresParCours, db])
+  // Une ligne par cours (composant mémorisé : seules les lignes qui changent se redessinent) ; startDrag et endDrag
+  // n'utilisent que des setters d'état, leur effet ne change pas d'un rendu à l'autre
+  const listeAPlacer = useMemo(() => {
+    const mat = new Map(db.matiere.map((x) => [x.id_matiere, x]))
+    const cla = new Map(db.classe.map((x) => [x.id_classe, x]))
+    const grp = new Map(db.groupe.map((x) => [x.id_groupe, x]))
+    const ens = new Map(db.enseignant.map((x) => [x.id_enseignant, x]))
+    return (
+      <>
+        {lignesAPlacer.map(({ c, plan, annulees, etat, options, reste }, i, liste) => {
+          const m = mat.get(c.id_matiere)!
+          const g = c.id_groupe !== null ? grp.get(c.id_groupe) ?? null : null
+          const e = c.id_enseignant !== null ? ens.get(c.id_enseignant) : undefined
+          // séparateur avant les cours terminés, s'il y en a d'autres au-dessus
+          const premierTermine = etat === 'volume_atteint' && i > 0 && liste[i - 1].etat !== 'volume_atteint'
+          return (
+            <Fragment key={c.id_cours}>
+              {premierTermine && (
+                <li className="flex items-center gap-2 px-1 pt-2 text-[11px] font-medium tracking-wide text-ink-2 uppercase" aria-hidden>
+                  Volume atteint · {liste.length - i}<span className="h-px flex-1 bg-line" />
+                </li>
+              )}
+              <LigneAPlacer
+                c={c}
+                id_matiere={m.id_matiere}
+                libelle={m.libelle}
+                detail={`${c.type_cours} · ${publicCours(cla.get(c.id_classe)!, g)} · ${nomEnseignant(e)}`}
+                plan={plan}
+                annulees={annulees}
+                etat={etat}
+                durees={options}
+                reste={reste}
+                onGlisser={(id_cours, duree, ev) => startDrag({ kind: 'modele', id_cours, duree, decalage: DECALAGE_MODELE }, ev)}
+                onFin={() => endDrag()}
+              />
+            </Fragment>
+          )
+        })}
+        {coursRes.length === 0 && <li className="px-1 text-sm text-ink-2">Aucun cours pour cette sélection.</li>}
+      </>
+    )
+  }, [lignesAPlacer, db.matiere, db.classe, db.groupe, db.enseignant, coursRes.length]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const options: ComboOption[] =
     res === 'classe'
@@ -276,7 +354,63 @@ export default function Planification() {
   // ---------- Séance sélectionnée ----------
 
   const sel = selected !== null ? toutes.find((s) => s.id_seance === selected) ?? null : null
-  const sallesPossibles = sel ? sallesCompatibles(db, sel) : []
+  // Salles libres à l'horaire de la séance, sur son campus (voir sallesLibresSeance)
+  const sallesLibres = useMemo(() => (sel ? sallesLibresSeance(db, sel) : { salles: [], id_site: null }), [db, sel])
+
+  // Classes qui suivent le cours de la séance, et celles qu'on peut y ajouter (mutualisation)
+  const publicsEnPlus = sel ? db.cours_public.filter((p) => p.id_cours === sel.id_cours) : []
+  const optionsMutualisation: ComboOption[] = useMemo(() => {
+    if (!sel) return []
+    const deja = new Set([sel.cours.id_classe, ...db.cours_public.filter((p) => p.id_cours === sel.id_cours).map((p) => p.id_classe)])
+    return db.classe
+      .filter((c) => !deja.has(c.id_classe))
+      .map((c) => {
+        const d = disponibiliteMutualisation(db, edt.id_edt, sel.cours, c.id_classe)
+        return {
+          value: c.id_classe,
+          label: c.code_classe,
+          hint: d.ok ? `${c.libelle} · libre sur ${d.nb === 1 ? 'la séance' : `les ${d.nb} séances`} du cours` : d.motif,
+          group: d.ok ? 'Disponibles' : 'Non disponibles',
+          disabled: !d.ok,
+        }
+      })
+      .sort((a, b) => Number(a.disabled) - Number(b.disabled) || a.label.localeCompare(b.label))
+  }, [db, sel, edt.id_edt])
+  const mutualiser = (id_classe: number) => {
+    if (!sel) return
+    const classe = db.classe.find((c) => c.id_classe === id_classe)!
+    const d = disponibiliteMutualisation(db, edt.id_edt, sel.cours, id_classe)
+    if (!d.ok) return void toast.error(`${classe.code_classe} n'est pas disponible`, { description: d.motif })
+    mutate((x) => { x.cours_public.push({ id_cours_public: nextId(x.cours_public, 'id_cours_public'), id_cours: sel.id_cours, id_classe, id_groupe: null }) })
+    toast.success(`Cours mutualisé avec ${classe.code_classe}`, { description: `${d.nb === 1 ? 'Sa séance apparaît' : `Ses ${d.nb} séances apparaissent`} aussi dans l'emploi du temps de ${classe.code_classe}.` })
+  }
+  const demutualiser = (id_cours_public: number) => {
+    const p = db.cours_public.find((x) => x.id_cours_public === id_cours_public)
+    const classe = db.classe.find((c) => c.id_classe === p?.id_classe)
+    mutate((x) => { x.cours_public = x.cours_public.filter((k) => k.id_cours_public !== id_cours_public) })
+    toast.success(`${classe?.code_classe ?? 'La classe'} ne suit plus ce cours`, { description: 'Ses séances sortent de son emploi du temps.' })
+  }
+
+  /** Annuler une séance (ses heures redeviennent à placer) ou la rétablir, depuis le menu ou le détail */
+  const changerStatut = (s: Seance, statut: 'annulee' | 'planifiee') => {
+    setMenuSeance(null)
+    const epreuve = estEpreuve(s)
+    if (statut === 'annulee' && examenAvecRattrapage(db, s)) {
+      return void toast.error('Annulation refusée', { description: 'Ce module a un rattrapage : retirez-le avant son examen.' })
+    }
+    if (statut !== 'annulee') {
+      const vs = checkSeance(db, { ...s, statut })
+      if (vs.length) return void toast.error('Rétablissement refusé', { description: vs.map((v) => `${v.code} : ${v.message}`).join('\n') })
+    }
+    mutate((x) => { x.seance.find((k) => k.id_seance === s.id_seance)!.statut = statut })
+    const quoi = `${libelleSeance(s)} · ${fmtJourCourt(s.date_seance)}, ${fmtHeure(s.heure_debut)}–${fmtHeure(s.heure_fin)}`
+    if (statut === 'annulee') {
+      toast.success(epreuve ? 'Épreuve annulée' : 'Séance annulée', {
+        description: epreuve ? quoi : `${quoi} : ${dureeSeance(s)} h à placer de nouveau.`,
+        action: { label: 'Rétablir', onClick: () => changerStatut(s, 'planifiee') },
+      })
+    } else toast.success(epreuve ? 'Épreuve rétablie' : 'Séance rétablie', { description: quoi })
+  }
   const update = (patch: Partial<Seance>, msg: string) => {
     if (!sel) return
     const next = { ...sel, ...patch }
@@ -287,6 +421,42 @@ export default function Planification() {
     if (vs.length) return toast.error('Modification refusée', { description: vs.map((v) => `${v.code} : ${v.message}`).join('\n') })
     mutate((x) => Object.assign(x.seance.find((k) => k.id_seance === sel.id_seance)!, patch))
     toast.success(msg)
+  }
+
+  // ---------- Allonger une séance d'une heure (petit « + » de la carte) ----------
+
+  const allonger = (sv: SeanceVue) => {
+    const s = db.seance.find((x) => x.id_seance === sv.id_seance)
+    if (!s) return
+    const fin = fromMin(toMin(s.heure_fin) + 60)
+    const duree = hours(s.heure_debut, fin)
+    const refus = (description: string) => void toast.error('Allongement refusé', { description })
+    if (duree > (estEpreuve(s) ? 3 : 5)) return refus(estEpreuve(s) ? 'Une épreuve dure 3 h au plus.' : 'Une séance dure 5 h au plus.')
+    if (!finsPossibles(db, s.date_seance, s.heure_debut, [duree * 60]).length) {
+      return refus(`Pas d'heure de cours juste après ${fmtHeure(s.heure_fin)} ce jour-là (pause ou fin de journée).`)
+    }
+    const seances = db.seance.filter((x) => x.id_edt === edt.id_edt)
+    let suivante: Seance = { ...s, heure_fin: fin }
+    let vs = checkSeance(db, suivante, seances)
+    // seule la salle est prise sur l'heure en plus : la plus petite salle libre qui convient
+    if (vs.length && vs.every((v) => REGLES_SALLE.has(v.code))) {
+      const autre = sallesLibresSeance(db, suivante, seances).salles[0]
+      if (autre) {
+        suivante = { ...suivante, id_salle: autre.id_salle }
+        vs = checkSeance(db, suivante, seances)
+      }
+    }
+    if (vs.length) return refus(vs.map((v) => `${v.code} : ${v.message}`).join('\n'))
+    const avant = { heure_fin: s.heure_fin, id_salle: s.id_salle }
+    mutate((x) => { Object.assign(x.seance.find((k) => k.id_seance === s.id_seance)!, { heure_fin: suivante.heure_fin, id_salle: suivante.id_salle }) })
+    const salle = suivante.id_salle !== s.id_salle ? db.salle.find((x) => x.id_salle === suivante.id_salle)?.nom_salle : null
+    toast.success(estEpreuve(s) ? 'Épreuve allongée' : 'Séance allongée', {
+      description: `${libelleSeance(s)} · ${fmtJourCourt(s.date_seance)}, ${fmtHeure(s.heure_debut)}–${fmtHeure(fin)} (${duree} h)${salle ? ` · salle changée : ${salle}` : ''}`,
+      action: {
+        label: 'Annuler',
+        onClick: () => mutate((x) => { Object.assign(x.seance.find((k) => k.id_seance === s.id_seance)!, avant) }),
+      },
+    })
   }
 
   // ---------- Copier-coller d'une séance ----------
@@ -500,64 +670,7 @@ export default function Planification() {
               <p className="mt-4 px-1 text-sm text-ink-2">Choisissez une classe ou un enseignant pour placer des cours. Ici, vous pouvez déplacer les séances de la salle.</p>
             ) : (
               <ul className="-mx-1 mt-3 min-h-0 flex-1 space-y-2 overflow-y-auto px-1 py-px scroll-thin">
-                {coursRes.map((c) => {
-                  const m = db.matiere.find((x) => x.id_matiere === c.id_matiere)!
-                  const cl = db.classe.find((x) => x.id_classe === c.id_classe)!
-                  const g = db.groupe.find((x) => x.id_groupe === c.id_groupe) ?? null
-                  const e = db.enseignant.find((x) => x.id_enseignant === c.id_enseignant)
-                  const placees = toutes.filter((s) => s.id_cours === c.id_cours && s.statut !== 'annulee' && !estEpreuve(s) && s.date_seance >= semaine && s.date_seance <= addDays(semaine, 6))
-                  const plan = heuresPlanifiees(db, edt.id_edt, c.id_cours)
-                  const { etat, options: durees, reste } = aPlacer({
-                    volume: c.volume_horaire,
-                    planifiees: plan,
-                    maxSemaine: c.heures_semaine_max,
-                    semaine: placees.reduce((a, p) => a + p.duree, 0),
-                    modele: decoupage(db, c.id_cours).map((r) => r.duree_heures),
-                  })
-                  return (
-                    <li key={c.id_cours} className="rounded-2xl bg-white/80 p-3 ring-1 ring-white">
-                      <div className="flex items-start gap-2">
-                        <span className="mt-1.5 size-2.5 shrink-0 rounded-full" style={{ backgroundColor: couleurMatiere(m.id_matiere) }} />
-                        <div className="min-w-0 flex-1">
-                          <p className="truncate text-sm font-medium">{m.libelle}</p>
-                          <p className="truncate text-xs text-ink-2">{c.type_cours} · {publicCours(cl, g)} · {nomEnseignant(e)}</p>
-                        </div>
-                      </div>
-                      <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                        {etat === 'volume_atteint' && <Badge tone="success" dot>Volume atteint</Badge>}
-                        {etat === 'semaine_complete' && <Badge tone="neutral" dot>Semaine complète</Badge>}
-                        {etat === 'reste_trop_court' && <Badge tone="warning" dot>{reste} h restante : 2 h minimum</Badge>}
-                        {etat === 'rythme_trop_court' && <Badge tone="warning" dot>{reste} h restantes, {c.heures_semaine_max} h par semaine</Badge>}
-                        {etat === 'a_placer' && durees.map((o) => o.ok ? (
-                          <div
-                            key={o.duree}
-                            draggable
-                            onDragStart={(ev) => startDrag({ kind: 'modele', id_cours: c.id_cours, duree: o.duree, decalage: DECALAGE_MODELE }, ev)}
-                            onDragEnd={endDrag}
-                            className={cn(
-                              'press flex cursor-grab items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium select-none active:cursor-grabbing',
-                              o.habituelle ? 'bg-navy text-white' : 'bg-white text-navy ring-1 ring-navy/40 hover:bg-subtle',
-                            )}
-                            title={`Glisser sur la grille : une séance de ${o.duree} h${o.habituelle ? ' (durée des séances types du cours)' : ''}`}
-                          >
-                            <GripVertical className="size-3" />{o.duree} h
-                          </div>
-                        ) : (
-                          <span
-                            key={o.duree}
-                            aria-disabled
-                            className="flex cursor-not-allowed items-center rounded-full bg-muted px-2.5 py-1 text-xs text-ink-2/60 line-through decoration-ink-2/40 select-none"
-                            title={o.raison}
-                          >
-                            {o.duree} h
-                          </span>
-                        ))}
-                        <span className="ml-auto font-mono text-[11px] text-ink-2 tabular-nums">{plan}/{c.volume_horaire} h</span>
-                      </div>
-                    </li>
-                  )
-                })}
-                {coursRes.length === 0 && <li className="px-1 text-sm text-ink-2">Aucun cours pour cette sélection.</li>}
+                {listeAPlacer}
               </ul>
             )}
           </Card></div></div>}
@@ -622,6 +735,7 @@ export default function Planification() {
                       onMenuSeance: (x, y, s) => { setMenu(null); setMenuSeance({ x, y, s }) },
                       onSurvol: (p) => { survol.current = p },
                       copiee: copie?.id_seance ?? null,
+                      onAllonger: allonger,
                       voisines: { avant: weeks[weeks.indexOf(semaine) - 1] ?? null, apres: weeks[weeks.indexOf(semaine) + 1] ?? null },
                       onSemaine: (lundi) => { setSemaine(lundi); if (drag?.kind === 'seance') setHorsSource(true) },
                       glisse: drag && {
@@ -660,9 +774,9 @@ export default function Planification() {
                 <Trash2 />Supprimer
               </Button>
               {sel.statut === 'annulee' ? (
-                <Button variant="outline" onClick={() => update({ statut: 'planifiee' }, 'Séance rétablie')}><Undo2 />Rétablir</Button>
+                <Button variant="outline" onClick={() => changerStatut(sel, 'planifiee')}><Undo2 />Rétablir</Button>
               ) : (
-                <Button variant="outline" onClick={() => update({ statut: 'annulee' }, 'Séance annulée')}><Ban />Annuler la séance</Button>
+                <Button variant="outline" onClick={() => changerStatut(sel, 'annulee')}><Ban />Annuler la séance</Button>
               )}
               {!estEpreuve(sel) && (
                 <Button variant="primary" onClick={() => update({ est_verrouillee: !sel.est_verrouillee }, sel.est_verrouillee ? 'Séance déverrouillée' : 'Séance verrouillée pour la génération')}>
@@ -707,26 +821,68 @@ export default function Planification() {
             {!lecture && sel.statut !== 'annulee' && (
               <div>
                 <p className="section-label mb-2">Changer de salle (BF-13)</p>
-                {sallesPossibles.length === 0 ? (
-                  <p className="text-sm text-ink-2">Aucune autre salle compatible libre sur ce créneau.</p>
+                {sallesLibres.salles.filter((s) => s.id_salle !== sel.id_salle).length === 0 ? (
+                  <p className="text-sm text-ink-2">Aucune autre salle libre ne convient sur ce créneau.</p>
                 ) : (
-                  <div className="flex flex-wrap gap-2">
-                    {sallesPossibles.map((s) => (
+                  <div className="flex max-h-40 flex-wrap gap-2 overflow-y-auto p-px scroll-thin">
+                    {sallesLibres.salles.map((s) => (
                       <button
                         key={s.id_salle}
                         type="button"
-                        onClick={() => update({ id_salle: s.id_salle }, `Salle changée : ${s.nom_salle}`)}
+                        onClick={() => s.id_salle !== sel.id_salle && update({ id_salle: s.id_salle }, `Salle changée : ${s.nom_salle}`)}
                         className={cn('press rounded-full px-3 py-1.5 text-xs font-medium ring-1', s.id_salle === sel.id_salle ? 'bg-navy text-white ring-navy' : 'bg-white text-ink ring-line hover:bg-subtle')}
+                        title={`${capaciteConnue(s) ? `${s.capacite} places` : 'Capacité non renseignée'} · ${db.site.find((x) => x.id_site === s.id_site)?.nom_site ?? ''}`}
                       >
-                        {s.nom_salle} · {s.capacite} pl.
+                        {s.nom_salle} · {capaciteConnue(s) ? `${s.capacite} pl.` : 'capacité ?'}
+                        {sallesLibres.id_site !== null && s.id_site !== sallesLibres.id_site && (
+                          <span className="ml-1 rounded-full bg-orange-soft px-1.5 text-[10px] text-[#7C4A03]">{(db.site.find((x) => x.id_site === s.id_site)?.nom_site ?? 'autre campus').replace(/^Campus de /, '')}</span>
+                        )}
                       </button>
                     ))}
                   </div>
                 )}
                 <p className="mt-2 text-xs text-ink-2">
-                  {estEpreuve(sel)
-                    ? `Capacité ≥ ${sel.effectif} étudiants, épreuves partageant la salle comprises · de ${fmtHeure(sel.heure_debut)} à ${fmtHeure(sel.heure_fin)}.`
-                    : `Capacité ≥ ${sel.groupe?.effectif ?? sel.classe.effectif} étudiants · type ${sel.type_salle?.libelle} · salle libre de ${fmtHeure(sel.heure_debut)} à ${fmtHeure(sel.heure_fin)}.`}
+                  Salles libres de {fmtHeure(sel.heure_debut)} à {fmtHeure(sel.heure_fin)}
+                  {!estEpreuve(sel) && sel.type_salle && <>, du type « {sel.type_salle.libelle} »</>}
+                  {sel.effectif > 0
+                    ? <>, d'au moins {sel.effectif} places{estEpreuve(sel) && ', épreuves partageant la salle comprises'}.</>
+                    : <>. L'effectif de la classe n'est pas renseigné : la capacité des salles n'est pas vérifiée.</>}
+                  {sallesLibres.id_site !== null && <> D'abord celles du {db.site.find((x) => x.id_site === sallesLibres.id_site)?.nom_site ?? 'campus de la classe'} (campus de la classe).</>}
+                  {' '}Une promotion n'a cours que sur un campus par jour.
+                </p>
+              </div>
+            )}
+            {!lecture && (
+              <div>
+                <p className="section-label mb-2">Classes qui suivent ce cours</p>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="rounded-full bg-navy px-3 py-1 text-xs font-medium text-white" title="Classe du cours">
+                    {publicCours(sel.classe, sel.groupe ?? null)}
+                  </span>
+                  {publicsEnPlus.map((p) => {
+                    const c = db.classe.find((x) => x.id_classe === p.id_classe)
+                    const g = db.groupe.find((x) => x.id_groupe === p.id_groupe) ?? null
+                    return (
+                      <span key={p.id_cours_public} className="flex items-center gap-1 rounded-full bg-white py-1 pr-1 pl-3 text-xs font-medium ring-1 ring-line">
+                        {c ? publicCours(c, g) : '?'}
+                        <button type="button" className="press grid size-5 place-items-center rounded-full text-ink-2 hover:bg-muted" aria-label={`Retirer ${c?.code_classe}`} title="Ne plus mutualiser avec cette classe" onClick={() => demutualiser(p.id_cours_public)}>
+                          <X className="size-3" />
+                        </button>
+                      </span>
+                    )
+                  })}
+                </div>
+                <Combobox
+                  className="mt-2"
+                  options={optionsMutualisation}
+                  value={null}
+                  onChange={(v) => v !== null && mutualiser(v)}
+                  placeholder="Mutualiser avec une classe…"
+                  emptyText="Aucune classe"
+                  ariaLabel="Mutualiser le cours avec une classe"
+                />
+                <p className="mt-2 text-xs text-ink-2">
+                  Toutes les séances du cours apparaissent aussi dans l'emploi du temps des classes ajoutées. En rouge : une classe déjà occupée à l'heure d'une de ces séances, ou une salle trop petite pour tout le monde.
                 </p>
               </div>
             )}
@@ -770,7 +926,7 @@ export default function Planification() {
             role="menu"
             aria-label="Séance"
             className="fixed z-50 w-64 rounded-2xl bg-white p-1.5 text-sm shadow-xl ring-1 ring-line"
-            style={{ left: Math.min(menuSeance.x, window.innerWidth - 264), top: Math.min(menuSeance.y, window.innerHeight - 190) }}
+            style={{ left: Math.min(menuSeance.x, window.innerWidth - 264), top: Math.min(menuSeance.y, window.innerHeight - 230) }}
           >
             <p className="truncate px-3 py-1.5 text-xs text-ink-2">
               {menuSeance.s.matiere.libelle} · {fmtJourCourt(menuSeance.s.date_seance)}, {fmtHeure(menuSeance.s.heure_debut)}–{fmtHeure(menuSeance.s.heure_fin)}
@@ -784,6 +940,15 @@ export default function Planification() {
             <button type="button" role="menuitem" className="press flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left hover:bg-muted" onClick={() => { setSelected(menuSeance.s.id_seance); setMenuSeance(null) }}>
               <SquareArrowOutUpRight className="size-4 shrink-0 text-ink-2" />Ouvrir la séance
             </button>
+            {menuSeance.s.statut === 'annulee' ? (
+              <button type="button" role="menuitem" className="press flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left hover:bg-muted" onClick={() => changerStatut(menuSeance.s, 'planifiee')}>
+                <Undo2 className="size-4 shrink-0 text-ink-2" />Rétablir la séance
+              </button>
+            ) : (
+              <button type="button" role="menuitem" className="press flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-[#B91C1C] hover:bg-[#FEE2E2]/60" onClick={() => changerStatut(menuSeance.s, 'annulee')}>
+                <Ban className="size-4 shrink-0" />{estEpreuve(menuSeance.s) ? "Annuler l'épreuve" : 'Annuler la séance'}
+              </button>
+            )}
           </div>
         </>
       )}

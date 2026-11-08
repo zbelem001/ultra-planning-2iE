@@ -226,7 +226,7 @@ class Instance:
             elif t == "enseignant_site_unique_jour":
                 self.deux_sites_dur = r.get("dure", False)
             elif t == "site_unique_jour":
-                pass  # garanti : une promotion a un site et toutes ses salles y sont
+                pass  # toujours appliquée : une promotion n'a cours que sur un campus par jour (Etat.classe_site)
             else:
                 self.erreurs.append(f"règle {r.get('id')} : type « {t} » inconnu, ignorée")
 
@@ -284,9 +284,10 @@ class Instance:
             eff += e
         classes = sorted({p["id_classe"] for p in c["publics"]})
         sites = {self.classes[i].get("id_site") for i in classes} - {None}
-        if len(sites) > 1:
-            self.erreurs.append(f"cours {c['id_cours']} : publics sur plusieurs sites, non programmable")
-        site = min(sites) if sites else None
+        # Campus de la promotion ; cours mutualisé entre deux campus : celui de la classe du cours, les autres
+        # promotions s'y déplacent (ce jour-là, elles n'ont cours que sur ce campus : Etat.classe_site)
+        proprio = self.classes[c["publics"][0]["id_classe"]].get("id_site") if c["publics"] else None
+        site = proprio if proprio is not None else (min(sites) if sites else None)
         k = Cours(c["id_cours"], c["id_matiere"], c["type_cours"], classes,
                   sum(1 << a for a in set(atomes)), sorted(set(atomes)), eff, c.get("id_enseignant"),
                   types_salle_de(c), c["volume"], sorted(c.get("durees") or [2], reverse=True),
@@ -311,7 +312,7 @@ class Instance:
         if k.volume > k.h_max * n_pres:
             self.erreurs.append(f"cours {k.id} : {k.volume} h impossibles en {n_pres} semaine(s) de présence de "
                                 f"l'enseignant à {k.h_max} h maximum par semaine (il faudrait {plafond(k.volume / max(n_pres, 1))} h)")
-        if len(sites) == 1 and not k.salles:
+        if sites and not k.salles:
             self.erreurs.append(f"cours {k.id} : aucune salle (types {k.types_salle}, {eff} places, site {site})")
         self.cours[k.id] = k
 

@@ -248,6 +248,8 @@ export interface ComboOption {
   label: string
   hint?: string
   group?: string
+  /** Visible mais non choisissable : en rouge, avec sa raison en indication */
+  disabled?: boolean
 }
 
 export function Combobox({ options, value, onChange, placeholder, emptyText = 'Aucun résultat', className, ariaLabel }: {
@@ -267,12 +269,15 @@ export function Combobox({ options, value, onChange, placeholder, emptyText = 'A
   const listId = useId()
   // La liste s'ouvre au premier plan de la page (portail), sous le champ : les cartes givrées
   // (backdrop-filter) forment chacune leur propre plan, qu'une liste ne pourrait pas dépasser
-  const [place, setPlace] = useState<{ top: number; left: number; width: number } | null>(null)
+  // Sous le champ ; au-dessus s'il manque de la place en bas de l'écran (champ en bas d'une fenêtre)
+  const [place, setPlace] = useState<{ top?: number; bottom?: number; left: number; width: number } | null>(null)
   useLayoutEffect(() => {
     if (!open) return
     const placer = () => {
       const r = root.current?.getBoundingClientRect()
-      if (r) setPlace({ top: r.bottom + 8, left: r.left, width: r.width })
+      if (!r) return
+      const enHaut = window.innerHeight - r.bottom < 240 && r.top > window.innerHeight - r.bottom
+      setPlace(enHaut ? { bottom: window.innerHeight - r.top + 8, left: r.left, width: r.width } : { top: r.bottom + 8, left: r.left, width: r.width })
     }
     placer()
     window.addEventListener('scroll', placer, true)
@@ -296,6 +301,7 @@ export function Combobox({ options, value, onChange, placeholder, emptyText = 'A
   }, [open])
 
   const choose = (o: ComboOption) => {
+    if (o.disabled) return
     onChange(o.value)
     setQ('')
     setOpen(false)
@@ -333,7 +339,7 @@ export function Combobox({ options, value, onChange, placeholder, emptyText = 'A
         )}
       </div>
       {open && place && createPortal(
-        <ul ref={liste} id={listId} role="listbox" style={{ top: place.top, left: place.left, width: place.width }}
+        <ul ref={liste} id={listId} role="listbox" style={{ top: place.top, bottom: place.bottom, left: place.left, width: place.width }}
           className="rise fixed z-[60] max-h-80 overflow-y-auto rounded-3xl border border-white bg-white/95 p-1.5 shadow-xl backdrop-blur scroll-thin">
           {filtered.length === 0 && <li className="px-4 py-3 text-sm text-ink-2">{emptyText}</li>}
           {filtered.map((o, i) => {
@@ -345,13 +351,14 @@ export function Combobox({ options, value, onChange, placeholder, emptyText = 'A
                 <div
                   role="option"
                   aria-selected={o.value === value}
+                  aria-disabled={o.disabled || undefined}
                   onMouseEnter={() => setActive(i)}
                   onMouseDown={(e) => { e.preventDefault(); choose(o) }}
-                  className={cn('flex cursor-pointer items-center justify-between gap-3 rounded-2xl px-3 py-2 text-sm', i === active ? 'bg-muted' : '')}
+                  className={cn('flex items-center justify-between gap-3 rounded-2xl px-3 py-2 text-sm', o.disabled ? 'cursor-not-allowed' : 'cursor-pointer', i === active ? (o.disabled ? 'bg-[#FEE2E2]/60' : 'bg-muted') : '')}
                 >
                   <span className="min-w-0">
-                    <span className="block truncate font-medium">{o.label}</span>
-                    {o.hint && <span className="block truncate text-xs text-ink-2">{o.hint}</span>}
+                    <span className={cn('block truncate font-medium', o.disabled && 'text-[#B91C1C]')}>{o.label}</span>
+                    {o.hint && <span className={cn('block truncate text-xs', o.disabled ? 'text-[#B91C1C]/85' : 'text-ink-2')} title={o.hint}>{o.hint}</span>}
                   </span>
                   {o.value === value && <Check className="size-4 text-navy" />}
                 </div>

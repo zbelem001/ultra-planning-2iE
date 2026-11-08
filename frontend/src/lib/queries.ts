@@ -29,7 +29,21 @@ export function index<T, K extends keyof T>(rows: T[], key: K): Map<T[K], T> {
   return new Map(rows.map((r) => [r[key], r]))
 }
 
+// Séances déjà enrichies, tant que les tables dont elles dépendent restent les mêmes objets (une modification
+// ne remplace que les tables et les lignes qu'elle change : lib/store.tsx). Seules les séances nouvelles ou
+// changées sont refaites.
+let cache: { tables: unknown[]; vues: WeakMap<Seance, SeanceVue> } | null = null
+
 export function enrichir(db: Db, seances: Seance[]): SeanceVue[] {
+  const tables = [db.cours, db.matiere, db.enseignant, db.salle, db.type_salle, db.site, db.classe, db.groupe, db.cours_public]
+  if (!cache || cache.tables.some((t, i) => t !== tables[i])) cache = { tables, vues: new WeakMap() }
+  const vues = cache.vues
+  const aFaire = seances.filter((s) => !vues.has(s))
+  if (aFaire.length) for (const [s, v] of enrichirSans(db, aFaire)) vues.set(s, v)
+  return seances.map((s) => vues.get(s)!)
+}
+
+function enrichirSans(db: Db, seances: Seance[]): [Seance, SeanceVue][] {
   const cours = index(db.cours, 'id_cours')
   const mat = index(db.matiere, 'id_matiere')
   const ens = index(db.enseignant, 'id_enseignant')
@@ -42,14 +56,14 @@ export function enrichir(db: Db, seances: Seance[]): SeanceVue[] {
   for (const p of db.cours_public) suppl.set(p.id_cours, [...(suppl.get(p.id_cours) ?? []), { id_classe: p.id_classe, id_groupe: p.id_groupe }])
   const libellePublic = (p: Public) => publicCours(cla.get(p.id_classe)!, p.id_groupe !== null ? grp.get(p.id_groupe) ?? null : null)
   const effectifPublic = (p: Public) => (p.id_groupe !== null ? grp.get(p.id_groupe)?.effectif : cla.get(p.id_classe)?.effectif) ?? 0
-  return seances.map((s) => {
+  return seances.map((s): [Seance, SeanceVue] => {
     const c = cours.get(s.id_cours)!
     const salle = sal.get(s.id_salle)!
     const epreuve = estEpreuve(s) // une épreuve concerne toute la classe
     const publics = [{ id_classe: c.id_classe, id_groupe: c.id_groupe }, ...(suppl.get(c.id_cours) ?? [])]
       .map((p) => (epreuve ? { ...p, id_groupe: null } : p))
       .filter((p, i, l) => !epreuve || l.findIndex((x) => x.id_classe === p.id_classe) === i)
-    return {
+    return [s, {
       ...s,
       cours: c,
       matiere: mat.get(c.id_matiere)!,
@@ -63,7 +77,7 @@ export function enrichir(db: Db, seances: Seance[]): SeanceVue[] {
       public_affiche: publics.map(libellePublic).join(' + '),
       effectif: publics.reduce((n, p) => n + effectifPublic(p), 0),
       duree: hours(s.heure_debut, s.heure_fin),
-    }
+    }]
   })
 }
 

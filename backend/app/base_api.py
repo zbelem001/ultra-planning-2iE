@@ -33,7 +33,7 @@ from pydantic import BaseModel, Field
 
 from . import config
 from .auth import ROLES_GESTION, Utilisateur, utilisateur_courant
-from .db import connexion, entrer_ecole
+from .db import connexion, entrer_ecole, mutualisations_publiees
 
 routeur = APIRouter()
 
@@ -135,7 +135,10 @@ def _image_complete(conn: psycopg.Connection, u: Utilisateur) -> dict:
     })
     # Seulement les comptes de l'école, sans mot de passe ni lien d'authentification
     out["utilisateur"] = [{**x, "mot_de_passe": None, "auth_id": None} for x in out["utilisateur"]]
-    return {t: out[t] for t in TABLES} | {"ecole": _ecole_courante(conn)}
+    # Copie publiée des mutualisations (lecture seule : seule la publication l'écrit) ; null avant la version 15
+    publiees = _lire(conn, "cours_public_publie", ["id_cours_public_publie", "id_edt", "id_cours", "id_classe", "id_groupe"]) \
+        if mutualisations_publiees(conn) else None
+    return {t: out[t] for t in TABLES} | {"ecole": _ecole_courante(conn), "cours_public_publie": publiees}
 
 
 def _ecole_publique(conn: psycopg.Connection, code: str | None) -> int:
@@ -179,6 +182,14 @@ def _image_publique(conn: psycopg.Connection, ecole: str | None) -> dict:
     })
     out: dict[str, list] = {t: lu.get(t, []) for t in TABLES}
     out["enseignant"] = [{**e, "email": None, "telephone": None, "nb_heures_max_semaine": None} for e in lu["enseignant"]]
+    # Les invités voient les mutualisations de la version publiée, pas celles en cours de travail
+    if mutualisations_publiees(conn):
+        out["cours_public"] = [
+            {"id_cours_public": i, "id_cours": c, "id_classe": cl, "id_groupe": g, "id_ecole": e}
+            for i, c, cl, g, e in conn.execute(
+                "SELECT p.id_cours_public_publie, p.id_cours, p.id_classe, p.id_groupe, p.id_ecole FROM cours_public_publie p "
+                "JOIN emploi_du_temps e ON e.id_edt = p.id_edt WHERE e.statut = 'publie' ORDER BY 1").fetchall()
+        ]
     out["ecole"] = _ecole_courante(conn)
     return out
 
