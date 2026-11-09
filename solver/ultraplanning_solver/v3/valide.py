@@ -178,15 +178,7 @@ def valider(data: dict, seances: list[dict]) -> list[str]:
             if h > plafond:
                 v.append(f"promotion {ic} (groupe {f}) le {d} : {h} h > {plafond} h")
                 break
-    # rythme maximal par semaine ISO (CD-14)
-    par_semaine = defaultdict(int)
-    for s in seances:
-        iso = date.fromisoformat(s["date"]).isocalendar()
-        par_semaine[s["id_cours"], iso[0], iso[1]] += int(s["heure_fin"][:2]) - int(s["heure_debut"][:2])
-    for (k, a, w), h in par_semaine.items():
-        hmax = cours[k].get("h_sem_max")
-        if hmax is not None and h > hmax:
-            v.append(f"cours {k} semaine {a}-S{w} : {h} h > rythme maximal {hmax} h (CD-14)")
+    # le rythme hebdomadaire d'un cours (CS-08) est souple depuis la version 18 : ce n'est pas une violation
     # au plus N matières par promotion et par semaine ISO (CD-13)
     n_max = data.get("parametres", {}).get("max_matieres_semaine")
     if n_max:

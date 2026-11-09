@@ -45,8 +45,11 @@ export interface Classe {
   niveau: Niveau
   effectif: number
   id_filiere: number
-  /** Site où la promotion a tous ses cours (null : non fixé) */
+  /** Campus mère de la promotion : la génération y place ses cours (null : celui de la filière) */
   id_site?: number | null
+  /** Salle de cours habituelle (version 17) : préférée par la génération et la console quand elle convient,
+   *  jamais imposée (null : aucune) */
+  id_salle_principale?: number | null
 }
 
 /** Groupe d'une classe ; arbre : TD ou option, puis demi-groupe de TP ou sous-option */
@@ -305,6 +308,8 @@ export interface ImpactProposition {
   fins_decalees?: { cours: string; fin_avant: string; fin_apres: string; jours: number }[]
   journees_chargees?: { enseignant: string; date: string; heures: number; plafond: number }[]
   changements_de_site?: { classe: string; date: string; sites: number }[]
+  /** Semaines où un cours dépasserait son rythme souhaité (CS-08, souple) : permis, signalé */
+  au_dela_du_rythme?: { cours: string; semaine: string; heures: number; rythme: number }[]
   /** Changements du référentiel : séances (ou cours) qu'ils laisseraient hors des règles */
   conflits?: { regle: string; nombre: number; exemples: string[]; du: string | null; au: string | null }[]
 }

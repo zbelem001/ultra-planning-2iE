@@ -96,6 +96,42 @@ def test_lecture_des_fichiers(conn):
     assert "3: CV ; Vision ; 15" in lire_piece_jointe(ctx, debut=3)
 
 
+def test_salle_principale_d_une_classe(ctx, conn):
+    """Salle principale (version 17) : l'assistant la propose, le planificateur la valide, le moteur la lit et la
+    préfère pour les cours de la classe qui peuvent y aller, sans l'imposer aux autres."""
+    from ultraplanning_solver import Demande, Perimetre, generer
+    from ultraplanning_solver.base import charger
+
+    id_classe, effectif = conn.execute("SELECT id_classe, effectif FROM classe WHERE code_classe = 'L2INFO'").fetchone()
+    # une salle qui convient aux CM de la classe, mais pas la plus petite : sans préférence, elle ne serait pas prise
+    code, id_salle = conn.execute(
+        """SELECT sa.code_salle, sa.id_salle FROM salle sa
+           JOIN cours c ON c.id_classe = %s AND c.type_cours = 'CM' AND c.id_groupe IS NULL
+                       AND (c.id_type_salle IS NULL OR c.id_type_salle = sa.id_type_salle)
+           JOIN classe cl ON cl.id_classe = c.id_classe JOIN filiere f ON f.id_filiere = cl.id_filiere
+           WHERE sa.capacite >= %s AND sa.est_disponible AND sa.id_site = coalesce(cl.id_site, f.id_site, sa.id_site)
+           ORDER BY sa.capacite DESC, sa.id_salle LIMIT 1""", (id_classe, effectif)).fetchone()
+    texte = proposer_changements_referentiel(ctx, "Salle de la L2INFO", [
+        {"action": "modifier", "table": "classe", "cle": {"code_classe": "L2INFO"}, "valeurs": {"salle_principale": code}}])
+    assert "salle principale" in texte, texte
+    propositions.appliquer(conn, ctx.propositions_creees[0], 1)
+    assert conn.execute("SELECT id_salle_principale FROM classe WHERE id_classe = %s", (id_classe,)).fetchone()[0] == id_salle
+
+    d = charger(conn, 1)
+    assert d.classes[id_classe].id_salle_principale == id_salle
+    r = generer(d, Demande(perimetre=Perimetre(id_classes=frozenset({id_classe})), du=d.semestre_debut,
+                           au=d.semestre_debut + timedelta(days=13), temps_max_placement=3))
+    cm = {k for k, c in d.cours.items() if c.id_classe == id_classe and c.type_cours == "CM" and c.id_groupe is None
+          and c.id_type_salle in (None, d.salles[id_salle].id_type_salle)}
+    salles_cm = [s.id_salle for s in r.seances if s.id_cours in cm]
+    assert salles_cm and salles_cm.count(id_salle) > len(salles_cm) / 2, salles_cm
+    # une salle supprimée vide la salle principale (ON DELETE SET NULL), sans toucher à la classe
+    conn.execute("DELETE FROM seance WHERE id_salle = %s", (id_salle,))
+    conn.execute("DELETE FROM salle_reservation WHERE id_salle = %s", (id_salle,))
+    conn.execute("DELETE FROM salle WHERE id_salle = %s", (id_salle,))
+    assert conn.execute("SELECT id_salle_principale FROM classe WHERE id_classe = %s", (id_classe,)).fetchone()[0] is None
+
+
 @pytest.fixture
 def client(base_generee):
     yield TestClient(app)

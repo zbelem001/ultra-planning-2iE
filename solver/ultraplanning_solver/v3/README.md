@@ -39,6 +39,8 @@ Le moteur garde son format d'entrée JSON autonome (ci-dessous). L'API, l'assist
 | `ramener_depuis` | avec `minimiser_changements` : les séances à partir de cette date, hors de la période, y sont ramenées ; sans place, elles restent où elles sont |
 | `contraintes` (imposer, interdire) | règles horaires |
 | CS-01, CS-02, CS-03, CS-05, CS-06, CS-07 | poids et règles du moteur (une CS désactivée met son poids à zéro) |
+| CS-08 (version 18) | rythme souhaité de chaque cours (`h_sem_max`) : la génération s'y tient (répartition et rattrapage) ; `placer_seance(rythme="souple")` le dépasse au prix du poids `rythme` (5 par heure en trop) ; la replanification n'y recourt qu'après avoir essayé toutes les semaines au rythme ; CS-08 désactivée (`rythme_strict` faux) : le rattrapage peut aussi le dépasser ; le validateur ne le compte plus comme violation |
+| `classe.id_salle_principale` (version 17) | salle principale de la classe du cours : en tête de ses salles possibles quand elle convient, poids `hors_salle_principale` (3) pour une séance placée ailleurs ; jamais imposée |
 | `essais`, `processus`, `temps_amelioration`, `concentration` | réglages du moteur |
 
 ## Données propres au moteur v3 (schéma version 11)

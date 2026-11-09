@@ -79,7 +79,9 @@ def _candidats(inst: Instance, e: Etat, c, duree: int, w: int, apres, avant, ori
                     cout += P["samedi"]
                 for r in garde:
                     autres = bool(sites_ens - {inst.salles[r]["id_site"]})
-                    out.append((di, s, r, cout + (P["enseignant_deux_sites"] if autres else 0)))
+                    hors = c.salle_principale is not None and r != c.salle_principale
+                    out.append((di, s, r, cout + (P["enseignant_deux_sites"] if autres else 0)
+                                + (P.get("hors_salle_principale", 0) if hors else 0)))
     return out
 
 
@@ -226,7 +228,9 @@ def sous_probleme(inst: Instance, e: Etat, ic: int, w: int, temps: float, suivan
         cap = inst.enseignants[k].get("nb_heures_max_semaine") or 99
         m.Add(sum(d * x for x, d in v) <= max(0, cap - e.ens_sem[k, w]))
     for k, v in sem_cours.items():
-        m.Add(sum(d * x for x, d in v) <= max(0, inst.cours[k].h_max - e.cours_sem[k, w]))
+        # rythme souhaité (CS-08) : on n'ajoute pas au-delà, mais les heures libérées se replacent toujours
+        libere = reserves[k][1] if k in reserves else 0
+        m.Add(sum(d * x for x, d in v) <= max(0, inst.cours[k].h_max - e.cours_sem[k, w], libere))
     # les mêmes étudiants n'ont cours que sur un campus par demi-journée (séances restées en place : déjà filtrées)
     for par_site in site_jour.values():
         if len(par_site) > 1:

@@ -13,7 +13,7 @@ différence. Correspondances :
   sa place, et seules celles devenues impossibles sont replacées ; avec `ramener_depuis`,
   celles prévues hors de la période y sont ramenées si elles y trouvent une place ;
 - contraintes ajoutées (imposer / interdire) : règles horaires du moteur ;
-- CD-13 (`max_matieres_semaine`), CD-14 (rythme maximal), CS-01 à CS-07 : paramètres et
+- CD-13 (`max_matieres_semaine`), CS-01 à CS-08 (CS-08 : rythme souhaité des cours, souple) : paramètres et
   poids du moteur ; une CS désactivée met son poids à zéro.
 """
 
@@ -107,6 +107,10 @@ def instance_v3(d: Donnees, demande: Demande, du: date, au: date) -> dict:
         poids["enseignant_deux_sites"] = 0
     if not d.poids.get("CS-07"):
         poids["priorite"] = 0
+    # CS-08 désactivée : le rythme souhaité des cours ne retient plus le rattrapage et se dépasse sans coût
+    rythme_strict = bool(d.poids.get("CS-08"))
+    if not rythme_strict:
+        poids["rythme"] = 0
     return {
         "version": 3,
         "calendrier": {"debut": d.semestre_debut.isoformat(), "fin": d.semestre_fin.isoformat(),
@@ -119,7 +123,7 @@ def instance_v3(d: Donnees, demande: Demande, du: date, au: date) -> dict:
                     "id_type_salle": s.id_type_salle, "capacite": s.capacite, "est_disponible": s.est_disponible,
                     "reservee_a": sorted(s.reservee_a)} for s in d.salles.values()],
         "classes": [{"id_classe": c.id_classe, "code_classe": c.code_classe, "effectif": c.effectif,
-                     "id_site": c.id_site} for c in d.classes.values()],
+                     "id_site": c.id_site, "id_salle_principale": c.id_salle_principale} for c in d.classes.values()],
         "groupes": [{"id_groupe": g.id_groupe, "id_classe": g.id_classe, "parent": g.id_groupe_parent,
                      "type_groupe": g.type_groupe, "effectif": g.effectif, "code_groupe": g.code_groupe}
                     for g in d.groupes.values()],
@@ -140,13 +144,13 @@ def instance_v3(d: Donnees, demande: Demande, du: date, au: date) -> dict:
         "regles": regles,
         "salles_bloquees": salles_bloquees,
         "seances_existantes": [],
-        "parametres": {"max_matieres_semaine": d.max_matieres_semaine, "poids": poids,
+        "parametres": {"max_matieres_semaine": d.max_matieres_semaine, "poids": poids, "rythme_strict": rythme_strict,
                        "placer_du": du.isoformat(), "placer_au": au.isoformat()},
     }
 
 
 # Motif d'une heure non programmée -> code affiché (règle concernée)
-CODES = [("CD-13", "CD-13"), ("rythme maximal", "CD-14"), ("étudiants déjà", "CD-03"), ("enseignant déjà en cours", "CD-02"),
+CODES = [("CD-13", "CD-13"), ("rythme souhaité", "CS-08"), ("étudiants déjà", "CD-03"), ("enseignant déjà en cours", "CD-02"),
          ("salle", "CD-01"), ("absent", "CD-06"), ("indisponibilité", "CD-06"), ("séjour", "CD-06"),
          ("plafond journalier", "PLAFOND"), ("trajet", "SITES"), ("autre site", "SITES"), ("precede", "ORDRE"),
          ("interdire", "REGLE"), ("contrainte ajoutée", "CONTRAINTE"), ("semaine pleine", "CAPACITE"),
@@ -272,7 +276,7 @@ def generer_v3(d: Donnees, demande: Demande) -> Resultat:
     manque = {k: restant[k] - placees[k] for k in ids if restant[k] - placees[k] > 0}
     reportees: dict[int, int] = {}
     if courte:
-        # reporté : ce que les semaines suivantes peuvent encore accueillir au rythme maximal du cours
+        # reporté : ce que les semaines suivantes peuvent encore accueillir au rythme souhaité du cours
         apres_periode = (semaines[-1] + 1) if semaines else 0
         for k, h in manque.items():
             c = inst.cours[k]
@@ -283,7 +287,7 @@ def generer_v3(d: Donnees, demande: Demande) -> Resultat:
         if h <= 0:
             continue
         if courte:
-            r = "Pas assez de semaines d'ici la fin du semestre (rythme maximal du cours, présence de l'enseignant)."
+            r = "Pas assez de semaines d'ici la fin du semestre (rythme souhaité du cours, présence de l'enseignant)."
         else:
             r = raisons[k].most_common(1)[0][0] if raisons.get(k) else "pas assez de semaines"
         non_places.append(NonPlace(k, h, code_de(r) if not courte else "CAPACITE", r))

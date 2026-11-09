@@ -553,7 +553,7 @@ def _proposer_operations(ctx: Contexte, description: str, ops: list[dict], remar
     lignes = [
         f"Proposition {id_prop} calculée"
         + (f", elle remplace la proposition {', '.join(map(str, remplacees))}." if remplacees else "."),
-        "Toutes les opérations ont été vérifiées ensemble par la base (règles CD-01 à CD-14).",
+        "Toutes les opérations ont été vérifiées ensemble par la base (règles CD-01 à CD-13).",
         *remarques,
     ]
     ids_ens = [x.get("id_enseignant") for o in ops for x in (o.get("avant"), o.get("apres")) if x and x.get("id_enseignant")]
@@ -788,6 +788,7 @@ def _impact_operations(ctx: Contexte, ops: list[dict]) -> dict:
     annulations = [o for o in ops if o["action"] == "modifier" and o["apres"]["statut"] == "annulee" != o["avant"]["statut"]]
     retablissements = [o for o in ops if o["action"] == "modifier" and o["avant"]["statut"] == "annulee" != o["apres"]["statut"]]
     return {
+        "au_dela_du_rythme": _au_dela_du_rythme(ctx, ops, ids_cours),
         "seances_deplacees": len(deplacements),
         "seances_supprimees": sum(o["action"] == "supprimer" for o in ops) + len(annulations),
         "seances_creees": sum(o["action"] == "creer" for o in ops) + len(retablissements),
@@ -802,6 +803,38 @@ def _impact_operations(ctx: Contexte, ops: list[dict]) -> dict:
         "journees_chargees": [],
         "changements_de_site": [],
     }
+
+
+def _au_dela_du_rythme(ctx: Contexte, ops: list[dict], ids_cours: set[int]) -> list[dict]:
+    """Semaines où un cours touché dépasserait son rythme souhaité (CS-08, souple), et plus qu'avant : permis,
+    mais signalé au planificateur."""
+    def lundi(x) -> date:
+        x = date.fromisoformat(x) if isinstance(x, str) else x
+        return x - timedelta(days=x.weekday())
+
+    cours = {r[0]: (float(r[1]), f"{r[2]} {r[3]} ({r[4]})") for r in ctx.conn.execute(
+        """SELECT c.id_cours, c.heures_semaine_max, m.libelle, c.type_cours, cl.code_classe FROM cours c
+           JOIN matiere m USING (id_matiere) JOIN classe cl ON cl.id_classe = c.id_classe WHERE c.id_cours = ANY(%s)""",
+        (list(ids_cours),)).fetchall()}
+    touchees = {o["id_seance"] for o in ops if o["action"] in ("modifier", "supprimer")}
+    avant: dict[tuple[int, date], float] = {}
+    apres: dict[tuple[int, date], float] = {}
+    for id_seance, k, jour, h in ctx.conn.execute(
+            """SELECT id_seance, id_cours, date_seance, EXTRACT(EPOCH FROM heure_fin - heure_debut) / 3600 FROM seance
+               WHERE id_edt = %s AND id_cours = ANY(%s) AND statut <> 'annulee' AND nature = 'cours'""",
+            (ctx.id_edt, list(ids_cours))).fetchall():
+        cle = (k, lundi(jour))
+        avant[cle] = avant.get(cle, 0) + float(h)
+        if id_seance not in touchees:
+            apres[cle] = apres.get(cle, 0) + float(h)
+    for o in ops:
+        b = o.get("apres")
+        if b and o["action"] != "supprimer" and b.get("statut") != "annulee" and b.get("nature", "cours") == "cours":
+            cle = (b["id_cours"], lundi(b["date_seance"]))
+            apres[cle] = apres.get(cle, 0) + _duree(b)
+    return [{"cours": cours[k][1], "semaine": l.isoformat(), "heures": round(h, 2), "rythme": cours[k][0]}
+            for (k, l), h in sorted(apres.items(), key=lambda x: (x[0][1], x[0][0]))
+            if k in cours and h > cours[k][0] and h > avant.get((k, l), 0)]
 
 
 class Suite(TypedDict):
@@ -936,7 +969,7 @@ def construire_outils(ctx: Contexte) -> list[Outil]:
                               id_salle: int, id_seance: int | None = None) -> str:
         """Teste une séance (nouvelle, ou déplacement d'une séance existante si id_seance est donné)
         contre toutes les règles de la base, sans rien enregistrer. Renvoie « Acceptée » ou le motif
-        du refus avec son code (CD-01 à CD-14).
+        du refus avec son code (CD-01 à CD-13).
 
         Args:
             id_cours: Identifiant du cours.
@@ -1021,7 +1054,7 @@ def construire_outils(ctx: Contexte) -> list[Outil]:
         """Fait des changements ponctuels de séances précises : déplacer (nouvelle date, nouvelles
         heures, autre salle), annuler, rétablir une séance annulée, ajouter une séance d'un cours,
         supprimer une séance, changer l'enseignant d'une séance (ou le retirer : à désigner). Toutes les opérations sont vérifiées ensemble dans la base (règles CD-01
-        à CD-14) puis enregistrées comme une proposition, que le planificateur valide ; si l'une est
+        à CD-13) puis enregistrées comme une proposition, que le planificateur valide ; si l'une est
         refusée, aucune proposition n'est créée et le motif est renvoyé. Prendre les identifiants (séance, cours, salle) dans lire_emploi_du_temps. Pour
         libérer une journée ou absorber une absence, préférer proposer_replanification.
 
@@ -1113,7 +1146,7 @@ def construire_outils(ctx: Contexte) -> list[Outil]:
 
         Args:
             description: Résumé en une phrase des changements.
-            changements: Lignes. ajouter : tous les champs dans valeurs. modifier : la ligne dans cle, seulement les champs qui changent dans valeurs (null pour vider un champ facultatif). supprimer : la ligne dans cle. Champs par table (clé entre crochets, facultatifs entre parenthèses) : classe [code_classe], libelle, niveau L1..M2|CPGE1|CPGE2|BT|MAN|AUTRE, code_filiere (effectif, site) ; matiere [code_matiere], libelle (coefficient) ; enseignant [matricule], nom, prenom (email, telephone, grade, statut permanent|vacataire_local|externe, nb_heures_max_semaine, site) ; salle [code_salle], nom_salle, capacite, type_salle, site (batiment, est_disponible) ; programme [code_classe, code_matiere], volume_cm / volume_td / volume_tp en heures (au moins un) ; cours [code_classe, code_matiere, type_cours CM|TD|TP, (code_groupe)], volume_horaire (matricule, duree_seance 2 à 4, nb_seances_semaine, heures_semaine_min, heures_semaine_max, type_salle, priorite) ; semestre (celui de l'emploi du temps, modifier seulement, sans cle) libelle, date_debut, date_fin ; jour_ferie [date_ferie], libelle ; conge [libelle, date_debut, (code_classe)], date_fin (type_conge vacances|examens|stage|autre, code_classe : vide pour toutes les classes) ; creneau [jour, heure_debut, heure_fin] (ajouter ou supprimer) ; disponibilite matricule, jour, heure_debut, heure_fin (plage couvrant un ou plusieurs créneaux), niveau disponible|preference|indisponible (motif) ; supprimer une disponibilité la remet à « disponible » ; absence [matricule, date_debut], date_fin (motif) ; sejour [matricule, date_debut], date_fin (commentaire). Dates AAAA-MM-JJ, heures HH:MM.
+            changements: Lignes. ajouter : tous les champs dans valeurs. modifier : la ligne dans cle, seulement les champs qui changent dans valeurs (null pour vider un champ facultatif). supprimer : la ligne dans cle. Champs par table (clé entre crochets, facultatifs entre parenthèses) : classe [code_classe], libelle, niveau L1..M2|CPGE1|CPGE2|BT|MAN|AUTRE, code_filiere (effectif, site, salle_principale : code ou nom de sa salle de cours habituelle, préférée par la génération) ; matiere [code_matiere], libelle (coefficient) ; enseignant [matricule], nom, prenom (email, telephone, grade, statut permanent|vacataire_local|externe, nb_heures_max_semaine, site) ; salle [code_salle], nom_salle, capacite, type_salle, site (batiment, est_disponible) ; programme [code_classe, code_matiere], volume_cm / volume_td / volume_tp en heures (au moins un) ; cours [code_classe, code_matiere, type_cours CM|TD|TP, (code_groupe)], volume_horaire (matricule, duree_seance 2 à 4, nb_seances_semaine, heures_semaine_min, heures_semaine_max, type_salle, priorite) ; semestre (celui de l'emploi du temps, modifier seulement, sans cle) libelle, date_debut, date_fin ; jour_ferie [date_ferie], libelle ; conge [libelle, date_debut, (code_classe)], date_fin (type_conge vacances|examens|stage|autre, code_classe : vide pour toutes les classes) ; creneau [jour, heure_debut, heure_fin] (ajouter ou supprimer) ; disponibilite matricule, jour, heure_debut, heure_fin (plage couvrant un ou plusieurs créneaux), niveau disponible|preference|indisponible (motif) ; supprimer une disponibilité la remet à « disponible » ; absence [matricule, date_debut], date_fin (motif) ; sejour [matricule, date_debut], date_fin (commentaire). Dates AAAA-MM-JJ, heures HH:MM.
             ensuite: Lancé après validation : description, mode generer (défaut) ou replanifier (séances devenues invalides, en changeant le moins possible), classes ou filieres, matieres, du, au (obligatoires pour replanifier).
         """
         return proposer_changements_referentiel(ctx, description, changements, ensuite)

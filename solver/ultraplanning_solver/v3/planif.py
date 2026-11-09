@@ -2,7 +2,7 @@
 
 Pour chaque semaine, dans l'ordre :
 1. chaque cours qui a encore des heures demande « reste / semaines encore utilisables
-   par son enseignant », au moins `concentration` × son rythme maximal (enseignement
+   par son enseignant », au moins `concentration` × son rythme souhaité (enseignement
    par modules) ; les cours déjà commencés et les plus urgents passent d'abord, tant
    que le budget horaire de la semaine de chaque public et de chaque enseignant le permet,
    et sans dépasser N matières par promotion et par semaine (CD-13) ;
@@ -14,7 +14,7 @@ Règles dures : pas de chevauchement (salle, enseignant de la séance, atomes d'
 salle sur le campus de la promotion (cours mutualisé entre deux campus : celui de la classe du
 cours), les mêmes étudiants sur un seul campus par demi-journée, salle du bon type, assez grande,
 réservée seulement à ses ayants droit, plages horaires, jours ouverts, séjour et indisponibilités de l'enseignant,
-plafond journalier, rythme maximal (CD-14), matières par semaine (CD-13), règles
+plafond journalier, matières par semaine (CD-13), règles
 « interdire », « imposer » et « precede ». Le reste est un coût.
 
 Séances figées (verrouillées, hors périmètre, hors période) : posées d'abord dans l'état
@@ -153,11 +153,14 @@ class Etat:
 
 
 def placer_seance(inst: Instance, e: Etat, c: Cours, duree: int, w: int, rnd: random.Random,
-                  echecs: Counter, apres=None, avant=None, seulement=None, salle_pref=None, ens=_DU_COURS) -> bool:
+                  echecs: Counter, apres=None, avant=None, seulement=None, salle_pref=None, ens=_DU_COURS,
+                  rythme: str = "strict") -> bool:
     """apres / avant : bornes (jour, heure) imposées par les règles « precede ».
     seulement = (jour, début) : ne teste que ce créneau (vérifier une séance existante) ;
     salle_pref : salle prise en priorité si elle convient (moins de changements) ;
-    ens : enseignant de la séance (défaut : celui du cours ; None = à désigner)."""
+    ens : enseignant de la séance (défaut : celui du cours ; None = à désigner) ;
+    rythme : « strict », le rythme souhaité du cours (CS-08) n'est pas dépassé ; « souple », il peut l'être,
+    au prix du poids « rythme » par heure en trop. Ce n'est jamais une règle dure."""
     ens = c.enseignant if ens is _DU_COURS else ens
     P = inst.param["poids"]
     pres = inst.ens_present.get(ens) or inst.ens_present[None]
@@ -165,8 +168,9 @@ def placer_seance(inst: Instance, e: Etat, c: Cours, duree: int, w: int, rnd: ra
     indispo_h = inst.ens_indispo_h.get(ens, set())
     plaf = inst.plafond_dur
     meilleur = None
-    if e.cours_sem[c.id, w] + duree > c.h_max:   # rythme maximal (CD-14), règle dure
-        echecs["rythme maximal du cours atteint cette semaine"] += 1
+    au_dela = e.cours_sem[c.id, w] + duree - c.h_max   # heures au-delà du rythme souhaité (CS-08)
+    if au_dela > 0 and rythme == "strict":
+        echecs["rythme souhaité du cours atteint cette semaine (CS-08)"] += 1
         return False
     if e.matiere_refusee(c, w):
         echecs[f"CD-13 : déjà {inst.max_matieres} matières cette semaine"] += 1
@@ -265,6 +269,10 @@ def placer_seance(inst: Instance, e: Etat, c: Cours, duree: int, w: int, rnd: ra
                     cout += P["samedi"]
                 if salle_pref is not None and salle != salle_pref:
                     cout += 1
+                if c.salle_principale is not None and salle != c.salle_principale:
+                    cout += P["hors_salle_principale"]
+                if au_dela > 0:
+                    cout += P["rythme"] * au_dela
                 cout += rnd.random() * 0.5
                 if meilleur is None or cout < meilleur[0]:
                     meilleur = (cout, di, s, salle)
@@ -365,8 +373,8 @@ def un_essai(inst: Instance, rnd: random.Random, concentration: float, taux_budg
 
 
 def rattrapage(inst: Instance, e: Etat, rnd: random.Random, raisons, semaines=None, cours_ok=None):
-    """Remet les heures restantes dans toute semaine où il reste de la place,
-    en respectant l'ordre des matières, le rythme maximal et CD-13."""
+    """Remet les heures restantes dans toute semaine où il reste de la place, en respectant l'ordre des
+    matières et CD-13, et le rythme souhaité des cours si CS-08 est active (sinon il peut être dépassé)."""
     suivantes: dict[int, list[int]] = defaultdict(list)
     for b, avants in inst.precede.items():
         for a in avants:
@@ -381,16 +389,17 @@ def rattrapage(inst: Instance, e: Etat, rnd: random.Random, raisons, semaines=No
         apres = max((e.fin_matiere[m] for m in preds if m in e.fin_matiere), default=None)
         avant = min((e.debut_matiere[m] for m in suivantes[c.matiere] if m in e.debut_matiere), default=None)
         cap = inst.enseignants[c.enseignant].get("nb_heures_max_semaine") or 99
+        strict = inst.param.get("rythme_strict", True)
         for w in (semaines if semaines is not None else range(inst.n_semaines)):
-            while e.reste[k] > 0 and e.cours_sem[k, w] < c.h_max:
-                r = min(e.reste[k], c.h_max - e.cours_sem[k, w],
+            while e.reste[k] > 0 and (e.cours_sem[k, w] < c.h_max or not strict):
+                r = min(e.reste[k], c.h_max - e.cours_sem[k, w] if strict else 99,
                         cap - e.ens_sem[c.enseignant, w] if c.enseignant is not None else 99)
                 # séance de 2 à 4 h, sans laisser une heure seule au cours
                 d = next((x for x in [*c.durees, 4, 3, 2] if 2 <= x <= min(r, 4) and e.reste[k] - x != 1), None)
                 if d is None:
                     break
                 echecs: Counter = Counter()
-                if not placer_seance(inst, e, c, d, w, rnd, echecs, apres, avant):
+                if not placer_seance(inst, e, c, d, w, rnd, echecs, apres, avant, rythme="strict" if strict else "souple"):
                     if echecs:
                         raisons[k][echecs.most_common(1)[0][0]] += 1
                     break

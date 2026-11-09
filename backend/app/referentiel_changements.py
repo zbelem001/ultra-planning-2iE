@@ -75,6 +75,7 @@ REFS = {
     "classe": ("classe", "id_classe", "upper(code_classe) = upper(%(v)s)", "code_classe", "Classe"),
     "matiere": ("matiere", "id_matiere", "upper(code_matiere) = upper(%(v)s)", "code_matiere", "Matière"),
     "groupe": ("groupe", "id_groupe", "upper(code_groupe) = upper(%(v)s) AND id_classe = %(classe)s", "code_groupe", "Groupe"),
+    "salle": ("salle", "id_salle", "upper(code_salle) = upper(%(v)s) OR lower(nom_salle) = lower(%(v)s)", "nom_salle", "Salle"),
 }
 
 
@@ -105,7 +106,9 @@ TABLES: dict[str, Table] = {
         "code_classe": Champ(), "libelle": Champ(),
         "niveau": Champ("choix", choix=("L1", "L2", "L3", "M1", "M2", "CPGE1", "CPGE2", "BT", "MAN", "AUTRE")),
         "effectif": Champ("entier"), "code_filiere": _ref("filiere", "id_filiere"),
-        "site": _ref("site", "id_site", vidable=True)},
+        "site": _ref("site", "id_site", vidable=True),
+        # salle de cours habituelle (version 17) : une préférence de la génération, pas une règle
+        "salle_principale": _ref("salle", "id_salle_principale", vidable=True)},
         requis=("code_classe", "libelle", "niveau", "code_filiere"), cle=("code_classe",), unique=("code_classe",),
         resume="libelle"),
     "matiere": Table("matiere", "la matière", {"code_matiere": Champ(), "libelle": Champ(), "coefficient": Champ("nombre")},
@@ -168,12 +171,13 @@ ORDRE: list[str] = ["classe", "matiere", "enseignant", "salle", "programme", "co
 NOMS = {
     "code_classe": "classe", "code_matiere": "matière", "code_salle": "code", "code_filiere": "filière",
     "code_groupe": "groupe", "libelle": "libellé", "niveau": "niveau", "effectif": "effectif", "site": "site",
+    "salle_principale": "salle principale",
     "coefficient": "coefficient", "matricule": "enseignant", "nom": "nom", "prenom": "prénom", "email": "e-mail",
     "telephone": "téléphone", "grade": "grade", "statut": "statut", "nb_heures_max_semaine": "heures max par semaine",
     "nom_salle": "nom", "capacite": "capacité", "type_salle": "type de salle", "batiment": "bâtiment",
     "est_disponible": "disponible", "volume_cm": "CM", "volume_td": "TD", "volume_tp": "TP", "type_cours": "type",
     "volume_horaire": "volume", "duree_seance": "durée des séances", "nb_seances_semaine": "séances par semaine",
-    "heures_semaine_min": "rythme minimal", "heures_semaine_max": "rythme maximal", "priorite": "priorité",
+    "heures_semaine_min": "rythme minimal", "heures_semaine_max": "rythme souhaité", "priorite": "priorité",
     "date_debut": "début", "date_fin": "fin", "date_ferie": "date", "type_conge": "type", "jour": "jour",
     "heure_debut": "début", "heure_fin": "fin", "motif": "motif", "commentaire": "commentaire",
 }
@@ -738,10 +742,6 @@ WHERE s.nature = 'cours' AND (s.type_exige IS NOT NULL OR EXISTS (SELECT 1 FROM 
   AND s.type_salle IS DISTINCT FROM s.type_exige
   AND NOT EXISTS (SELECT 1 FROM cours_type_salle t WHERE t.id_cours = s.id_cours AND t.id_type_salle = s.type_salle)
 UNION ALL
-SELECT 'SITE : salle hors du site de la promotion', s.id_seance::text, s.libelle, s.date_seance FROM s
-WHERE s.nature = 'cours' AND EXISTS (SELECT 1 FROM publics_du_cours(s.id_cours) p JOIN classe cl ON cl.id_classe = p.id_classe
-              WHERE cl.id_site IS NOT NULL AND cl.id_site <> s.site_salle)
-UNION ALL
 SELECT 'CD-06 : enseignant absent', s.id_seance::text, s.libelle, s.date_seance FROM s
 WHERE EXISTS (SELECT 1 FROM absence_enseignant a WHERE a.id_enseignant = s.id_enseignant
                                                    AND s.date_seance BETWEEN a.date_debut AND a.date_fin)
@@ -764,12 +764,6 @@ SELECT 'CD-08 : volume du cours dépassé', 'c' || x.id_cours || '-' || x.id_edt
 FROM (SELECT id_cours, id_edt, sum(heures) AS heures FROM h GROUP BY 1, 2) x
 JOIN cours_lib c ON c.id_cours = x.id_cours JOIN emploi_du_temps e ON e.id_edt = x.id_edt
 WHERE x.heures > c.volume_horaire
-UNION ALL
-SELECT 'CD-14 : rythme hebdomadaire dépassé', 'c' || h.id_cours || '-' || h.id_edt || '-' || h.semaine,
-       format('%%s : %%s h la semaine du %%s pour %%s h au plus (v%%s)', c.libelle, trim_scale(round(h.heures, 1)),
-              to_char(h.semaine, 'DD/MM/YYYY'), trim_scale(c.heures_semaine_max), e.version), h.semaine
-FROM h JOIN cours_lib c ON c.id_cours = h.id_cours JOIN emploi_du_temps e ON e.id_edt = h.id_edt
-WHERE h.heures > c.heures_semaine_max
 """
 
 

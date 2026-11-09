@@ -81,8 +81,9 @@ def replanifier_etat(inst: Instance, existantes: list[dict], dans_perimetre, du_
         if d in inst.index_date:
             di = inst.index_date[d]
             w = inst.semaine_de[di]
+            # une séance existante n'est pas déplacée pour le seul rythme souhaité (CS-08, souple)
             if placer_seance(inst, e, c, duree, w, rnd, echecs, *_bornes(inst, e, c), seulement=(di, h0),
-                             salle_pref=salle, ens=ens):
+                             salle_pref=salle, ens=ens, rythme="souple"):
                 nouvelle = e.seances[-1]
                 if nouvelle["id_salle"] != salle:
                     modifications.append({"id_cours": c.id, "type": "salle changée", "avant": avant,
@@ -95,24 +96,28 @@ def replanifier_etat(inst: Instance, existantes: list[dict], dans_perimetre, du_
         raison = echecs.most_common(1)[0][0] if echecs else "créneau plus valide"
         a_replacer.append((c, duree, w, avant, raison, ens))
 
-    # 3. replacer : même semaine d'abord, puis les suivantes, puis les précédentes de la période
+    # 3. replacer : même semaine d'abord, puis les suivantes, puis les précédentes de la période ; au rythme
+    #    souhaité du cours d'abord, puis au-delà en dernier recours (CS-08 est souple)
     for c, duree, w0, avant, raison, ens in a_replacer:
         ordre = [w for w in semaines if w >= w0] + [w for w in reversed(semaines) if w < w0]
         apres = None
-        for w in ordre:
-            if placer_seance(inst, e, c, duree, w, rnd, Counter(), *_bornes(inst, e, c), ens=ens):
+        for rythme, w in [(r, w) for r in ("strict", "souple") for w in ordre]:
+            if placer_seance(inst, e, c, duree, w, rnd, Counter(), *_bornes(inst, e, c), ens=ens, rythme=rythme):
                 s = e.seances[-1]
                 apres = _fmt(inst, s["jour"], s["debut"], s["duree"], s["id_salle"])
                 break
         modifications.append({"id_cours": c.id, "type": "déplacée" if apres else "non replacée",
                               "avant": avant, "apres": apres, "raison": raison})
 
-    # 4. ramener dans la période ce qui est prévu hors d'elle, au plus près de sa date
+    # 4. ramener dans la période ce qui est prévu hors d'elle, au plus près de sa date : au rythme souhaité du
+    #    cours d'abord, puis au-delà en dernier recours (une échéance compte plus que le rythme, souple)
     for c, d, h0, duree, salle, ens in sorted(a_ramener, key=lambda x: (x[1], x[2])):
         avant = {"date": d.isoformat(), "heure_debut": f"{h0:02d}:00", "heure_fin": f"{h0 + duree:02d}:00", "id_salle": salle}
         echecs = Counter()
-        if any(placer_seance(inst, e, c, duree, w, rnd, echecs, *_bornes(inst, e, c), salle_pref=salle, ens=ens)
-               for w in (reversed(semaines) if d > au_d else semaines)):
+        ordre = list(reversed(semaines) if d > au_d else semaines)
+        if any(placer_seance(inst, e, c, duree, w, rnd, echecs if rythme == "souple" else Counter(), *_bornes(inst, e, c),
+                             salle_pref=salle, ens=ens, rythme=rythme)
+               for rythme in ("strict", "souple") for w in ordre):
             s = e.seances[-1]
             modifications.append({"id_cours": c.id, "type": "déplacée", "avant": avant,
                                   "apres": _fmt(inst, s["jour"], s["debut"], s["duree"], s["id_salle"]),

@@ -89,8 +89,8 @@ const filiere: Filiere[] = [
 const classe: Classe[] = [
   { id_classe: 1, code_classe: 'L1INFO', libelle: 'Licence 1 Informatique', niveau: 'L1', effectif: 120, id_filiere: 1 },
   { id_classe: 2, code_classe: 'L2INFO', libelle: 'Licence 2 Informatique', niveau: 'L2', effectif: 80, id_filiere: 1 },
-  { id_classe: 3, code_classe: 'L3INFO', libelle: 'Licence 3 Informatique', niveau: 'L3', effectif: 60, id_filiere: 1 },
-  { id_classe: 4, code_classe: 'M1IA', libelle: 'Master 1 IA', niveau: 'M1', effectif: 30, id_filiere: 2 },
+  { id_classe: 3, code_classe: 'L3INFO', libelle: 'Licence 3 Informatique', niveau: 'L3', effectif: 60, id_filiere: 1, id_salle_principale: 3 },
+  { id_classe: 4, code_classe: 'M1IA', libelle: 'Master 1 IA', niveau: 'M1', effectif: 30, id_filiere: 2, id_salle_principale: 5 },
   { id_classe: 5, code_classe: 'M2IA', libelle: 'Master 2 IA', niveau: 'M2', effectif: 24, id_filiere: 2 },
 ]
 
@@ -212,7 +212,6 @@ const CONTRAINTES_TYPE: Omit<Contrainte, 'id_contrainte' | 'id_edt'>[] = (
     ['CD-11', 'dure', 0, null, 'Aucune séance pendant la pause déjeuner'],
     ['CD-12', 'dure', 0, null, 'Aucune séance dans une salle indisponible'],
     ['CD-13', 'dure', 0, 3, 'Au plus N matières différentes par classe et par semaine'],
-    ['CD-14', 'dure', 0, null, 'Rythme hebdomadaire maximal de chaque cours'],
     ['CS-01', 'souple', 8, null, 'Respecter les créneaux préférés des enseignants'],
     ['CS-02', 'souple', 5, null, "Éviter les trous dans la journée d'une classe"],
     ['CS-03', 'souple', 5, null, 'Limiter les changements de bâtiment et de site'],
@@ -220,6 +219,7 @@ const CONTRAINTES_TYPE: Omit<Contrainte, 'id_contrainte' | 'id_edt'>[] = (
     ['CS-05', 'souple', 2, null, 'Placer le CM avant les TD et TP de la semaine'],
     ['CS-06', 'souple', 2, 6, "Plafonner les heures par jour d'un enseignant"],
     ['CS-07', 'souple', 5, null, 'Commencer tôt les cours prioritaires'],
+    ['CS-08', 'souple', 5, null, 'Respecter le rythme hebdomadaire souhaité de chaque cours (dépassable si nécessaire)'],
   ] as const
 ).map(([type_contrainte, nature, poids, valeur, libelle]) => ({ type_contrainte, nature, poids, valeur, libelle, est_active: true }))
 

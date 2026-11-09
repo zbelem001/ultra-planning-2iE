@@ -28,7 +28,6 @@ export const CODES_DURS: Record<string, string> = {
   'CD-12': 'Salle indisponible ou réservée',
   SITE: 'Mêmes étudiants sur deux campus la même demi-journée',
   'CD-13': 'Trop de matières dans la semaine',
-  'CD-14': 'Rythme hebdomadaire du cours dépassé',
   DUREE: 'Durée hors 2 h – 5 h',
   EXAMEN: 'Examen et rattrapage dans le désordre',
 }
@@ -89,6 +88,27 @@ export function memeDemiJournee(db: Db): (a: { heure_fin: string }, b: { heure_f
 export function campusMere(db: Db, cours: Cours): number | null {
   const classe = db.classe.find((c) => c.id_classe === cours.id_classe)
   return classe?.id_site ?? db.filiere.find((f) => f.id_filiere === classe?.id_filiere)?.id_site ?? null
+}
+
+/**
+ * Rythme hebdomadaire souhaité du cours (CS-08, souple depuis la version 18) : heures du cours dans la semaine de la
+ * séance, elle comprise, quand elles dépassent ce rythme ; null sinon. Ce n'est jamais une violation : la console
+ * le signale seulement.
+ */
+export function rythmeDepasse(db: Db, s: SeanceDraft, seances: Seance[] = db.seance): { heures: number; rythme: number } | null {
+  if (s.statut === 'annulee' || estEpreuve(s)) return null
+  const cours = coursParId(db).get(s.id_cours)
+  if (!cours) return null
+  const deja = (indexSeances(seances).parLundi.get(lundiDe(s.date_seance)) ?? [])
+    .filter((x) => x.id_cours === s.id_cours && x.id_edt === s.id_edt && x.statut !== 'annulee' && x.id_seance !== s.id_seance && !estEpreuve(x))
+    .reduce((a, x) => a + hours(x.heure_debut, x.heure_fin), 0)
+  const heures = deja + hours(s.heure_debut, s.heure_fin)
+  return heures > cours.heures_semaine_max ? { heures, rythme: cours.heures_semaine_max } : null
+}
+
+/** Salle principale de la classe du cours (version 17) : proposée en premier quand elle convient, jamais imposée */
+export function sallePrincipale(db: Db, cours: Cours): number | null {
+  return db.classe.find((c) => c.id_classe === cours.id_classe)?.id_salle_principale ?? null
 }
 
 const coursIndex = new WeakMap<Cours[], Map<number, Cours>>()
@@ -247,15 +267,11 @@ export function checkSeance(db: Db, s: SeanceDraft, seances: Seance[] = db.seanc
       v.push({ code: 'CD-08', message: `Volume prévu ${cours.volume_horaire} h dépassé (${deja} h déjà planifiées + ${duree} h).` })
     }
 
-    // CD-14 : rythme hebdomadaire maximal du cours
+    // Le rythme hebdomadaire du cours n'est plus une règle (CS-08, souple : voir rythmeDepasse)
     // séances de la même semaine (l'index les range par lundi)
     const laSemaine = ix.parLundi.get(lundiDe(s.date_seance)) ?? []
     const memeSemaine = (x: Seance) =>
       x.id_edt === s.id_edt && x.statut !== 'annulee' && x.id_seance !== s.id_seance && !estEpreuve(x)
-    const semaine = laSemaine.filter((x) => memeSemaine(x) && x.id_cours === s.id_cours).reduce((a, x) => a + hours(x.heure_debut, x.heure_fin), 0)
-    if (semaine + duree > cours.heures_semaine_max) {
-      v.push({ code: 'CD-14', message: `Le cours dépasserait ${semaine + duree} h cette semaine (maximum ${cours.heures_semaine_max} h).` })
-    }
 
     // CD-13 : au plus N matières différentes par classe et par semaine, pour chaque promotion du cours
     const max = maxMatieresSemaine(db, s.id_edt)
@@ -321,8 +337,11 @@ export function violationsSalle(db: Db, cours: Cours, salle: Salle, epreuve = fa
 /** Salles qui conviennent à un cours, quel que soit le créneau, de la plus ajustée à la plus grande */
 export function sallesDuCours(db: Db, cours: Cours): Salle[] {
   const mere = campusMere(db, cours)
+  const principale = sallePrincipale(db, cours)
+  // la salle principale de la classe d'abord, puis le campus mère, puis la plus petite qui convient
   return db.salle.filter((salle) => violationsSalle(db, cours, salle).length === 0)
-    .sort((a, b) => Number(a.id_site !== mere) - Number(b.id_site !== mere) || a.capacite - b.capacite)
+    .sort((a, b) => Number(a.id_salle !== principale) - Number(b.id_salle !== principale)
+      || Number(a.id_site !== mere) - Number(b.id_site !== mere) || a.capacite - b.capacite)
 }
 
 // Règles qui dépendent de la salle choisie : les autres valent pour toutes les salles d'un créneau
@@ -474,9 +493,12 @@ export function sallesLibresSeance(db: Db, s: SeanceDraft, seances: Seance[] = d
   const cours = db.cours.find((c) => c.id_cours === s.id_cours)
   if (!cours) return { salles: [], id_site: null }
   const id_site = campusMere(db, cours) ?? db.salle.find((x) => x.id_salle === s.id_salle)?.id_site ?? null
+  const principale = sallePrincipale(db, cours)
+  // la salle actuelle, puis la salle principale de la classe, puis le campus mère, puis la plus petite
   const salles = db.salle
     .filter((salle) => !checkSeance(db, { ...s, id_salle: salle.id_salle }, seances).some((v) => REGLES_SALLE.has(v.code)))
     .sort((a, b) => (a.id_salle === s.id_salle ? -1 : b.id_salle === s.id_salle ? 1
-      : Number(a.id_site !== id_site) - Number(b.id_site !== id_site) || a.capacite - b.capacite || a.nom_salle.localeCompare(b.nom_salle)))
+      : Number(a.id_salle !== principale) - Number(b.id_salle !== principale)
+        || Number(a.id_site !== id_site) - Number(b.id_site !== id_site) || a.capacite - b.capacite || a.nom_salle.localeCompare(b.nom_salle)))
   return { salles, id_site }
 }

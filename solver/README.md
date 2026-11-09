@@ -22,7 +22,7 @@ export DATABASE_URL="host=127.0.0.1 port=5432 user=postgres dbname=postgres"
 .venv/bin/python -m ultraplanning_solver --edt 1 --classe L2INFO --du 2026-11-02 --au 2026-11-28 --minimiser-changements --json
 ```
 
-`--ecrire` remplace les séances du périmètre dans une transaction. Chaque séance passe par le déclencheur de la base (CD-01 à CD-14) : si la base en refuse une, rien n'est écrit.
+`--ecrire` remplace les séances du périmètre dans une transaction. Chaque séance passe par le déclencheur de la base (CD-01 à CD-13) : si la base en refuse une, rien n'est écrit.
 
 En Python (ce que l'API et l'assistant IA appelleront) :
 
@@ -44,7 +44,7 @@ r.seances, r.non_places, r.modifications()   # résultat, manques expliqués, di
 | Étape | Module | Rôle |
 |---|---|---|
 | Données | `donnees.py`, `base.py` | Image du référentiel et de l'emploi du temps, lue depuis PostgreSQL |
-| Étage 1 | `semaines.py` | Plan des semaines : heures de chaque cours par semaine. Volume (CD-08), rythme (CD-14), 3 matières par semaine (CD-13), capacités de l'enseignant, de la classe et des salles. Objectif : CS-04 (selon le statut), CS-05 (CM avant TD/TP), CS-07 (priorités) |
+| Étage 1 | `semaines.py` | Plan des semaines : heures de chaque cours par semaine. Volume (CD-08), rythme (CD-14 dans cet ancien moteur ; souple, CS-08, dans le moteur v3), 3 matières par semaine (CD-13), capacités de l'enseignant, de la classe et des salles. Objectif : CS-04 (selon le statut), CS-05 (CM avant TD/TP), CS-07 (priorités) |
 | Étage 2 | `placement.py` | Placement de chaque semaine : jour, créneau et salle de chaque séance. CD-01 à CD-12 ; objectif : CS-01, CS-02, CS-03, CS-05, CS-06 |
 | Boucle | `moteur.py` | Si une semaine ne peut pas tout placer, l'étage 1 est relancé pour reporter le manque sur d'autres semaines |
 

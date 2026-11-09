@@ -59,6 +59,42 @@ class TestMoteur(unittest.TestCase):
         self.assertEqual(v, [])
         self.assertEqual(res["statistiques"]["taux"], 100.0)
 
+    def test_salle_principale_preferee_sans_etre_imposee(self):
+        """Salle principale de la classe (version 17) : prise quand elle convient, sinon une autre salle."""
+        classes = [{"id_classe": 1, "code_classe": "A", "id_site": 1, "effectif": 60},
+                   {"id_classe": 2, "code_classe": "B", "id_site": 1, "effectif": 40, "id_salle_principale": 3}]
+        # sans elle, la salle 2 (même taille, avant la 3) serait prise
+        d = mini([cours(1, 2, 8, 1), cours(2, 2, 4, 2, (AMPHI,))], classes=classes)
+        res, v = lancer(d)
+        self.assertEqual(v, [])
+        self.assertEqual({s["id_salle"] for s in res["seances"] if s["id_cours"] == 1}, {3})
+        # un cours qui veut un amphithéâtre ne va pas dans la salle principale (salle standard), sans erreur
+        self.assertEqual({s["id_salle"] for s in res["seances"] if s["id_cours"] == 2}, {1})
+        # salle principale prise toute la première semaine : le cours se fait quand même, ailleurs
+        d["salles_bloquees"] = [{"id_salle": 3, "date": f"2026-09-{j}", "debut": 7, "fin": 16} for j in range(14, 20)]
+        res, v = lancer(d)
+        self.assertEqual(v, [])
+        self.assertEqual(heures(res, 1), 8)
+        par_semaine = {(s["date"] < "2026-09-21", s["id_salle"]) for s in res["seances"] if s["id_cours"] == 1}
+        self.assertTrue(all(salle != 3 for premiere, salle in par_semaine if premiere), par_semaine)
+        self.assertIn((False, 3), par_semaine)
+        # salle principale indisponible : aucune préférence, aucune erreur
+        d.pop("salles_bloquees")
+        d["salles"] = [dict(s, est_disponible=s["id_salle"] != 3) for s in d["salles"]]
+        res, v = lancer(d)
+        self.assertEqual(v, [])
+        self.assertEqual(heures(res, 1), 8)
+
+    def test_rythme_souhaite_tenu_sauf_si_cs08_desactivee(self):
+        """CS-08 (souple) : la génération tient le rythme souhaité ; désactivée, elle peut le dépasser pour tout placer."""
+        d = mini([cours(1, 2, 12, 1, hmax=4)], semaines=1)
+        res, v = lancer(d)
+        self.assertEqual((v, heures(res, 1)), ([], 4))
+        d["parametres"] = {"rythme_strict": False, "poids": {"rythme": 0}}
+        res, v = lancer(d)
+        self.assertEqual(v, [])
+        self.assertGreater(heures(res, 1), 4)
+
     def test_decoupage(self):
         self.assertEqual(heures_par_semaine(5, [3, 2]), [3, 2])
         self.assertEqual(heures_par_semaine(4, [2]), [2, 2])

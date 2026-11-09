@@ -1,4 +1,4 @@
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import date, time, timedelta
 
 from ultraplanning_solver import ContrainteAjoutee, Demande, Perimetre, generer
@@ -177,8 +177,9 @@ def test_replanification_ne_complete_pas_le_programme():
 
 
 def test_ramener_les_seances_hors_de_la_periode():
-    # 6 h par semaine au plus. Période : semaines 1 et 2, soit 12 h ; 6 h y sont déjà.
-    # Après elle : 8 h non verrouillées et 2 h verrouillées. Seules 6 h tiennent.
+    # Rythme souhaité : 6 h par semaine. Période : semaines 1 et 2, soit 12 h au rythme ; 6 h y sont déjà.
+    # Après elle : 8 h non verrouillées et 2 h verrouillées. 6 h tiennent au rythme ; la dernière séance est
+    # ramenée quand même, au-delà du rythme (CS-08 est souple : une échéance compte plus).
     s1, s2, s3, s4 = (LUNDI + timedelta(weeks=k) for k in range(4))
     dans = [Seance(1, s1, time(7), time(9), 1, id_seance=1), Seance(1, s1 + timedelta(days=1), time(7), time(9), 1, id_seance=2),
             Seance(1, s2, time(7), time(9), 1, id_seance=3)]
@@ -196,16 +197,29 @@ def test_ramener_les_seances_hors_de_la_periode():
     assert all(s1 <= s.date_seance <= fin for s in r.seances)
     assert r.non_places == [] and violations(d, r.seances + r.conservees) == []
     assert sum(s.duree for s in r.seances + r.conservees) == sum(s.duree for s in existantes)  # aucune heure perdue
-    # Les séances déjà dans la période n'ont pas bougé ; 3 séances sont ramenées, la 4e n'a plus de place
+    # Les séances déjà dans la période n'ont pas bougé ; les 4 séances non verrouillées sont ramenées
     ops = r.modifications()
-    assert sorted(o["id_seance"] for o in ops if o["action"] == "supprimer") == [10, 11, 12]
+    assert sorted(o["id_seance"] for o in ops if o["action"] == "supprimer") == [10, 11, 12, 20]
     creees = [o["apres"] for o in ops if o["action"] == "creer"]
-    assert [x["id_salle"] for x in creees] == [1, 1, 1]  # elles gardent leur salle
-    # Au plus près de leur date : la dernière semaine de la période se remplit d'abord
-    assert sum(x["date_seance"] >= s2.isoformat() for x in creees) == 2
-    restees = r.statistiques["restees_hors_periode"]
-    assert [(x["id_cours"], x["date"]) for x in restees] == [(1, s4.isoformat())] and "rythme maximal" in restees[0]["raison"]
-    assert {s.id_seance for s in r.conservees} == {20, 30}
+    assert [x["id_salle"] for x in creees] == [1, 1, 1, 1]  # elles gardent leur salle
+    # Au rythme d'abord (6 h par semaine), puis une seule semaine au-delà : 6 h + 8 h, jamais plus
+    par_semaine = Counter(lundi_de(s.date_seance) for s in r.seances + r.conservees if s1 <= s.date_seance <= fin for _ in range(s.duree))
+    assert sorted(par_semaine.values()) == [6, 8], par_semaine
+    assert r.statistiques["restees_hors_periode"] == []
+    assert {s.id_seance for s in r.conservees} == {30}
+
+
+def test_le_rythme_n_est_depasse_qu_en_dernier_recours():
+    # Rythme souhaité : 4 h. Une séance de la semaine 3 à ramener dans les semaines 1 et 2 : la semaine 2 est
+    # pleine (4 h), la semaine 1 a de la place (2 h) : elle va en semaine 1, sans dépasser le rythme.
+    s1, s2, s3 = (LUNDI + timedelta(weeks=k) for k in range(3))
+    existantes = [Seance(1, s1, time(7), time(9), 1, id_seance=1),
+                  Seance(1, s2, time(7), time(9), 1, id_seance=2), Seance(1, s2 + timedelta(days=1), time(7), time(9), 1, id_seance=3),
+                  Seance(1, s3, time(7), time(9), 1, id_seance=4)]
+    d = donnees([cours(1, "TP", 20, 1, 1, 1, AMPHI, hmax=4)], semaines=3, seances=existantes)
+    r = generer(d, Demande(du=s1, au=s2 + timedelta(days=5), minimiser_changements=True, ramener_depuis=s1, **RAPIDE))
+    ramenee = [o["apres"] for o in r.modifications() if o["action"] == "creer"]
+    assert len(ramenee) == 1 and lundi_de(date.fromisoformat(ramenee[0]["date_seance"])) == s1, ramenee
 
 
 def test_ramener_les_seances_avant_la_periode_mais_pas_le_passe():

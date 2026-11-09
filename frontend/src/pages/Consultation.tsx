@@ -3,7 +3,7 @@
 
 import {
   BookOpen, CalendarDays, CalendarPlus, FileDown, FileSpreadsheet, Columns3, DoorOpen, GraduationCap, LayoutList, Link2, Printer,
-  Rows3, Settings2, SquareUser,
+  Rows3, SquareUser,
 } from 'lucide-react'
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
@@ -53,9 +53,6 @@ function ChoixEcole() {
     <div className="flex min-h-dvh w-full flex-col px-4 sm:px-8">
       <header className="flex flex-wrap items-center justify-between gap-3 py-5">
         <span className="rounded-full bg-white/70 py-1.5 pr-4 pl-1.5 ring-1 ring-white"><Logo suffix="Invités" /></span>
-        <Link to="/admin" className="press inline-flex h-8 items-center gap-1.5 rounded-full border border-line bg-white/80 px-3 text-xs font-medium hover:bg-white [&_svg]:size-4">
-          <Settings2 />Administration
-        </Link>
       </header>
       <main className="mx-auto w-full max-w-2xl pb-10">
         <p className="section-label mb-2">Espace invités · enseignants et étudiants</p>
@@ -88,9 +85,6 @@ function AucunEmploiDuTemps() {
     <div className="flex min-h-dvh w-full flex-col px-4 sm:px-8">
       <header className="flex flex-wrap items-center justify-between gap-3 py-5">
         <span className="rounded-full bg-white/70 py-1.5 pr-4 pl-1.5 ring-1 ring-white"><Logo suffix="Invités" ecole={ecoleCourante(db)} /></span>
-        <Link to="/admin" className="press inline-flex h-8 items-center gap-1.5 rounded-full border border-line bg-white/80 px-3 text-xs font-medium hover:bg-white [&_svg]:size-4">
-          <Settings2 />Administration
-        </Link>
       </header>
       <Card><EmptyState icon={<CalendarDays />} title="Aucun emploi du temps publié">La scolarité n'a pas encore publié d'emploi du temps.</EmptyState></Card>
     </div>
@@ -257,9 +251,6 @@ function Contenu() {
               </Badge>
             </span>
           )}
-          <Link to="/admin" className="press inline-flex h-8 items-center gap-1.5 rounded-full border border-line bg-white/80 px-3 text-xs font-medium hover:bg-white [&_svg]:size-4">
-            <Settings2 />Administration
-          </Link>
         </div>
       </header>
 

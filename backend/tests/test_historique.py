@@ -68,6 +68,20 @@ def test_liste_des_versions(client):
     assert [x["numero"] for x in suite["versions"]] == [avant]
 
 
+def test_l_historique_ne_garde_que_les_10_dernieres_versions(client):
+    a = seances(client)[0]
+    n = deplacer(client, a)
+    for i in range(11):   # aller-retour entre deux semaines : une version à chaque fois, plus de 10 en tout
+        assert synchroniser(client, [a if i % 2 == 0 else n]).status_code == 200
+    v = versions(client)
+    assert v["total"] > 10 and len(v["versions"]) == 10 and v["gardees"] == 10
+    assert [x["numero"] for x in v["versions"]] == list(range(v["total"], v["total"] - 10, -1))
+    ancienne = v["total"] - 10
+    assert client.get(f"/api/emplois-du-temps/1/versions/{ancienne}", headers=ADMIN).status_code == 410
+    assert restaurer(client, ancienne).status_code == 410
+    assert client.get(f"/api/emplois-du-temps/1/versions/{ancienne + 1}", headers=ADMIN).status_code == 200
+
+
 def test_seances_d_une_version_et_restauration(client):
     depart = seances(client)
     a, b, c = depart[:3]

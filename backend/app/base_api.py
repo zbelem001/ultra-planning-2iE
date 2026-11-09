@@ -5,7 +5,7 @@ Le frontend manipule la base comme un objet { table: lignes[] } (types/db.ts).
 - GET /api/base/public?ecole=CODE : ce que voit un invité de cette école ;
 - POST /api/base/sync : ajouts, modifications et suppressions faits dans
   l'interface, appliqués dans une transaction. Les déclencheurs de la base
-  revalident chaque ligne (CD-01 à CD-14, programme...) : une
+  revalident chaque ligne (CD-01 à CD-13, programme...) : une
   modification refusée renvoie 409 avec le motif, et rien n'est écrit.
 
 Les noms de tables et de colonnes sont contrôlés à partir du catalogue de la

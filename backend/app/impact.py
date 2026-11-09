@@ -13,7 +13,7 @@ from collections import defaultdict
 from datetime import date
 
 from ultraplanning_solver import Resultat
-from ultraplanning_solver.donnees import Donnees, Seance
+from ultraplanning_solver.donnees import Donnees, Seance, lundi_de
 
 
 def _libelle(d: Donnees, noms: dict[int, str], id_cours: int) -> str:
@@ -105,6 +105,21 @@ def analyser(d: Donnees, r: Resultat, noms_matieres: dict[int, str]) -> dict:
         if len(ss) > 1 and len(sites_avant.get((cl, j), set())) < len(ss)
     ]
 
+    # Rythme souhaité des cours (CS-08, souple) : semaines où un cours touché le dépasse, plus qu'avant
+    def par_semaine(seances: list[Seance]) -> dict[tuple[int, date], int]:
+        out: dict[tuple[int, date], int] = defaultdict(int)
+        for s in seances:
+            if s.id_cours in touches:
+                out[s.id_cours, lundi_de(s.date_seance)] += s.duree
+        return out
+
+    sem_avant, sem_apres = par_semaine(avant), par_semaine(apres)
+    au_dela = [
+        {"cours": lib(k), "semaine": lundi.isoformat(), "heures": h, "rythme": d.cours[k].heures_semaine_max}
+        for (k, lundi), h in sorted(sem_apres.items(), key=lambda x: (x[0][1], x[0][0]))
+        if h > d.cours[k].heures_semaine_max and h > sem_avant.get((k, lundi), 0)
+    ]
+
     return {
         "seances_deplacees": deplacees,
         # en plus des séances déplacées, qui sont retirées puis recréées
@@ -118,6 +133,7 @@ def analyser(d: Donnees, r: Resultat, noms_matieres: dict[int, str]) -> dict:
         "fins_decalees": decalees,
         "journees_chargees": journees,
         "changements_de_site": sites,
+        "au_dela_du_rythme": au_dela,
     }
 
 
@@ -153,4 +169,7 @@ def resume(impact: dict) -> list[str]:
         lignes.append(f"- Journée chargée : {j['enseignant']} aurait {j['heures']} h le {j['date']} (préférence : {j['plafond']} h au plus).")
     for s in impact["changements_de_site"]:
         lignes.append(f"- {s['classe']} changerait de site dans la journée du {s['date']}.")
+    for x in impact.get("au_dela_du_rythme", []):
+        lignes.append(f"- Au-delà du rythme souhaité (CS-08, souple) : {x['cours']} aurait {x['heures']} h la semaine du "
+                      f"{x['semaine']} (rythme souhaité : {x['rythme']} h). C'est permis ; signale-le.")
     return lignes

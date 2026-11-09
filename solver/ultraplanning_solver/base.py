@@ -2,7 +2,7 @@
 
 Le solveur lit tout ce dont il a besoin pour un emploi du temps, puis écrit
 son résultat en passant par les déclencheurs de la base : chaque séance est
-revalidée (CD-01 à CD-14), ce qui double la garantie du solveur.
+revalidée (CD-01 à CD-13), ce qui double la garantie du solveur.
 
 Plusieurs écoles partagent la base : toutes les lectures et écritures portent
 explicitement sur l'école de l'emploi du temps. (Sous l'API, la RLS filtre en
@@ -48,8 +48,9 @@ def charger(conn: psycopg.Connection, id_edt: int) -> Donnees:
     # Campus mère d'une promotion : le sien, sinon celui de sa filière. La génération y place ses cours ;
     # les mêmes étudiants n'ont cours que sur un campus par demi-journée (contrôle SITE de la base, version 16)
     site_filiere = {r["id_filiere"]: r.get("id_site") for r in tout("filiere")}
+    # Salle principale (version 17) : la génération la préfère pour les cours de la classe, sans l'imposer
     classes = {r["id_classe"]: Classe(r["id_classe"], r["code_classe"], r["effectif"], r["id_filiere"],
-                                      r.get("id_site") or site_filiere.get(r["id_filiere"]))
+                                      r.get("id_site") or site_filiere.get(r["id_filiere"]), r.get("id_salle_principale"))
                for r in tout("classe")}
     groupes = {
         r["id_groupe"]: Groupe(r["id_groupe"], r["code_groupe"], r["type_groupe"], r["effectif"], r["id_classe"],
@@ -140,7 +141,10 @@ def charger(conn: psycopg.Connection, id_edt: int) -> Donnees:
         if r["type_contrainte"] == "CS-06" and r["valeur"] is not None:
             plafond_jour = int(r["valeur"])
     if not contraintes:  # emploi du temps sans contraintes saisies : poids par défaut
-        poids = {"CS-01": 8, "CS-02": 5, "CS-03": 5, "CS-04": 5, "CS-05": 2, "CS-06": 2, "CS-07": 5}
+        poids = {"CS-01": 8, "CS-02": 5, "CS-03": 5, "CS-04": 5, "CS-05": 2, "CS-06": 2, "CS-07": 5, "CS-08": 5}
+    elif not any(r["type_contrainte"] == "CS-08" for r in contraintes):
+        # base d'avant la version 18 (rythme encore noté CD-14, règle dure) : le rythme reste suivi
+        poids["CS-08"] = 5
 
     return Donnees(
         id_edt=id_edt,

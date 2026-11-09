@@ -15,7 +15,7 @@ def main(argv=None):
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--processus", type=int, default=os.cpu_count() or 1, help="essais en parallèle")
     ap.add_argument("--concentration", type=float, default=0.5,
-                    help="part du rythme maximal demandée chaque semaine (0 = étalé, 1 = par modules)")
+                    help="part du rythme souhaité demandée chaque semaine (0 = étalé, 1 = par modules)")
     ap.add_argument("--amelioration", type=float, default=60.0,
                     help="secondes d'amélioration CP-SAT (0 = glouton seul)")
     a = ap.parse_args(argv)

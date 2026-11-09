@@ -33,7 +33,12 @@ DEFAUT_PARAM = {
         "cm_avant_td": 3,            # TD avant le début du CM de la matière
         "samedi": 1,                 # séance le samedi
         "priorite": 0.05,            # urgence ajoutée par point de priorité du cours (CS-07)
+        "hors_salle_principale": 3,  # séance hors de la salle principale de la classe, quand elle convient
+        "rythme": 5,                 # par heure au-delà du rythme souhaité du cours (CS-08), quand il faut le dépasser
     },
+    # CS-08 active : la génération tient le rythme souhaité de chaque cours (h_max) ; seules la replanification et
+    # la reprogrammation le dépassent, en dernier recours. Inactive : le rattrapage peut aussi le dépasser.
+    "rythme_strict": True,
 }
 
 
@@ -58,6 +63,8 @@ class Cours:
     h_max: int
     site: int | None                 # None : site de la promotion non fixé (salles des deux sites)
     salles: list[int] = field(default_factory=list)   # salles possibles, meilleure d'abord
+    # salle principale de la classe du cours, si elle convient (type, capacité, campus) : en tête de `salles`
+    salle_principale: int | None = None
     priorite: int = 0                # plus haut = commence plus tôt (CS-07)
 
 
@@ -305,13 +312,21 @@ class Instance:
             # réservée au cours d'abord, puis la plus petite qui convient
             possibles.append((0 if res else 1, s["capacite"], s["id_salle"]))
         k.salles = [x[2] for x in sorted(possibles)]
-        # rythme maximal = règle dure (CD-14, vérifiée par la base) : on signale seulement
-        # quand la présence de l'enseignant ne suffit pas à faire le volume
+        # Salle principale de la classe du cours (cours mutualisé : celle de la classe du cours) : préférée
+        # quand elle convient, sans être imposée (poids « hors_salle_principale »)
+        principale = self.classes[c["publics"][0]["id_classe"]].get("id_salle_principale") if c["publics"] else None
+        if principale in k.salles:
+            k.salles.remove(principale)
+            k.salles.insert(0, principale)
+            k.salle_principale = principale
+        # rythme souhaité (CS-08, souple depuis la version 18) : on signale quand la présence de l'enseignant ne
+        # suffit pas à faire le volume sans le dépasser
         n_pres = sum(1 for w in range(self.n_semaines)
                      if any(self.ens_present[k.enseignant][i] for i in self.jours_semaine[w]))
         if k.volume > k.h_max * n_pres:
             self.erreurs.append(f"cours {k.id} : {k.volume} h impossibles en {n_pres} semaine(s) de présence de "
-                                f"l'enseignant à {k.h_max} h maximum par semaine (il faudrait {plafond(k.volume / max(n_pres, 1))} h)")
+                                f"l'enseignant au rythme souhaité de {k.h_max} h par semaine (il faudrait "
+                                f"{plafond(k.volume / max(n_pres, 1))} h)")
         if sites and not k.salles:
             self.erreurs.append(f"cours {k.id} : aucune salle (types {k.types_salle}, {eff} places, site {site})")
         self.cours[k.id] = k

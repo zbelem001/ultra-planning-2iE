@@ -92,7 +92,7 @@ function repondre(db: Db, id_edt: number, texte: string, precedent?: string): { 
     reponse:
       `${list.length} séance(s) concernée(s) cette semaine (${cible}) :\n${lignes}` +
       (action
-        ? `\n\nPour appliquer la demande, il faudrait déplacer ces séances en respectant CD-01 à CD-14. Simulation : rien n'a été modifié. Le moteur IA proposera les nouveaux créneaux une fois branché.`
+        ? `\n\nPour appliquer la demande, il faudrait déplacer ces séances en respectant CD-01 à CD-13. Simulation : rien n'a été modifié. Le moteur IA proposera les nouveaux créneaux une fois branché.`
         : ''),
   }
 }

@@ -6,7 +6,7 @@
 import { estEpreuve } from './publics'
 import type { Db, Seance } from '@/types/db'
 import { coursEnConflit } from './publics'
-import { checkSeance, CODES_DURS, decoupage, effectifCours, type Violation } from './rules'
+import { checkSeance, CODES_DURS, decoupage, effectifCours, sallePrincipale, type Violation } from './rules'
 import { addDays, fromMin, hours, jourOf, toMin } from './time'
 
 export interface NonPlace {
@@ -66,6 +66,8 @@ export function generateWeek(
     const salles = db.salle.filter(
       (s) => s.est_disponible && s.capacite >= effectif && (c.id_type_salle === null || s.id_type_salle === c.id_type_salle),
     )
+    // salle principale de la classe : préférée quand elle convient, comme dans le moteur du serveur
+    const principale = sallePrincipale(db, c)
 
     for (const m of modele) {
       let best: { s: Seance; score: number } | null = null
@@ -105,7 +107,7 @@ export function generateWeek(
               note(vs)
               continue
             }
-            const sc = scoreSouple(db, draft, travail, w) - (salle.capacite - effectif) / 100
+            const sc = scoreSouple(db, draft, travail, w) - (salle.capacite - effectif) / 100 + (salle.id_salle === principale ? 3 : 0)
             if (!best || sc > best.score) best = { s: draft, score: sc }
           }
         }

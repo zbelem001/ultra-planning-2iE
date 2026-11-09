@@ -36,20 +36,21 @@ function Ligne({ c, id_matiere, libelle, detail, plan, annulees, etat, durees, r
       </div>
       <div className="mt-2 flex flex-wrap items-center gap-1.5">
         {etat === 'volume_atteint' && <Badge tone="success" dot>Volume atteint</Badge>}
-        {etat === 'semaine_complete' && <Badge tone="neutral" dot>Semaine complète</Badge>}
         {etat === 'reste_trop_court' && <Badge tone="warning" dot>{reste} h restante : 2 h minimum</Badge>}
-        {etat === 'rythme_trop_court' && <Badge tone="warning" dot>{reste} h restantes, {c.heures_semaine_max} h par semaine</Badge>}
         {etat === 'a_placer' && durees.map((o) => o.ok ? (
           <div
             key={o.duree}
             draggable
             onDragStart={(ev) => onGlisser(c.id_cours, o.duree, ev)}
             onDragEnd={onFin}
+            data-au-dela={o.auDela ? '' : undefined}
             className={cn(
               'press flex cursor-grab items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium select-none active:cursor-grabbing',
               o.habituelle ? 'bg-navy text-white' : 'bg-white text-navy ring-1 ring-navy/40 hover:bg-subtle',
+              // au-delà du rythme souhaité (CS-08) : possible, signalé
+              o.auDela && 'ring-2 ring-orange',
             )}
-            title={`Glisser sur la grille : une séance de ${o.duree} h${o.habituelle ? ' (durée des séances types du cours)' : ''}`}
+            title={`Glisser sur la grille : une séance de ${o.duree} h${o.habituelle ? ' (durée des séances types du cours)' : ''}${o.auDela ? `. ${o.auDela}` : ''}`}
           >
             <GripVertical className="size-3" />{o.duree} h
           </div>

@@ -210,17 +210,30 @@ def test_les_heures_jamais_programmees_sont_signalees(ctx, conn, cours_etale):
     assert f"Jamais programmées : 6 h du cours {k} (volume 16 h)" in texte and "proposer_generation avec matieres" in texte
 
 
-def test_une_seance_sans_place_reste_ou_elle_est(ctx, conn, cours_etale):
+def test_le_rythme_souhaite_se_depasse_pour_tenir_une_echeance(ctx, conn, cours_etale):
+    """Rythme souhaité (CS-08, souple depuis la version 18) : 4 h par semaine, 10 h à faire tenir en deux semaines.
+    8 h tiennent au rythme ; la dernière séance vient quand même, au-delà, et la proposition le signale."""
     k, _ = cours_etale
     conn.execute("UPDATE cours SET heures_semaine_min = 2, heures_semaine_max = 4 WHERE id_cours = %s", (k,))
     texte = proposer_reprogrammation_cours(ctx, "Finir le cours avant décembre", [k], "2026-11-23", "2026-12-05")
-    assert "1 séance(s) n'ont pas de place dans la période" in texte and "rythme maximal" in texte
+    assert "n'ont pas de place dans la période" not in texte and "Au-delà du rythme souhaité" in texte, texte
     id_prop = ctx.propositions_creees[0]
     consequences = conn.execute("SELECT impact FROM proposition WHERE id_proposition = %s", (id_prop,)).fetchone()[0]
-    assert [x["date"] for x in consequences["restees_hors_periode"]] == ["2026-12-14"] and consequences["heures_perdues"] == []
+    assert consequences["restees_hors_periode"] == [] and consequences["heures_perdues"] == []
+    assert [(x["heures"], x["rythme"]) for x in consequences["au_dela_du_rythme"]] == [(6, 4)], consequences["au_dela_du_rythme"]
+    # la base l'accepte : le rythme n'est plus une règle dure
     propositions.appliquer(conn, id_prop, 1)
     dates = seances_du_cours(conn, k)
-    assert len(dates) == 5 and dates[-1] == date(2026, 12, 14) and dates[-2] <= date(2026, 12, 5)  # aucune heure perdue
+    assert len(dates) == 5 and dates[-1] <= date(2026, 12, 5)  # tout tient avant l'échéance, aucune heure perdue
+
+
+def test_la_base_accepte_une_semaine_au_dela_du_rythme(conn, cours_etale):
+    k, salle = cours_etale
+    conn.execute("UPDATE cours SET heures_semaine_max = 2 WHERE id_cours = %s", (k,))
+    # 2 h déjà la semaine du 23/11 (deux séances) : une troisième passe, au-delà des 2 h souhaitées
+    propositions.executer_operations(conn, [{"action": "creer", "apres": {
+        "id_cours": k, "date_seance": "2026-11-25", "heure_debut": "07:00", "heure_fin": "09:00", "id_salle": salle}}], 1, 1)
+    assert len(seances_du_cours(conn, k)) == 6
 
 
 def test_reprogrammer_verifie_le_cours_et_ne_va_pas_dans_le_passe(ctx, conn, cours_etale):

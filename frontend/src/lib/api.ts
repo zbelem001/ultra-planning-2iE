@@ -122,7 +122,7 @@ export interface ResultatRestauration {
   appliquee: boolean
 }
 export const versionsEdt = (id_edt: number, avant?: number) =>
-  appel<{ total: number; versions: VersionEdt[] }>(`/api/emplois-du-temps/${id_edt}/versions?limite=100${avant ? `&avant=${avant}` : ''}`)
+  appel<{ total: number; gardees?: number; versions: VersionEdt[] }>(`/api/emplois-du-temps/${id_edt}/versions?limite=100${avant ? `&avant=${avant}` : ''}`)
 export const seancesVersion = (id_edt: number, numero: number) =>
   appel<{ numero: number; date: string; seances: Seance[]; hors_referentiel: number }>(`/api/emplois-du-temps/${id_edt}/versions/${numero}`)
 /** appliquer faux : aperçu, rien n'est écrit */

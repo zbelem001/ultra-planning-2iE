@@ -25,7 +25,7 @@ const LIGNE_TITRE = 19
 const LIGNE_DETAIL = 18.5
 const BADGE_ANNULEE = 18
 
-export function EventCard({ s, hide = [], selected, cochee, compact, hauteur = Infinity, draggable, onDragStart, onDragEnd, onClick, onPlus, plusTitre, onMoins, moinsTitre }: {
+export function EventCard({ s, hide = [], selected, cochee, compact, hauteur = Infinity, draggable, onDragStart, onDragEnd, onClick, onOuvrir, onPlus, plusTitre, onMoins, moinsTitre }: {
   s: SeanceVue
   hide?: Champ[]
   selected?: boolean
@@ -38,6 +38,8 @@ export function EventCard({ s, hide = [], selected, cochee, compact, hauteur = I
   onDragStart?: (e: DragEvent) => void
   onDragEnd?: () => void
   onClick?: (m: ModifClic) => void
+  /** Ouvrir le détail (Planification : double-clic ou Entrée ; le clic simple sélectionne) */
+  onOuvrir?: () => void
   /** Petit « + » en bas à droite : allonger la séance d'une heure (Planification), seulement si c'est possible */
   onPlus?: () => void
   plusTitre?: string
@@ -72,7 +74,10 @@ export function EventCard({ s, hide = [], selected, cochee, compact, hauteur = I
       type={bouton ? 'button' : undefined}
       role={cliquable ? 'button' : undefined}
       tabIndex={cliquable ? 0 : undefined}
-      onKeyDown={cliquable ? (e: KeyboardEvent) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick!(e) } } : undefined}
+      onKeyDown={cliquable ? (e: KeyboardEvent) => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); if (e.key === 'Enter' && onOuvrir) onOuvrir(); else onClick!(e) }
+      } : undefined}
+      onDoubleClick={onOuvrir}
       draggable={draggable}
       onDragStart={onDragStart}
       onDragEnd={onDragEnd}

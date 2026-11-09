@@ -1,8 +1,8 @@
 """Historique de la version à jour : chaque changement enregistré est une version, lue dans le
 journal des séances (fonctions versions_edt et seances_version de la base).
 
-On remonte de version en version jusqu'à la première, on en affiche les séances et on peut la
-restaurer. La restauration remplace la version à jour et s'ajoute à l'historique : rien n'est
+Seules les 10 dernières versions sont gardées dans l'historique (VERSIONS_GARDEES) : on les liste, on en
+affiche les séances et on peut les restaurer. Le journal des séances, lui, garde tout (audit). La restauration remplace la version à jour et s'ajoute à l'historique : rien n'est
 effacé. Les invités n'en voient rien avant une publication. Le référentiel, lui, n'est pas
 restauré : une séance dont le cours, la salle ou le créneau n'existe plus, ou que les règles
 refusent aujourd'hui (jour férié, enseignant absent...), ne revient pas, et le motif est donné.
@@ -22,6 +22,8 @@ from .db import connexion, origine
 from .publication import JOURS, MOIS
 
 routeur = APIRouter()
+
+VERSIONS_GARDEES = 10  # versions de la version à jour proposées dans l'historique, les plus récentes
 
 ORIGINES = {"console": "Modification manuelle", "generation": "Génération", "assistant": "Assistant IA",
             "restauration": "Restauration", "systeme": "Script ou import"}
@@ -43,9 +45,12 @@ def _edt_existe(conn: psycopg.Connection, id_edt: int) -> str:
 
 
 def _date_version(conn: psycopg.Connection, id_edt: int, numero: int) -> datetime:
-    row = conn.execute("SELECT date_version FROM versions_edt(%s) WHERE numero = %s", (id_edt, numero)).fetchone()
+    row = conn.execute("SELECT date_version, (SELECT count(*) FROM versions_edt(%s)) FROM versions_edt(%s) WHERE numero = %s",
+                       (id_edt, id_edt, numero)).fetchone()
     if row is None:
         raise HTTPException(404, "Version introuvable")
+    if numero <= row[1] - VERSIONS_GARDEES:
+        raise HTTPException(410, f"Version trop ancienne : l'historique ne garde que les {VERSIONS_GARDEES} dernières versions")
     return row[0]
 
 
@@ -96,13 +101,14 @@ def _titre(detail: dict | None, note: str | None, origine_: str, noms: dict[int,
 @routeur.get("/api/emplois-du-temps/{id_edt}/versions")
 def lister_versions(id_edt: int, limite: int = Query(200, ge=1, le=500), avant: int | None = None,
                     conn: psycopg.Connection = Depends(connexion), _: Utilisateur = Depends(utilisateur_courant)) -> dict:
-    """Versions de la plus récente à la plus ancienne ; `avant` : suite de la liste."""
+    """Les 10 dernières versions (VERSIONS_GARDEES), de la plus récente à la plus ancienne ; `avant` : suite de
+    la liste, parmi elles. `total` : toutes les versions enregistrées depuis le début."""
     _edt_existe(conn, id_edt)
     total = conn.execute("SELECT count(*) FROM versions_edt(%s)", (id_edt,)).fetchone()[0]
     rows = conn.execute(
         "SELECT numero, date_version, origine, id_utilisateur, note, ajoutees, retirees, modifiees, detail "
-        "FROM versions_edt(%s) WHERE numero < %s ORDER BY numero DESC LIMIT %s",
-        (id_edt, avant if avant is not None else total + 1, limite),
+        "FROM versions_edt(%s) WHERE numero < %s AND numero > %s ORDER BY numero DESC LIMIT %s",
+        (id_edt, avant if avant is not None else total + 1, total - VERSIONS_GARDEES, limite),
     ).fetchall()
     noms = _noms_cours(conn, {(r[8]["apres"] or r[8]["avant"])["id_cours"] for r in rows if r[8]})
     auteurs = dict(conn.execute("SELECT id_utilisateur, login FROM utilisateur").fetchall())
@@ -117,6 +123,7 @@ def lister_versions(id_edt: int, limite: int = Query(200, ge=1, le=500), avant: 
     ).fetchone()
     return {
         "total": total,
+        "gardees": VERSIONS_GARDEES,
         "versions": [{
             "numero": r[0], "date": r[1], "origine": r[2], "origine_libelle": ORIGINES.get(r[2], r[2]),
             "auteur": auteurs.get(r[3]), "titre": _titre(r[8], r[4], r[2], noms),

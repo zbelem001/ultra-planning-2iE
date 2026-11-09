@@ -1,12 +1,14 @@
-// Historique de la version à jour : la liste des versions, de la plus récente à la première, et la
-// restauration d'une version, avec un aperçu de ce qu'elle change et une confirmation.
+// Historique de la version à jour : les 10 dernières versions (chaque modification enregistrée en est une), de la
+// plus récente à la plus ancienne, et la restauration d'une version, avec un aperçu et une confirmation. La liste
+// se relit après chaque modification enregistrée, pas seulement après une publication.
 
 import { History, Loader2, RotateCcw } from 'lucide-react'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { toast } from 'sonner'
 import { Badge, Button, Card, cn, Dialog, EmptyState } from '@/components/ui'
 import { restaurerVersion, versionsEdt, type ResultatRestauration, type VersionEdt } from '@/lib/api'
+import { EVENEMENT_ENREGISTRE } from '@/lib/store'
 import { fmtDateHeure } from '@/lib/time'
 
 const pluriel = (n: number, mot: string) => `${n} ${mot}${n > 1 ? 's' : ''}`
@@ -31,9 +33,15 @@ export function HistoriqueVersions({ id_edt, numero, onChoisir, actualisation }:
   const [total, setTotal] = useState(0)
   const [etat, setEtat] = useState<'chargement' | 'pret' | 'erreur'>('chargement')
   const [erreur, setErreur] = useState('')
-  const [suite, setSuite] = useState(false)
   const choix = useRef({ numero, onChoisir })
   useEffect(() => { choix.current = { numero, onChoisir } })
+  // Une modification de cet onglet vient d'être enregistrée : la liste se relit (elle a pu être lue avant)
+  const [enregistrements, setEnregistrements] = useState(0)
+  useEffect(() => {
+    const relire = () => setEnregistrements((n) => n + 1)
+    window.addEventListener(EVENEMENT_ENREGISTRE, relire)
+    return () => window.removeEventListener(EVENEMENT_ENREGISTRE, relire)
+  }, [])
 
   useEffect(() => {
     let actif = true
@@ -52,24 +60,12 @@ export function HistoriqueVersions({ id_edt, numero, onChoisir, actualisation }:
         setEtat('erreur')
       })
     return () => { actif = false }
-  }, [id_edt, actualisation])
-
-  const plusAnciennes = useCallback(async () => {
-    setSuite(true)
-    try {
-      const r = await versionsEdt(id_edt, versions[versions.length - 1]?.numero)
-      setVersions((l) => [...l, ...r.versions.filter((v) => !l.some((x) => x.numero === v.numero))])
-    } catch (e) {
-      toast.error('Versions non chargées', { description: (e as Error).message })
-    } finally {
-      setSuite(false)
-    }
-  }, [id_edt, versions])
+  }, [id_edt, actualisation, enregistrements])
 
   return (
     <Card className="flex h-fit flex-col p-4 xl:max-h-full xl:p-3">
-      <p className="section-label px-1">Versions{etat === 'pret' && total ? ` (${total})` : ''}</p>
-      <p className="mt-1 px-1 text-xs text-ink-2">Chaque modification enregistrée est une version. Choisissez-en une pour l'afficher et, si besoin, la restaurer.</p>
+      <p className="section-label px-1">{etat === 'pret' && total > versions.length ? `${versions.length} dernières versions` : 'Versions'}</p>
+      <p className="mt-1 px-1 text-xs text-ink-2">Chaque modification enregistrée est une version ; l'historique garde les 10 dernières. Choisissez-en une pour l'afficher et, si besoin, la restaurer.</p>
       {etat === 'chargement' && <p className="mt-4 flex items-center gap-2 px-1 text-sm text-ink-2"><Loader2 className="size-4 animate-spin" />Lecture de l'historique…</p>}
       {etat === 'erreur' && <p className="mt-4 px-1 text-sm text-[#991B1B]">{erreur}</p>}
       {etat === 'pret' && versions.length === 0 && <EmptyState icon={<History />} title="Aucune modification enregistrée pour l'instant" />}
@@ -101,13 +97,6 @@ export function HistoriqueVersions({ id_edt, numero, onChoisir, actualisation }:
               </li>
             )
           })}
-          {versions.length < total && (
-            <li>
-              <Button variant="ghost" size="sm" className="w-full" disabled={suite} onClick={() => void plusAnciennes()}>
-                {suite && <Loader2 className="animate-spin" />}Versions plus anciennes
-              </Button>
-            </li>
-          )}
         </ul>
       )}
     </Card>

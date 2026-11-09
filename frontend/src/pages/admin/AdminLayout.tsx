@@ -22,8 +22,11 @@ const NAV = [
 export default function AdminLayout() {
   const session = useSession()
   const loc = useLocation()
-  // Sur grand écran, Planification tient en un seul bloc : la page ne défile pas
-  const unBloc = useMatch('/admin/planification') !== null
+  // Sur grand écran, Planification et le tableau de bord tiennent en un seul bloc : la page ne défile pas,
+  // chaque section fait défiler son contenu
+  const planification = useMatch('/admin/planification') !== null
+  const tableauDeBord = useMatch('/admin') !== null
+  const unBloc = planification || tableauDeBord
   const { db, reset, recharger, connecte } = useStore()
   const [confirmReset, setConfirmReset] = useState(false)
 

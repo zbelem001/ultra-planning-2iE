@@ -2,7 +2,7 @@
 --  Système de planification des cours et de génération automatique
 --  des emplois du temps
 --  Script de création de la base de données — PostgreSQL / Supabase
---  VERSION 16
+--  VERSION 18
 --
 --  Utilisation : Supabase > SQL Editor > New query > coller > Run
 --  Source      : fichier.md (section 7 : modèle de données / MLD)
@@ -154,6 +154,23 @@
 --      être sur deux campus en même temps. La salle n'a plus à être sur le campus
 --      de la promotion (classe.id_site), qui guide seulement la génération.
 --      Base existante en version 15 : migrations/016_un_campus_par_demi_journee.sql.
+--
+--  Changements de la version 17
+--  35. CLASSE.id_salle_principale : salle de cours habituelle d'une classe, qui
+--      peut changer en cours d'année. Une préférence de la génération (elle la
+--      prend quand elle convient, sinon une autre salle), jamais une règle de la
+--      base. Une salle supprimée la vide.
+--      Base existante en version 16 : migrations/017_salle_principale.sql.
+--
+--  Changements de la version 18
+--  36. Le rythme hebdomadaire d'un cours (COURS.heures_semaine_max) n'est plus
+--      une règle dure : CD-14 devient la bonne pratique CS-08 (souple, poids 5),
+--      que l'on peut désactiver. La génération étale chaque cours à ce rythme ;
+--      la replanification et la reprogrammation ne le dépassent qu'en dernier
+--      recours (une échéance), et la console le permet en le signalant. La base
+--      ne l'impose plus (verifier_seance). La seule limite dure d'une semaine
+--      reste sa grille de créneaux.
+--      Base existante en version 17 : migrations/018_rythme_souple.sql.
 --
 --  Hypothèses :
 --   * volume_horaire (COURS) et durées sont exprimés en HEURES.
@@ -375,6 +392,11 @@ CREATE TABLE salle (
                     ON UPDATE CASCADE ON DELETE RESTRICT   -- SE_SITUER
 );
 
+-- Salle principale d'une classe (version 17) : sa salle de cours habituelle. La
+-- génération la préfère quand elle convient ; la base ne l'impose pas (NULL : aucune).
+ALTER TABLE classe ADD COLUMN id_salle_principale BIGINT REFERENCES salle(id_salle)
+    ON UPDATE CASCADE ON DELETE SET NULL;
+
 -- Salle réservée à certaines formations (EMIH, EREE, CPGE...) : une salle
 -- listée ici ne reçoit que les classes listées ; aucune ligne = salle libre.
 CREATE TABLE salle_reservation (                                -- RESERVER
@@ -468,8 +490,8 @@ CREATE TABLE cours (
     -- proposée par l'assistant IA, que la scolarité accepte ou non
     priorite_suggeree       INTEGER,
     justification_priorite  TEXT,
-    -- rythme hebdomadaire : le solveur choisit chaque semaine un nombre
-    -- d'heures entre ces bornes (CD-14 pour le maximum)
+    -- rythme hebdomadaire souhaité : la génération étale le cours entre ces
+    -- bornes ; le maximum se dépasse si nécessaire (CS-08, souple depuis la version 18)
     heures_semaine_min  NUMERIC(5,2) NOT NULL DEFAULT 2  CHECK (heures_semaine_min >= 0),
     heures_semaine_max  NUMERIC(5,2) NOT NULL DEFAULT 15 CHECK (heures_semaine_max >= 2),
     CHECK (heures_semaine_max >= heures_semaine_min),
@@ -753,7 +775,7 @@ CREATE INDEX ix_seance_edt_date    ON seance(id_edt, date_seance);
 
 -- =====================================================================
 --  6. CONTRÔLE DES CONTRAINTES DURES (déclencheurs sur SEANCE et COURS)
---     CD-02 à CD-14 (CD-01 par la contrainte d'exclusion)
+--     CD-02 à CD-13 (CD-01 par la contrainte d'exclusion) ; le rythme (CS-08) est souple
 --     (CD-01 est garanti par la contrainte EXCLUDE ex_seance_salle ;
 --      la durée 2-4 h est garantie par un CHECK sur SEANCE)
 -- =====================================================================
@@ -889,7 +911,6 @@ DECLARE
     v_classe_pub BIGINT;
     v_max_mat   NUMERIC;
     v_nb_mat    INTEGER;
-    v_semaine   NUMERIC;
 BEGIN
     -- Une séance annulée n'est soumise à aucun contrôle.
     IF NEW.statut = 'annulee' THEN
@@ -1149,22 +1170,8 @@ BEGIN
                 USING ERRCODE = 'check_violation';
         END IF;
 
-        -- CD-14 : rythme hebdomadaire maximal du cours (semaine ISO)
-        SELECT COALESCE(SUM(EXTRACT(EPOCH FROM (s.heure_fin - s.heure_debut)) / 3600), 0)
-        INTO v_semaine
-        FROM seance s
-        WHERE s.id_cours = NEW.id_cours
-          AND s.id_edt   = NEW.id_edt
-          AND s.statut  <> 'annulee'
-          AND s.nature   = 'cours'
-          AND date_trunc('week', s.date_seance::timestamp) = date_trunc('week', NEW.date_seance::timestamp)
-          AND s.id_seance IS DISTINCT FROM NEW.id_seance;
-
-        IF v_semaine + v_duree > v_cours.heures_semaine_max THEN
-            RAISE EXCEPTION 'CD-14 : le cours dépasserait % h dans la semaine (maximum % h)',
-                round(v_semaine + v_duree, 1), round(v_cours.heures_semaine_max, 1)
-                USING ERRCODE = 'check_violation';
-        END IF;
+        -- Le rythme hebdomadaire du cours (heures_semaine_max) n'est plus contrôlé ici : c'est une
+        -- bonne pratique (CS-08, version 18), suivie par la génération et signalée par la console.
 
         -- CD-13 : au plus N matières différentes par classe et par semaine, pour
         -- chaque promotion du cours (N = valeur de la contrainte CD-13 de l'emploi
@@ -1509,14 +1516,14 @@ FROM (VALUES
     (11, 'CD-11', 'dure',   0, NULL, 'Aucune séance pendant la pause déjeuner'),
     (12, 'CD-12', 'dure',   0, NULL, 'Aucune séance dans une salle indisponible'),
     (13, 'CD-13', 'dure',   0, 3,    'Au plus N matières différentes par classe et par semaine'),
-    (14, 'CD-14', 'dure',   0, NULL, 'Rythme hebdomadaire maximal de chaque cours'),
     (15, 'CS-01', 'souple', 8, NULL, 'Respecter les créneaux préférés des enseignants'),
     (16, 'CS-02', 'souple', 5, NULL, 'Éviter les trous dans la journée d''une classe'),
     (17, 'CS-03', 'souple', 5, NULL, 'Limiter les changements de bâtiment et de site'),
     (18, 'CS-04', 'souple', 5, NULL, 'Ramasser les cours des externes, enchaîner ceux des permanents'),
     (19, 'CS-05', 'souple', 2, NULL, 'Placer le CM avant les TD et TP de la semaine'),
     (20, 'CS-06', 'souple', 2, 6,    'Plafonner les heures par jour d''un enseignant'),
-    (21, 'CS-07', 'souple', 5, NULL, 'Commencer tôt les cours prioritaires')
+    (21, 'CS-07', 'souple', 5, NULL, 'Commencer tôt les cours prioritaires'),
+    (22, 'CS-08', 'souple', 5, NULL, 'Respecter le rythme hebdomadaire souhaité de chaque cours (dépassable si nécessaire)')
 ) AS v(ord, code, nature, poids, valeur, libelle)
 CROSS JOIN emploi_du_temps e
 WHERE e.id_edt = p_id_edt

@@ -125,12 +125,14 @@ def placer_semaine(
     raisons: list[str] = []
     for c, duree in seances:
         effectif = d.effectif(c)
+        # salle principale de la classe d'abord (version 17), puis la plus petite qui convient
+        principale = d.classes[c.id_classe].id_salle_principale if c.id_classe in d.classes else None
         salles = sorted(
             (
                 s for s in d.salles.values()
                 if s.est_disponible and s.capacite >= effectif and (c.id_type_salle is None or s.id_type_salle == c.id_type_salle)
             ),
-            key=lambda s: s.capacite,
+            key=lambda s: (s.id_salle != principale, s.capacite),
         )
         liste: list[Placement] = []
         motif = "CD-04/CD-05 : aucune salle du bon type et assez grande" if not salles else ""
@@ -213,8 +215,12 @@ def placer_semaine(
             if w1:
                 pref = sum(1 for sl in _slots(p.debut, p.fin) if d.disponibilites.get((c.id_enseignant, jour, _heure(sl))) == "preference")
                 cout -= 3 * w1 * pref
-            # Salle ajustée à l'effectif
+            # Salle ajustée à l'effectif ; salle principale de la classe préférée (sans être imposée)
             cout += (d.salles[p.id_salle].capacite - d.effectif(c)) // 50
+            sp = d.salles.get(d.classes[c.id_classe].id_salle_principale) if c.id_classe in d.classes else None
+            if sp is not None and p.id_salle != sp.id_salle and sp.est_disponible and sp.capacite >= d.effectif(c) \
+                    and (c.id_type_salle is None or sp.id_type_salle == c.id_type_salle):
+                cout += 3
             # Replanification : garder la séance à l'identique
             if demande.minimiser_changements:
                 if (c.id_cours, p.jour_date, p.debut, p.id_salle) in ref:

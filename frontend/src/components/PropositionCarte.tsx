@@ -213,6 +213,11 @@ export function PropositionCarte({ p, compacte }: { p: Proposition; compacte?: b
           {(i.changements_de_site ?? []).map((s) => (
             <li key={s.classe + s.date}>{s.classe} change de site le {fmtJourMois(s.date)}</li>
           ))}
+          {(i.au_dela_du_rythme ?? []).map((x) => (
+            <li key={x.cours + x.semaine} className="text-[#7C4A03]">
+              Au-delà du rythme souhaité : {x.cours}, {x.heures} h la semaine du {fmtJourMois(x.semaine)} pour {x.rythme} h (permis)
+            </li>
+          ))}
         </ul>
       )}
 

@@ -135,9 +135,7 @@ def violations(d: Donnees, seances: list[Seance]) -> list[str]:
     for k, h in heures_cours.items():
         if h > d.cours[k].volume_horaire:
             v.append(f"CD-08 cours {k} : {h} h")
-    for (k, w), h in heures_semaine.items():
-        if h > d.cours[k].heures_semaine_max:
-            v.append(f"CD-14 cours {k} semaine {w} : {h} h")
+    # rythme hebdomadaire d'un cours (CS-08) : souple depuis la version 18, ce n'est pas une violation
     if d.max_matieres_semaine is not None:
         for (cl, w), ms in matieres.items():
             if len(ms) > d.max_matieres_semaine:

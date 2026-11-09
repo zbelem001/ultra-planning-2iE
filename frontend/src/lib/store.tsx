@@ -29,6 +29,9 @@ interface Store {
 
 const Ctx = createContext<Store | null>(null)
 
+/** Émis quand une modification de cet onglet est enregistrée dans la base (une nouvelle version existe) */
+export const EVENEMENT_ENREGISTRE = 'ultraplanning:enregistre'
+
 /** Clé primaire de chaque table (mêmes colonnes que schema_supabase.sql) */
 const CLES: Record<Exclude<keyof Db, 'ecole' | 'cours_public_publie'>, string[]> = {
   site: ['id_site'], filiere: ['id_filiere'], classe: ['id_classe'], groupe: ['id_groupe'], matiere: ['id_matiere'],
@@ -266,6 +269,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       synchroniser(changements)
         // Identifiants déjà pris par une autre école : l'API a renuméroté, on relit les vrais
         .then((r) => (Object.keys(r.identifiants ?? {}).length ? recharger() : undefined))
+        // Enregistré : une nouvelle version existe (l'historique de Planification se relit)
+        .then(() => { window.dispatchEvent(new Event(EVENEMENT_ENREGISTRE)) })
         .catch(async (e: Error) => {
           toast.error('Modification refusée par la base', { description: e.message })
           await recharger()

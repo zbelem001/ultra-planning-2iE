@@ -67,6 +67,10 @@ const opt = {
   groupeParent: (db: Db) => [{ value: '', label: '— Aucun : directement dans la classe —' }, ...db.groupe.map((g) => ({ value: g.id_groupe, label: `${db.classe.find((c) => c.id_classe === g.id_classe)?.code_classe} · ${g.code_groupe} (${g.type_groupe})` }))],
   cours: (db: Db) => db.cours.map((c) => ({ value: c.id_cours, label: libelleCours(db, c) })),
   salle: (db: Db) => db.salle.map((s) => ({ value: s.id_salle, label: `${s.code_salle} · ${s.nom_salle}` })),
+  // par campus puis par nom, avec la capacité : la salle principale d'une classe doit pouvoir l'accueillir
+  sallePrincipale: (db: Db) => [{ value: '', label: '— Aucune —' }, ...[...db.salle]
+    .sort((a, b) => nomSite(db, a.id_site).localeCompare(nomSite(db, b.id_site)) || a.nom_salle.localeCompare(b.nom_salle))
+    .map((s) => ({ value: s.id_salle, label: `${s.nom_salle} · ${nomSite(db, s.id_site).replace(/^Campus de /, '')} · ${s.capacite} places` }))],
   site: (db: Db) => db.site.map((s) => ({ value: s.id_site, label: `${s.nom_site}${s.type_site === 'annexe' ? ' (annexe)' : ''}` })),
   enumOf: (vals: string[]) => () => vals.map((v) => ({ value: v, label: v })),
 }
@@ -75,6 +79,24 @@ const compte = (n: number, mot: string) => `${n} ${mot}${n > 1 ? 's' : ''}`
 const refus = (n: number, mot: string) => (n ? `Impossible : ${compte(n, mot)} y fait référence.` : null)
 const STATUTS = { permanent: 'Permanent', vacataire_local: 'Vacataire local', externe: 'Externe' } as const
 const nomSite = (db: Db, id: number | null) => (id == null ? '–' : db.site.find((s) => s.id_site === id)?.nom_site ?? '–')
+
+/** Salle principale d'une classe ; signalée si elle ne peut pas accueillir la classe entière (la génération ne
+ *  la prendra alors que pour ses groupes) */
+function SallePrincipale({ db, classe }: { db: Db; classe: Row }) {
+  const s = db.salle.find((x) => x.id_salle === classe.id_salle_principale)
+  if (!s) return <span className="text-ink-2">–</span>
+  return (
+    <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
+      {s.nom_salle}
+      <span className="text-ink-2">· {nomSite(db, s.id_site).replace(/^Campus de /, '')}</span>
+      {s.capacite < classe.effectif && (
+        <span title={`${s.capacite} places pour ${classe.effectif} étudiants : la classe entière n'y tient pas`}>
+          <Badge tone="orange">{s.capacite} places</Badge>
+        </span>
+      )}
+    </span>
+  )
+}
 
 export const TABLES: TableDef[] = [
   {
@@ -101,6 +123,7 @@ export const TABLES: TableDef[] = [
       { label: 'Niveau', render: (r) => <Badge tone="navy">{r.niveau}</Badge> },
       { label: 'Filière', render: (r, db) => db.filiere.find((f) => f.id_filiere === r.id_filiere)?.code_filiere },
       { label: 'Site des cours', render: (r, db) => <span className="text-ink-2">{r.id_site ? nomSite(db, r.id_site) : 'Non fixé'}</span> },
+      { label: 'Salle principale', render: (r, db) => <SallePrincipale db={db} classe={r} /> },
       { label: 'Effectif', render: (r) => r.effectif, className: 'text-right tabular-nums' },
     ],
     fields: [
@@ -109,7 +132,8 @@ export const TABLES: TableDef[] = [
       { key: 'niveau', label: 'Niveau', type: 'select', options: opt.enumOf(['L1', 'L2', 'L3', 'M1', 'M2', 'CPGE1', 'CPGE2', 'BT', 'MAN', 'AUTRE']), required: true, hint: 'BT : bachelor technologique ; MAN : mise à niveau' },
       { key: 'effectif', label: 'Effectif', type: 'number', min: 0, required: true },
       { key: 'id_filiere', label: 'Filière', type: 'select', options: opt.filiere, required: true },
-      { key: 'id_site', label: 'Site des cours', type: 'select', options: opt.sitePromotion, hint: 'Si la promotion n\'a cours que sur un site (ex. Ouaga pour les IA), ses séances n\'iront que dans les salles de ce site.' },
+      { key: 'id_site', label: 'Site des cours', type: 'select', options: opt.sitePromotion, hint: 'Campus mère : la génération y place les cours de la promotion (vide : celui de la filière). Elle peut avoir cours sur l\'autre campus, en changeant de campus à la pause de midi.' },
+      { key: 'id_salle_principale', label: 'Salle principale', type: 'select', options: opt.sallePrincipale, hint: 'Salle de cours habituelle de la classe : la génération la choisit quand elle convient (type de salle, capacité, libre), sinon elle en prend une autre. Ce n\'est pas une règle ; elle peut changer en cours d\'année.' },
     ],
     search: (r) => `${r.code_classe} ${r.libelle} ${r.niveau}`,
     restrict: (r, db) => refus(db.cours.filter((c) => c.id_classe === r.id_classe).length, 'cours'),
@@ -254,7 +278,7 @@ export const TABLES: TableDef[] = [
       { key: 'nb_seances_semaine', label: 'Séances par semaine', type: 'number', min: 1, required: true },
       { key: 'priorite', label: 'Priorité', type: 'number', min: 0, required: true, hint: 'Plus haut = commence plus tôt (CS-07). L\'assistant IA peut en suggérer une.' },
       { key: 'heures_semaine_min', label: 'Heures par semaine : minimum', type: 'number', min: 0, step: 0.5, required: true, defaut: '2' },
-      { key: 'heures_semaine_max', label: 'Heures par semaine : maximum', type: 'number', min: 2, step: 0.5, required: true, defaut: '15', hint: 'Le solveur choisit le rythme entre ces bornes (CD-14)' },
+      { key: 'heures_semaine_max', label: 'Rythme souhaité : heures par semaine au plus', type: 'number', min: 2, step: 0.5, required: true, defaut: '15', hint: 'La génération étale le cours à ce rythme. Ce n\'est pas une règle (CS-08) : la replanification et la console peuvent le dépasser quand il le faut, en le signalant. Seule la grille de la semaine limite vraiment.' },
       { key: 'id_semestre', label: 'Semestre', type: 'select', options: opt.semestre, required: true },
       { key: '__decoupage', label: 'Durées de séance préférées', type: 'decoupage', hint: 'Ex. « 2+3 ». Chaque séance dure de 2 à 4 h (COURS_SEANCE_MODELE). Indicatif : le rythme réel est choisi par le solveur.' },
     ],
@@ -384,7 +408,11 @@ export const TABLES: TableDef[] = [
     ],
     search: (r, db) => `${r.code_salle} ${r.nom_salle} ${r.batiment ?? ''} ${nomSite(db, r.id_site)}`,
     restrict: (r, db) => refus(db.seance.filter((s) => s.id_salle === r.id_salle).length, 'séance'),
-    cascade: (r, db) => { db.salle_reservation = db.salle_reservation.filter((x) => x.id_salle !== r.id_salle) },
+    cascade: (r, db) => {
+      db.salle_reservation = db.salle_reservation.filter((x) => x.id_salle !== r.id_salle)
+      // comme la base (ON DELETE SET NULL) : les classes qui l'avaient pour salle principale n'en ont plus
+      for (const c of db.classe) if (c.id_salle_principale === r.id_salle) c.id_salle_principale = null
+    },
   },
   {
     id: 'salles-reservees', label: 'Salles réservées', singulier: 'réservation de salle', groupe: 'Campus et locaux', table: 'salle_reservation', pk: 'id_salle_reservation', identity: true,

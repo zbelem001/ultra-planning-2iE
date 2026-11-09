@@ -34,6 +34,8 @@ class Classe:
     effectif: int
     id_filiere: int
     id_site: int | None = None  # site où la promotion a tous ses cours (None : non fixé)
+    # salle de cours habituelle (version 17) : préférée quand elle convient, jamais imposée
+    id_salle_principale: int | None = None
 
 
 @dataclass(frozen=True)

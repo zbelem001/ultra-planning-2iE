@@ -58,6 +58,8 @@ export interface GridEdition {
   onSurvol?: (p: { date: string; minute: number } | null) => void
   /** Séance copiée : encadrée en pointillé */
   copiee?: number | null
+  /** La séance copiée est coupée (Ctrl+X) : estompée en plus, elle sera déplacée au collage */
+  coupee?: boolean
   /** Séances sélectionnées ensemble (Ctrl+clic), pour les supprimer d'un coup */
   cochees?: Set<number>
   /** Petits « + » et « − » d'une séance : l'info-bulle de l'heure en plus ou en moins, seulement quand elle
@@ -181,7 +183,7 @@ function lanes(list: SeanceVue[]): Map<number, { lane: number; of: number }> {
   return out
 }
 
-export function WeekGrid({ db, days, seances, hide, selectedId, onSelect, edition, renderEmptyDay, idClasse, remplir, impression }: {
+export function WeekGrid({ db, days, seances, hide, selectedId, onSelect, onOuvrir, edition, renderEmptyDay, idClasse, remplir, impression }: {
   db: Db
   /** Classe affichée : ses congés propres sont aussi grisés */
   idClasse?: number | null
@@ -191,6 +193,8 @@ export function WeekGrid({ db, days, seances, hide, selectedId, onSelect, editio
   selectedId?: number | null
   /** Clic sur une séance, avec les touches tenues (Ctrl+clic : sélection de plusieurs, en Planification) */
   onSelect?: (s: SeanceVue, m?: ModifClic) => void
+  /** Ouvrir le détail d'une séance par un double-clic ou Entrée (quand le clic simple sert à sélectionner) */
+  onOuvrir?: (s: SeanceVue) => void
   edition?: GridEdition
   renderEmptyDay?: (date: string) => ReactNode
   /** Ajuster les heures pour occuper exactement la hauteur du parent, dont la hauteur est fixée */
@@ -468,6 +472,7 @@ export function WeekGrid({ db, days, seances, hide, selectedId, onSelect, editio
                       'absolute p-0.5',
                       glisse && (glisse.id_seance === s.id_seance ? 'opacity-30' : 'opacity-75'),
                       edition?.copiee === s.id_seance && 'rounded-[1.1rem] outline-2 -outline-offset-1 outline-navy outline-dashed',
+                      edition?.copiee === s.id_seance && edition.coupee && 'opacity-50',
                     )}
                     style={{ top, height: h, left: `${(p.lane / p.of) * 100}%`, width: `${100 / p.of}%` }}
                     onContextMenu={edition?.onMenuSeance
@@ -487,6 +492,7 @@ export function WeekGrid({ db, days, seances, hide, selectedId, onSelect, editio
                         : undefined}
                       onDragEnd={edition?.onDragEnd}
                       onClick={onSelect ? (m) => onSelect(s, m) : undefined}
+                      onOuvrir={onOuvrir ? () => onOuvrir(s) : undefined}
                       onPlus={aj?.plus ? () => edition!.onAjuster!(s, 1) : undefined}
                       plusTitre={aj?.plus}
                       onMoins={aj?.moins ? () => edition!.onAjuster!(s, -1) : undefined}

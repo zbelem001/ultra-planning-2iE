@@ -260,7 +260,7 @@ def test_assistant_etapes_en_direct(client, monkeypatch):
 
 def test_phrases_des_etapes():
     assert agent.etape_outil("verifier_seance", {"date_seance": "2026-11-04", "heure_debut": "13:00", "heure_fin": "15:00"}) == (
-        "verification", "Test d'une séance le mercredi 4/11 de 13:00 à 15:00 contre les règles CD-01 à CD-14")
+        "verification", "Test d'une séance le mercredi 4/11 de 13:00 à 15:00 contre les règles CD-01 à CD-13")
     assert agent.etape_outil("proposer_generation", {"classes": ["M1IA"]})[1] == "Le solveur génère l'emploi du temps de M1IA"
     assert agent.resultat_court("lire_referentiel", "salle 1 | …") is None
     assert agent.resultat_court("verifier_seance", "Refusée : CD-03 : la classe…\nsuite").startswith("Refusée : CD-03")
