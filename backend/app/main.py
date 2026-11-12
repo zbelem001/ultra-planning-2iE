@@ -81,7 +81,8 @@ class DemandeGeneration(BaseModel):
     du: date | None = None
     au: date | None = None
     minimiser_changements: bool = False
-    garder_verrouillees: bool = True
+    # Pas de « garder les séances verrouillées » à choisir : une séance verrouillée n'est jamais remplacée ni
+    # supprimée par une génération (le champ envoyé par une ancienne console est ignoré)
     # Compléter seulement : les séances existantes restent en place, seules les heures manquantes sont placées
     completer: bool = False
 
@@ -118,7 +119,7 @@ def lancer_generation(d: DemandeGeneration, conn: psycopg.Connection = Depends(c
     if selection.vide:
         raise HTTPException(422, "Rien à générer : " + " ".join(selection.avertissements))
     t = generations.lancer(d.id_edt, u.id_ecole, generations.construire_demande(
-        selection.perimetre, d.du, d.au, d.minimiser_changements, d.garder_verrouillees, d.completer))
+        selection.perimetre, d.du, d.au, d.minimiser_changements, garder_verrouillees=True, completer=d.completer))
     t.avertissements = selection.avertissements
     return _tache_json(t)
 

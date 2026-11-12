@@ -1,11 +1,13 @@
 // Une ligne du panneau « Cours à placer » (Planification). Composant mémorisé : après une modification, seules
 // les lignes dont les heures changent se redessinent (une classe peut avoir plus de 150 cours).
+// Une ligne peut aussi être une matière au programme de la classe qui n'a pas encore de cours (`nouveau`) : son
+// cours est créé au premier dépôt d'une durée sur la grille.
 
 import { GripVertical } from 'lucide-react'
 import { memo, type DragEvent } from 'react'
 import { Badge, cn } from '@/components/ui'
 import type { DureeAPlacer, EtatAPlacer } from '@/lib/aPlacer'
-import { couleurMatiere } from '@/lib/queries'
+import { couleurType } from '@/lib/queries'
 import type { Cours } from '@/types/db'
 
 interface Props {
@@ -19,19 +21,22 @@ interface Props {
   etat: EtatAPlacer
   durees: DureeAPlacer[]
   reste: number
+  /** Au programme, sans cours encore : le cours sera créé au dépôt */
+  nouveau?: boolean
   /** Ces deux fonctions ne changent pas d'effet d'un rendu à l'autre : elles n'entrent pas dans la comparaison */
-  onGlisser: (id_cours: number, duree: number, ev: DragEvent) => void
+  onGlisser: (c: Cours, duree: number, ev: DragEvent) => void
   onFin: () => void
 }
 
-function Ligne({ c, id_matiere, libelle, detail, plan, annulees, etat, durees, reste, onGlisser, onFin }: Props) {
+function Ligne({ c, libelle, detail, plan, annulees, etat, durees, reste, nouveau, onGlisser, onFin }: Props) {
   return (
-    <li className={cn('rounded-2xl p-3 ring-1', etat === 'volume_atteint' ? 'bg-white/45 ring-white/70' : 'bg-white/80 ring-white')}>
+    <li data-cours-a-placer={nouveau ? 'nouveau' : c.id_cours} className={cn('rounded-2xl p-3 ring-1', etat === 'volume_atteint' ? 'bg-white/45 ring-white/70' : nouveau ? 'border border-dashed border-navy/30 bg-white/80 ring-0' : 'bg-white/80 ring-white')}>
       <div className="flex items-start gap-2">
-        <span className="mt-1.5 size-2.5 shrink-0 rounded-full" style={{ backgroundColor: couleurMatiere(id_matiere) }} />
+        <span className="mt-1.5 size-2.5 shrink-0 rounded-full" style={{ backgroundColor: couleurType(c.type_cours) }} />
         <div className="min-w-0 flex-1">
           <p className="truncate text-sm font-medium">{libelle}</p>
           <p className="truncate text-xs text-ink-2">{detail}</p>
+          {nouveau && <p className="mt-0.5 text-[11px] text-navy">Au programme, pas encore de cours : il sera créé au dépôt</p>}
         </div>
       </div>
       <div className="mt-2 flex flex-wrap items-center gap-1.5">
@@ -41,7 +46,7 @@ function Ligne({ c, id_matiere, libelle, detail, plan, annulees, etat, durees, r
           <div
             key={o.duree}
             draggable
-            onDragStart={(ev) => onGlisser(c.id_cours, o.duree, ev)}
+            onDragStart={(ev) => onGlisser(c, o.duree, ev)}
             onDragEnd={onFin}
             data-au-dela={o.auDela ? '' : undefined}
             className={cn(
@@ -50,7 +55,7 @@ function Ligne({ c, id_matiere, libelle, detail, plan, annulees, etat, durees, r
               // au-delà du rythme souhaité (CS-08) : possible, signalé
               o.auDela && 'ring-2 ring-orange',
             )}
-            title={`Glisser sur la grille : une séance de ${o.duree} h${o.habituelle ? ' (durée des séances types du cours)' : ''}${o.auDela ? `. ${o.auDela}` : ''}`}
+            title={`Glisser sur la grille : une séance de ${o.duree} h${o.habituelle ? ' (durée des séances types du cours)' : ''}${nouveau ? ' (le cours est créé avec le volume du programme)' : ''}${o.auDela ? `. ${o.auDela}` : ''}`}
           >
             <GripVertical className="size-3" />{o.duree} h
           </div>
@@ -75,4 +80,4 @@ function Ligne({ c, id_matiere, libelle, detail, plan, annulees, etat, durees, r
 
 export const LigneAPlacer = memo(Ligne, (a, b) =>
   a.c === b.c && a.id_matiere === b.id_matiere && a.libelle === b.libelle && a.detail === b.detail && a.plan === b.plan
-  && a.annulees === b.annulees && a.etat === b.etat && a.reste === b.reste && JSON.stringify(a.durees) === JSON.stringify(b.durees))
+  && a.annulees === b.annulees && a.etat === b.etat && a.reste === b.reste && a.nouveau === b.nouveau && JSON.stringify(a.durees) === JSON.stringify(b.durees))

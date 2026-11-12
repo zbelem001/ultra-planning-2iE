@@ -10,7 +10,7 @@ import { Button, cn, Combobox, Dialog, Select, Switch, type ComboOption } from '
 import type { Champ } from '@/components/timetable/EventCard'
 import { bornesGrille, joursGrille, WeekGrid } from '@/components/timetable/WeekGrid'
 import { estEpreuve } from '@/lib/publics'
-import { couleurMatiere, filtrer, type SeanceVue } from '@/lib/queries'
+import { COULEURS_TYPE, filtrer, LIBELLES_TYPE, typeSeance, type SeanceVue, type TypeCouleur } from '@/lib/queries'
 import { ecoleCourante } from '@/lib/store'
 import { addDays, fmtDateHeure, fmtJourMois, isoWeek, jourOf, parseDate } from '@/lib/time'
 import type { Db } from '@/types/db'
@@ -256,7 +256,7 @@ function Formulaire({ db, seances, semaines, depart, version, onClose, onExporte
                 return (
                   <button key={m.id_matiere} type="button" aria-pressed={on} className={cn(puce(on), 'flex items-center gap-1.5 font-medium')}
                     onClick={() => maj({ matieresExclues: on ? [...f.matieresExclues, m.id_matiere] : f.matieresExclues.filter((x) => x !== m.id_matiere) })}>
-                    <span className="size-2 rounded-full" style={{ backgroundColor: couleurMatiere(m.id_matiere) }} aria-hidden />{m.libelle}
+                    {m.libelle}
                   </button>
                 )
               })}
@@ -306,7 +306,13 @@ function Pages({ db, impression }: { db: Db; impression: Impression }) {
               <WeekGrid db={db} days={p.jours.filter((d) => jourOf(d) !== null)} seances={p.seances} hide={impression.hide} idClasse={impression.idClasse} impression={{ pxHeure }} />
             </div>
             <footer className="flex justify-between text-[10px] text-ink-2">
-              <span>Ultraplanning</span>
+              <span className="flex items-center gap-3">
+                Ultraplanning
+                {/* légende : les types présents sur la page */}
+                {(Object.keys(COULEURS_TYPE) as TypeCouleur[]).filter((t) => p.seances.some((s) => typeSeance(s) === t)).map((t) => (
+                  <span key={t} className="flex items-center gap-1"><span className="size-2 rounded-full" style={{ backgroundColor: COULEURS_TYPE[t] }} />{LIBELLES_TYPE[t]}</span>
+                ))}
+              </span>
               <span>Exporté le {le}</span>
             </footer>
           </section>

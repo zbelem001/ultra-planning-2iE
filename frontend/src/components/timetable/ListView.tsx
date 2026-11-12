@@ -1,6 +1,6 @@
 import { Lock } from 'lucide-react'
 import { Badge, cn } from '@/components/ui'
-import { couleurMatiere, nomEnseignant, type SeanceVue } from '@/lib/queries'
+import { couleurSeance, nomEnseignant, type SeanceVue } from '@/lib/queries'
 import { fmtHeure, fmtJourLong } from '@/lib/time'
 import { estEpreuve, LIBELLE_NATURE } from '@/lib/publics'
 import { TypeChip } from './EventCard'
@@ -35,7 +35,7 @@ export function ListView({ seances, onSelect }: { seances: SeanceVue[]; onSelect
                       {fmtHeure(s.heure_debut)}<span className="text-ink-2/60"> – </span>{fmtHeure(s.heure_fin)}
                     </span>
                     <span className="flex min-w-0 items-center gap-2">
-                      <span className="size-2.5 shrink-0 rounded-full" style={{ backgroundColor: couleurMatiere(s.matiere.id_matiere) }} />
+                      <span className="size-2.5 shrink-0 rounded-full" style={{ backgroundColor: couleurSeance(s) }} />
                       <span className={cn('truncate font-medium', annulee && 'line-through')}>{s.matiere.libelle}</span>
                       <TypeChip type={estEpreuve(s) ? LIBELLE_NATURE[s.nature!] : s.cours.type_cours} />
                       {s.est_verrouillee && <Lock className="size-3.5 text-navy" aria-label="Verrouillée" />}

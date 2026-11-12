@@ -3,7 +3,7 @@
 
 import { cn } from '@/components/ui'
 import type { Db } from '@/types/db'
-import { couleurMatiere, type SeanceVue } from '@/lib/queries'
+import { couleurSeance, type SeanceVue } from '@/lib/queries'
 import { estEpreuve, LIBELLE_NATURE } from '@/lib/publics'
 import { fermeture } from '@/lib/rules'
 import { addDays, fmtJourMois, fmtHeure, isoWeek, jourOf, JOURS, mondayOf, todayIso, toMin } from '@/lib/time'
@@ -60,7 +60,7 @@ export function SemesterView({ db, weeks, seances, onPickWeek, idClasse }: {
                             key={s.id_seance}
                             title={`${s.matiere.libelle} (${estEpreuve(s) ? LIBELLE_NATURE[s.nature!] : s.cours.type_cours}) · ${fmtHeure(s.heure_debut)}–${fmtHeure(s.heure_fin)} · ${s.salle.nom_salle}${s.statut === 'annulee' ? ' · annulée' : ''}`}
                             className={cn('absolute inset-y-0.5 rounded-full', s.statut === 'annulee' && 'opacity-35')}
-                            style={{ left: `${pct(toMin(s.heure_debut))}%`, width: `calc(${pct(toMin(s.heure_fin)) - pct(toMin(s.heure_debut))}% - 2px)`, backgroundColor: couleurMatiere(s.matiere.id_matiere) }}
+                            style={{ left: `${pct(toMin(s.heure_debut))}%`, width: `calc(${pct(toMin(s.heure_fin)) - pct(toMin(s.heure_debut))}% - 2px)`, backgroundColor: couleurSeance(s) }}
                           />
                         ))}
                       </div>

@@ -190,7 +190,7 @@ export interface TacheGeneration {
   seances_remplacees?: number
 }
 
-export const lancerGeneration = (d: { id_edt: number; filieres: string[]; classes: string[]; matieres: string[]; du: string; au: string; minimiser_changements: boolean; garder_verrouillees: boolean; completer: boolean }) =>
+export const lancerGeneration = (d: { id_edt: number; filieres: string[]; classes: string[]; matieres: string[]; du: string; au: string; minimiser_changements: boolean; completer: boolean }) =>
   post<TacheGeneration>('/api/generations', d)
 export const etatGeneration = (id: string) => appel<TacheGeneration>(`/api/generations/${id}`)
 export const appliquerGeneration = (id: string) => post<{ seances_enregistrees: number }>(`/api/generations/${id}/appliquer`)

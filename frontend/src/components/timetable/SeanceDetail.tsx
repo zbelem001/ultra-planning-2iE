@@ -2,7 +2,7 @@ import { CalendarDays, Clock, Lock, Mail, MapPin, User, Users } from 'lucide-rea
 import type { ReactNode } from 'react'
 import { Badge } from '@/components/ui'
 import { estEpreuve, LIBELLE_NATURE } from '@/lib/publics'
-import { couleurMatiere, nomEnseignant, type SeanceVue } from '@/lib/queries'
+import { couleurSeance, nomEnseignant, type SeanceVue } from '@/lib/queries'
 import { fmtHeure, fmtJourLong } from '@/lib/time'
 
 function Row({ icon, label, children }: { icon: ReactNode; label: string; children: ReactNode }) {
@@ -28,7 +28,7 @@ export function SeanceDetail({ s, publique }: { s: SeanceVue; publique?: boolean
   return (
     <div>
       <div className="flex items-start gap-3">
-        <span className="mt-1.5 size-3 shrink-0 rounded-full" style={{ backgroundColor: couleurMatiere(s.matiere.id_matiere) }} />
+        <span className="mt-1.5 size-3 shrink-0 rounded-full" style={{ backgroundColor: couleurSeance(s) }} />
         <div>
           <p className="text-xl font-light">{s.matiere.libelle}</p>
           <div className="mt-1.5 flex flex-wrap gap-1.5">

@@ -583,12 +583,22 @@ def test_les_seances_verrouillees_restent_sans_confirmation(ctx, conn):
     conn.execute("UPDATE seance SET est_verrouillee = TRUE WHERE id_seance = ANY(%s)", (du_jour,))
     texte = proposer_suppression_seances(ctx, "x", code_classe="L2INFO", du=jour.isoformat(), au=jour.isoformat())
     assert "que" in texte and "verrouillée" in texte and ctx.propositions_creees == []
-    # Confirmation du planificateur
-    assert proposer_suppression_seances(ctx, "x", code_classe="L2INFO", du=jour.isoformat(), au=jour.isoformat(),
-                                        inclure_verrouillees=True).startswith("Proposition")
-    assert {o["id_seance"] for o in operations_proposees(conn, ctx)[0]} == set(du_jour)
-    # Une séance verrouillée ne se retire pas non plus une par une
+    assert "déverrouiller" in texte
+    # Une séance verrouillée ne se retire pas non plus une par une, même confirmée : il faut la déverrouiller
     assert "verrouillée" in proposer_modifications(ctx, "x", [{"action": "supprimer", "id_seance": du_jour[0]}])
+    assert ctx.propositions_creees == []
+
+
+def test_verrouillee_apres_la_proposition(ctx, conn):
+    """Une séance verrouillée entre la proposition et sa validation ne se supprime pas : rien n'est appliqué."""
+    s = seances_de(conn, "L2INFO")[0]
+    conn.execute("UPDATE seance SET est_verrouillee = FALSE WHERE id_seance = %s", (s[0],))
+    assert proposer_suppression_seances(ctx, "x", id_seances=[s[0]]).startswith("Proposition")
+    id_prop = ctx.propositions_creees[0]
+    conn.execute("UPDATE seance SET est_verrouillee = TRUE WHERE id_seance = %s", (s[0],))
+    with pytest.raises(propositions.PropositionRefusee, match="verrouillée"):
+        propositions.appliquer(conn, id_prop, 1)
+    assert conn.execute("SELECT count(*) FROM seance WHERE id_seance = %s", (s[0],)).fetchone()[0] == 1
 
 
 def test_classe_d_un_cours_mutualise(ctx, conn):

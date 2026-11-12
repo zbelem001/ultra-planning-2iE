@@ -5,7 +5,7 @@ import { useMemo, useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { Badge, Card, cn, Meter, PageTitle, PillTabs, SectionTitle } from '@/components/ui'
 import { checkSeance } from '@/lib/rules'
-import { couleurMatiere, enrichir, nomEnseignant, publicCours } from '@/lib/queries'
+import { couleurType, enrichir, nomEnseignant, publicCours } from '@/lib/queries'
 import { estEpreuve } from '@/lib/publics'
 import { useGrandEcran } from '@/lib/hauteur'
 import { edtTravail, useStore } from '@/lib/store'
@@ -131,7 +131,7 @@ export default function Dashboard() {
                   <tr key={l.c.id_cours}>
                     <td className="py-2.5 pr-3">
                       <span className="flex items-center gap-2">
-                        <span className="size-2.5 shrink-0 rounded-full" style={{ backgroundColor: couleurMatiere(l.m.id_matiere) }} />
+                        <span className="size-2.5 shrink-0 rounded-full" style={{ backgroundColor: couleurType(l.c.type_cours) }} />
                         <span className="font-medium">{l.m.libelle}</span>
                         <Badge>{l.c.type_cours}</Badge>
                       </span>

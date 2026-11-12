@@ -489,8 +489,8 @@ def proposer_modifications(ctx: Contexte, description: str, operations: list[Ope
                 raise ValueError(f"opération {n} ({action}) : séance {o.get('id_seance')} introuvable dans cet emploi du temps")
             if action == "supprimer":
                 if o["id_seance"] in verrouillees:
-                    raise ValueError(f"opération {n} : la séance {o['id_seance']} est verrouillée. Fais confirmer sa suppression "
-                                     "au planificateur, puis utilise la suppression de séances avec inclure_verrouillees")
+                    raise ValueError(f"opération {n} : la séance {o['id_seance']} est verrouillée, une séance verrouillée ne se "
+                                     "supprime pas. Le planificateur doit d'abord la déverrouiller (page Planification, clic droit)")
                 ops.append({"action": "supprimer", "id_seance": o["id_seance"], "avant": avant})
                 continue
             apres = dict(avant)
@@ -615,11 +615,11 @@ def proposer_suppression_seances(ctx: Contexte, description: str, code_classe: s
                                  code_salle: str | None = None, code_matiere: str | None = None, code_groupe: str | None = None,
                                  type_cours: str | None = None, du: str | None = None, au: str | None = None,
                                  jours: list[str] | None = None, heure_min: str | None = None, heure_max: str | None = None,
-                                 id_seances: list[int] | None = None, inclure_verrouillees: bool = False,
-                                 nature: str | None = None) -> str:
+                                 id_seances: list[int] | None = None, nature: str | None = None) -> str:
     """Séances de l'emploi du temps d'une classe, d'un enseignant ou d'une salle à supprimer, trouvées
     par critères et proposées ensemble. Sans date de début : à partir d'aujourd'hui, le passé reste.
-    `nature` : cours (défaut) ; examen ou rattrapage pour retirer une épreuve."""
+    `nature` : cours (défaut) ; examen ou rattrapage pour retirer une épreuve. Une séance verrouillée ne se
+    supprime jamais : elle reste en place, signalée."""
     if not (code_classe or matricule or code_salle or code_matiere or id_seances):
         return ("Demande invalide : précisez l'emploi du temps visé (classe, enseignant, salle ou matière), "
                 "ou les séances par leurs identifiants.")
@@ -687,17 +687,19 @@ def proposer_suppression_seances(ctx: Contexte, description: str, code_classe: s
         return ("Aucune séance de cours ne correspond à ces critères, aucune proposition créée."
                 + (f" {epreuves_gardees} examen(s) ou rattrapage(s) correspondent, laissés en place : pour les retirer, précise la nature." if epreuves_gardees else "")
                 + ("" if du or id_seances else " La recherche part d'aujourd'hui : pour inclure les séances passées, donne du."))
-    gardees = [r for r in rows if r[8] and not inclure_verrouillees]
-    choisies = [r for r in rows if inclure_verrouillees or not r[8]]
+    gardees = [r for r in rows if r[8]]
+    choisies = [r for r in rows if not r[8]]
     if not choisies:
-        return (f"Ces critères ne désignent que {len(gardees)} séance(s) verrouillée(s), aucune proposition créée. "
-                "Fais confirmer leur suppression au planificateur, puis redemande avec inclure_verrouillees.")
+        return (f"Ces critères ne désignent que {len(gardees)} séance(s) verrouillée(s), aucune proposition créée : "
+                "une séance verrouillée ne se supprime pas. Pour la retirer, le planificateur doit d'abord la "
+                "déverrouiller dans la page Planification (clic droit sur la séance, ou sur la sélection).")
     ops = [{"action": "supprimer", "id_seance": r[0],
             "avant": {"id_cours": r[1], "date_seance": r[2].isoformat(), "heure_debut": r[3], "heure_fin": r[4],
                       "id_salle": r[5], "statut": r[6], "id_enseignant": r[7], "nature": r[10]}} for r in choisies]
     remarques = [f"{len(ops)} séance(s) à supprimer, du {choisies[0][2]} au {choisies[-1][2]}."]
     if gardees:
-        remarques.append(f"{len(gardees)} séance(s) verrouillée(s) laissée(s) en place : signale-le, et ne les inclus que si le planificateur le confirme.")
+        remarques.append(f"{len(gardees)} séance(s) verrouillée(s) laissée(s) en place : une séance verrouillée ne se supprime pas. "
+                         "Signale-le ; pour les retirer, le planificateur doit d'abord les déverrouiller dans la page Planification.")
     mutualisees = sum(1 for r in choisies if r[9])
     if epreuves_gardees:
         remarques.append(f"{epreuves_gardees} examen(s) ou rattrapage(s) laissé(s) en place : pour en retirer, précise la nature.")
@@ -1071,13 +1073,14 @@ def construire_outils(ctx: Contexte) -> list[Outil]:
                                            du: str | None = None, au: str | None = None,
                                            jours: list[Literal["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi"]] | None = None,
                                            heure_min: str | None = None, heure_max: str | None = None,
-                                           id_seances: list[int] | None = None, inclure_verrouillees: bool = False,
+                                           id_seances: list[int] | None = None,
                                            nature: Literal["cours", "examen", "rattrapage"] | None = None) -> str:
         """Supprime des séances de l'emploi du temps d'une classe, d'un enseignant ou d'une
         salle : elles disparaissent de la grille et leurs heures redeviennent à programmer (pour les
         garder barrées à l'écran, c'est une annulation). Les critères se cumulent ; il n'y a pas à lire
         l'emploi du temps ni à lister les identifiants. Le résultat est une proposition : sa carte montre
-        chaque séance au planificateur, qui la valide ; l'historique permet ensuite de les récupérer.
+        chaque séance au planificateur, qui la valide ; l'historique permet ensuite de les récupérer. Une séance
+        verrouillée ne se supprime jamais : elle reste en place et le résultat la signale.
 
         Args:
             description: Résumé en une phrase de la suppression, pour le planificateur.
@@ -1093,11 +1096,10 @@ def construire_outils(ctx: Contexte) -> list[Outil]:
             heure_min: Seulement les séances qui finissent après cette heure, HH:MM (l'après-midi : 13:00).
             heure_max: Seulement les séances qui commencent avant cette heure, HH:MM (le matin : 12:00).
             id_seances: Séances précises, lues dans l'emploi du temps, quand les critères ne suffisent pas.
-            inclure_verrouillees: Vrai seulement si le planificateur a confirmé : sinon les séances verrouillées restent en place.
             nature: examen ou rattrapage pour retirer une épreuve. Absente : seulement les cours, les épreuves restent en place.
         """
         return proposer_suppression_seances(ctx, description, code_classe, matricule, code_salle, code_matiere, code_groupe,
-                                            type_cours, du, au, jours, heure_min, heure_max, id_seances, inclure_verrouillees, nature)
+                                            type_cours, du, au, jours, heure_min, heure_max, id_seances, nature)
 
     @outil("proposer_epreuve")
     def proposer_epreuve_outil(description: str, code_classe: str, code_matiere: str, date_seance: str, heure_debut: str, heure_fin: str,

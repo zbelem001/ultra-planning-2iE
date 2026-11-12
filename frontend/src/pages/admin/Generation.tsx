@@ -62,7 +62,6 @@ export default function Generation() {
     const next = addDays(mondayOf(todayIso()), 7)
     return weeks.includes(next) ? next : weeks[0]
   })
-  const [garderVerrou, setGarderVerrou] = useState(true)
   const [etape, setEtape] = useState(-1)
   const [resultat, setResultat] = useState<(ResultatGeneration & { depart: string }) | null>(null)
   const [apercu, setApercu] = useState<number>(db.classe[1]?.id_classe ?? db.classe[0].id_classe)
@@ -104,7 +103,6 @@ export default function Generation() {
         du: depart,
         au: fin,
         minimiser_changements: false,
-        garder_verrouillees: garderVerrou,
         completer,
       })
       while (t.statut === 'en_attente' || t.statut === 'en_cours') {
@@ -147,7 +145,7 @@ export default function Generation() {
     setEtape(0)
     ETAPES.forEach((_, i) => setTimeout(() => setEtape(i + 1), 450 * (i + 1)))
     setTimeout(() => {
-      const r = generateWeek(db, edt.id_edt, depart, { keepLocked: garderVerrou })
+      const r = generateWeek(db, edt.id_edt, depart, { keepLocked: true })
       setResultat({ ...r, depart })
       setEtape(-1)
     }, 450 * ETAPES.length + 200)
@@ -156,7 +154,7 @@ export default function Generation() {
   const appliquer = () => {
     if (connecte) return void appliquerServeur()
     if (!resultat) return
-    const garder = db.seance.filter((s) => s.id_edt !== edt.id_edt || s.date_seance < resultat.depart || estEpreuve(s) || (garderVerrou && s.est_verrouillee))
+    const garder = db.seance.filter((s) => s.id_edt !== edt.id_edt || s.date_seance < resultat.depart || estEpreuve(s) || s.est_verrouillee)
     const autres = garder.filter((s) => s.id_edt !== edt.id_edt)
     const memeEdt = garder.filter((s) => s.id_edt === edt.id_edt)
     const nouvelles = resultat.semaine.filter((s) => s.id_seance < 0)
@@ -351,12 +349,13 @@ export default function Generation() {
                   <Switch checked={completer} onChange={setCompleter} label="Compléter seulement" />
                 </div>
               )}
-              <div className={cn('flex items-center justify-between gap-3 rounded-3xl bg-white/70 px-4 py-3 ring-1 ring-white', completer && 'opacity-50')}>
+              {/* Une séance verrouillée n'est jamais remplacée ni supprimée : rien à choisir */}
+              <div className="flex items-center gap-3 rounded-3xl bg-white/70 px-4 py-3 ring-1 ring-white">
+                <Lock className="size-4 shrink-0 text-navy" />
                 <div>
-                  <p className="text-sm font-medium">Garder les séances verrouillées</p>
-                  <p className="text-xs text-ink-2">{db.seance.filter((s) => s.id_edt === edt.id_edt && s.est_verrouillee && s.date_seance >= depart).length} séances verrouillées à partir de cette semaine</p>
+                  <p className="text-sm font-medium">Séances verrouillées gardées telles quelles</p>
+                  <p className="text-xs text-ink-2">{db.seance.filter((s) => s.id_edt === edt.id_edt && s.est_verrouillee && s.date_seance >= depart).length} à partir de cette semaine. Pour qu'une séance soit recalculée, déverrouillez-la dans la planification.</p>
                 </div>
-                <Switch checked={garderVerrou || completer} onChange={setGarderVerrou} label="Garder les séances verrouillées" disabled={completer} />
               </div>
             </div>
             <div className="mt-5 flex flex-wrap items-center gap-3">

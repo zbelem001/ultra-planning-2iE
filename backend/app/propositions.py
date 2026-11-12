@@ -77,6 +77,13 @@ def executer_operations(conn: psycopg.Connection, ops: list[dict], id_edt: int, 
     compte = {"seances_supprimees": 0, "seances_creees": 0, "seances_modifiees": 0}
     try:
         a_supprimer = [op["id_seance"] for op in ops if op["action"] == "supprimer"]
+        if a_supprimer:
+            # Verrouillée depuis la proposition : une séance verrouillée ne se supprime pas
+            verrouillees = conn.execute("SELECT count(*) FROM seance WHERE id_seance = ANY(%s) AND id_edt = %s AND est_verrouillee",
+                                        (a_supprimer, id_edt)).fetchone()[0]
+            if verrouillees:
+                raise PropositionRefusee(f"{verrouillees} séance(s) à supprimer ont été verrouillées depuis la proposition : une séance "
+                                         "verrouillée ne se supprime pas. Déverrouillez-la d'abord dans la page Planification.")
         if a_supprimer:  # en une fois : une suppression peut toucher des centaines de séances
             n = conn.execute("DELETE FROM seance WHERE id_seance = ANY(%s) AND id_edt = %s", (a_supprimer, id_edt)).rowcount
             if n != len(a_supprimer):

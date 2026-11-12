@@ -1,8 +1,8 @@
 // Planification manuelle (BF-11 à BF-14) : glisser-déposer sur la grille,
 // contrôle des contraintes dures en temps réel et salles compatibles proposées.
 
-import { Ban, CalendarPlus, CalendarRange, CheckCircle2, ClipboardPaste, Copy, CopyPlus, FileDown, History, Info, Lock, LockOpen, Scissors, SquareCheck, SquareMinus, Trash2, Undo2, UserMinus, Users, X, XCircle } from 'lucide-react'
-import { Fragment, useEffect, useMemo, useRef, useState, type DragEvent } from 'react'
+import { Ban, CalendarPlus, CalendarRange, CheckCircle2, ClipboardPaste, Copy, CopyPlus, FileDown, History, Info, Lock, LockOpen, Scissors, Search, SquareCheck, SquareMinus, Trash2, Undo2, UserMinus, Users, X, XCircle } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState, type DragEvent } from 'react'
 import { toast } from 'sonner'
 import { BoutonPublier } from '@/components/BoutonPublier'
 import { Button, Card, cn, Combobox, Dialog, EmptyState, PageTitle, PillTabs, Select, type ComboOption } from '@/components/ui'
@@ -19,6 +19,7 @@ import { seancesVersion, type VersionEdt } from '@/lib/api'
 import { expandWeek } from '@/lib/generator'
 import { enrichir, filtrer, lieuSalle, nomEnseignant, publicCours, type Ressource, type SeanceVue } from '@/lib/queries'
 import { aPlacer } from '@/lib/aPlacer'
+import { couverture } from '@/lib/programme'
 import { useFiltre } from '@/lib/filtres'
 import { useGrandEcran } from '@/lib/hauteur'
 import { estEpreuve, LIBELLE_NATURE } from '@/lib/publics'
@@ -26,12 +27,26 @@ import { capaciteConnue, checkSeance, creneauAt, decoupage, evaluerCreneau, exam
 import { disponibiliteMutualisation } from '@/lib/mutualisation'
 import { edtTravail, nextId, useStore } from '@/lib/store'
 import { addDays, fmtDateHeure, fmtHeure, fmtJourCourt, fromMin, hours, jourOf, mondayOf, parseDate, todayIso, toMin, weeksBetween } from '@/lib/time'
-import type { Seance } from '@/types/db'
+import type { Cours, Seance } from '@/types/db'
 
 // decalage : minutes entre le haut de la séance et le pointeur, là où elle a été saisie
 type Drag =
   | { kind: 'seance'; seance: SeanceVue; decalage: number }
-  | { kind: 'modele'; id_cours: number; duree: number; decalage: number }
+  // nouveau : matière au programme sans cours encore ; le cours (provisoire pendant le glisser) est créé au dépôt
+  | { kind: 'modele'; id_cours: number; duree: number; decalage: number; nouveau?: Cours }
+
+/** Identifiant d'un cours pas encore créé, le temps du glisser (les vrais sont positifs) */
+const COURS_PROVISOIRE = -1
+const sansAccents = (s: string) => s.normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase()
+const ordreSeances = (a: Seance, b: Seance) => (a.date_seance + a.heure_debut).localeCompare(b.date_seance + b.heure_debut)
+/** Jours du `a` au `b` (dates AAAA-MM-JJ) */
+const ecartJours = (a: string, b: string) => Math.round((parseDate(b).getTime() - parseDate(a).getTime()) / 86_400_000)
+/** Où va chaque séance d'un collage ou d'un déplacement groupé */
+type Placement = (s: Seance) => { date: string; heure: string }
+
+// Entrées des menus du clic droit ; grisées quand l'action n'est pas possible (la raison s'affiche au survol)
+const ITEM_MENU = 'press flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent'
+const ITEM_MENU_ROUGE = ITEM_MENU.replace('hover:bg-muted', 'text-[#B91C1C] hover:bg-[#FEE2E2]/60')
 
 // Une étiquette « 2 h » n'a pas de hauteur : le pointeur vise l'heure qu'il survole
 const DECALAGE_MODELE = 30
@@ -70,13 +85,14 @@ export default function Planification() {
   const [menu, setMenu] = useState<{ x: number; y: number; selection: SelectionGrille } | null>(null)
   const [epreuve, setEpreuve] = useState<DepartEpreuve | null>(null)
   const [seanceAPoser, setSeanceAPoser] = useState<DepartSeance | null>(null)
-  // Copier-coller : la séance copiée reste en mémoire d'une page à l'autre ; menu du clic droit sur une séance ;
-  // jour et minute sous le pointeur, là où Ctrl+V colle
-  const [idCopie, setIdCopie] = useFiltre<number | null>('planification.copie', null)
-  // Coupée (Ctrl+X) : la séance mise de côté sera déplacée au collage, pas dupliquée
+  // Copier-coller : les séances copiées (une ou plusieurs) restent en mémoire d'une semaine et d'une page à l'autre,
+  // et se collent autant de fois qu'on veut, jusqu'à Échap ou une autre copie ; menu du clic droit sur une séance ;
+  // jour et minute sous le pointeur, là où Ctrl+V colle une séance seule
+  const [idsCopie, setIdsCopie] = useFiltre<number[]>('planification.copies', [])
+  // Coupées (Ctrl+X) : les séances mises de côté seront déplacées au collage, pas dupliquées
   const [coupe, setCoupe] = useFiltre<boolean>('planification.coupe', false)
   const [menuSeance, setMenuSeance] = useState<{ x: number; y: number; s: SeanceVue } | null>(null)
-  // Plusieurs séances sélectionnées (Ctrl+clic), pour les supprimer d'un coup. La sélection appartient à la vue,
+  // Plusieurs séances sélectionnées (Ctrl+clic), pour les copier, les verrouiller ou les supprimer d'un coup. La sélection appartient à la vue,
   // la ressource et la semaine où elle a été faite : ailleurs, rien n'est sélectionné (et Suppr n'y touche à
   // rien) ; un Ctrl+clic ailleurs en commence une autre. Séances à confirmer avant suppression.
   const [coches, setCoches] = useState<{ cle: string; ids: Set<number> }>({ cle: '', ids: new Set() })
@@ -158,6 +174,27 @@ export default function Planification() {
     return false
   }), [db.cours, semestre.id_semestre, id, res, idGroupe])
 
+  // Matières au programme de la classe dont un public (la classe, ou un groupe de TD ou de TP) n'a encore aucun
+  // cours : elles se placent aussi, leur cours est créé au premier dépôt, avec le volume du programme et l'enseignant
+  // à désigner. Identifiants négatifs : provisoires, propres à cette liste.
+  const coursACreer = useMemo((): Cours[] => {
+    if (res !== 'classe' || id === null) return []
+    return couverture({ ...db, programme: db.programme.filter((p) => p.id_classe === id) }, semestre.id_semestre)
+      .filter((e) => e.couvert === 0 && (idGroupe === null || e.id_groupe === null || e.id_groupe === idGroupe))
+      .map((e, i) => ({
+        id_cours: -(i + 1), type_cours: e.type, volume_horaire: e.prevu, duree_seance: 2, nb_seances_semaine: 1,
+        priorite: 0, priorite_suggeree: null, justification_priorite: null, heures_semaine_min: 2, heures_semaine_max: 15,
+        id_matiere: e.id_matiere, id_classe: e.id_classe, id_groupe: e.id_groupe, id_enseignant: null, id_type_salle: null,
+        id_semestre: semestre.id_semestre,
+      }))
+  }, [db.programme, db.cours, db.classe, db.groupe, semestre.id_semestre, id, res, idGroupe]) // eslint-disable-line react-hooks/exhaustive-deps
+  const lignesACreer = useMemo(() => coursACreer.map((c) => ({
+    c, plan: 0, annulees: 0,
+    ...aPlacer({ volume: c.volume_horaire, planifiees: 0, maxSemaine: c.heures_semaine_max, semaine: 0, modele: [] }),
+  })), [coursACreer])
+  // Recherche dans le panneau : matière (nom ou code), type, classe ou groupe, enseignant ; sans accents, chaque mot
+  const [recherche, setRecherche] = useState('')
+
   // Heures de chaque cours dans la version à jour, en un seul passage sur les séances : planifiées (une séance
   // annulée ne compte plus, ses heures redeviennent à placer), posées dans la semaine affichée, annulées
   const heuresParCours = useMemo(() => {
@@ -198,41 +235,60 @@ export default function Planification() {
     const cla = new Map(db.classe.map((x) => [x.id_classe, x]))
     const grp = new Map(db.groupe.map((x) => [x.id_groupe, x]))
     const ens = new Map(db.enseignant.map((x) => [x.id_enseignant, x]))
+    const termes = sansAccents(recherche).split(/\s+/).filter(Boolean)
+    const vue = <L extends (typeof lignesAPlacer)[number]>(l: L) => {
+      const m = mat.get(l.c.id_matiere)!
+      const g = l.c.id_groupe !== null ? grp.get(l.c.id_groupe) ?? null : null
+      const e = l.c.id_enseignant !== null ? ens.get(l.c.id_enseignant) : undefined
+      const detail = `${l.c.type_cours} · ${publicCours(cla.get(l.c.id_classe)!, g)} · ${nomEnseignant(e)}`
+      return { ...l, m, detail, cle: sansAccents(`${m.libelle} ${m.code_matiere} ${detail}`) }
+    }
+    const garder = (x: { cle: string }) => termes.every((t) => x.cle.includes(t))
+    const actifs = lignesAPlacer.filter((l) => l.etat !== 'volume_atteint').map(vue).filter(garder)
+    const termines = lignesAPlacer.filter((l) => l.etat === 'volume_atteint').map(vue).filter(garder)
+    const nouveaux = lignesACreer.map(vue).filter(garder)
+    const ligne = (x: ReturnType<typeof vue>, nouveau = false) => (
+      <LigneAPlacer
+        key={nouveau ? `n-${x.c.id_matiere}-${x.c.type_cours}-${x.c.id_groupe ?? 'classe'}` : x.c.id_cours}
+        c={x.c}
+        id_matiere={x.m.id_matiere}
+        libelle={x.m.libelle}
+        detail={x.detail}
+        plan={x.plan}
+        annulees={x.annulees}
+        etat={x.etat}
+        durees={x.options}
+        reste={x.reste}
+        nouveau={nouveau}
+        onGlisser={(c, duree, ev) => startDrag(c.id_cours < 0
+          // le cours n'existe pas encore : un cours provisoire pour contrôler les créneaux, créé au dépôt
+          ? { kind: 'modele', id_cours: COURS_PROVISOIRE, duree, decalage: DECALAGE_MODELE, nouveau: { ...c, id_cours: COURS_PROVISOIRE, duree_seance: Math.min(4, Math.max(2, duree)) } }
+          : { kind: 'modele', id_cours: c.id_cours, duree, decalage: DECALAGE_MODELE }, ev)}
+        onFin={() => endDrag()}
+      />
+    )
+    const titre = (texte: string, n: number) => (
+      <li className="flex items-center gap-2 px-1 pt-2 text-[11px] font-medium tracking-wide text-ink-2 uppercase" aria-hidden>
+        {texte} · {n}<span className="h-px flex-1 bg-line" />
+      </li>
+    )
+    const rien = !actifs.length && !nouveaux.length && !termines.length
     return (
       <>
-        {lignesAPlacer.map(({ c, plan, annulees, etat, options, reste }, i, liste) => {
-          const m = mat.get(c.id_matiere)!
-          const g = c.id_groupe !== null ? grp.get(c.id_groupe) ?? null : null
-          const e = c.id_enseignant !== null ? ens.get(c.id_enseignant) : undefined
-          // séparateur avant les cours terminés, s'il y en a d'autres au-dessus
-          const premierTermine = etat === 'volume_atteint' && i > 0 && liste[i - 1].etat !== 'volume_atteint'
-          return (
-            <Fragment key={c.id_cours}>
-              {premierTermine && (
-                <li className="flex items-center gap-2 px-1 pt-2 text-[11px] font-medium tracking-wide text-ink-2 uppercase" aria-hidden>
-                  Volume atteint · {liste.length - i}<span className="h-px flex-1 bg-line" />
-                </li>
-              )}
-              <LigneAPlacer
-                c={c}
-                id_matiere={m.id_matiere}
-                libelle={m.libelle}
-                detail={`${c.type_cours} · ${publicCours(cla.get(c.id_classe)!, g)} · ${nomEnseignant(e)}`}
-                plan={plan}
-                annulees={annulees}
-                etat={etat}
-                durees={options}
-                reste={reste}
-                onGlisser={(id_cours, duree, ev) => startDrag({ kind: 'modele', id_cours, duree, decalage: DECALAGE_MODELE }, ev)}
-                onFin={() => endDrag()}
-              />
-            </Fragment>
-          )
-        })}
-        {coursRes.length === 0 && <li className="px-1 text-sm text-ink-2">Aucun cours pour cette sélection.</li>}
+        {actifs.map((x) => ligne(x))}
+        {nouveaux.length > 0 && titre('Au programme, sans cours', nouveaux.length)}
+        {nouveaux.map((x) => ligne(x, true))}
+        {/* séparateur avant les cours terminés, s'il y en a d'autres au-dessus */}
+        {termines.length > 0 && (actifs.length > 0 || nouveaux.length > 0) && titre('Volume atteint', termines.length)}
+        {termines.map((x) => ligne(x))}
+        {rien && (
+          <li className="px-1 text-sm text-ink-2">
+            {termes.length && (coursRes.length || lignesACreer.length) ? `Aucun cours ne correspond à « ${recherche.trim()} ».` : 'Aucun cours pour cette sélection.'}
+          </li>
+        )}
       </>
     )
-  }, [lignesAPlacer, db.matiere, db.classe, db.groupe, db.enseignant, coursRes.length]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [lignesAPlacer, lignesACreer, recherche, db.matiere, db.classe, db.groupe, db.enseignant, coursRes.length])
 
   const options: ComboOption[] =
     res === 'classe'
@@ -277,9 +333,12 @@ export default function Planification() {
   // Validité de chaque créneau de la semaine pour l'élément en cours de glisser. Seules comptent
   // les séances de la semaine affichée et celles du cours (son volume) ; les salles qui conviennent
   // au cours ne se calculent qu'une fois.
+  // Pendant le glisser d'une matière sans cours, son cours provisoire fait partie de la base contrôlée
+  const dbGlisse = useMemo(() => (drag?.kind === 'modele' && drag.nouveau ? { ...db, cours: [...db.cours, drag.nouveau] } : db), [db, drag])
   const slots = useMemo(() => {
     const m = new Map<string, SlotState & { salle?: number }>()
     if (!drag) return m
+    const db = dbGlisse
     const id_cours = drag.kind === 'seance' ? drag.seance.id_cours : drag.id_cours
     const cours = db.cours.find((c) => c.id_cours === id_cours)
     if (!cours) return m
@@ -302,7 +361,7 @@ export default function Planification() {
       }
     }
     return m
-  }, [drag, db, semaine, edt.id_edt]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [drag, dbGlisse, semaine, edt.id_edt]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const startDrag = (d: Drag, e: DragEvent) => {
     e.dataTransfer.effectAllowed = 'move'
@@ -353,6 +412,18 @@ export default function Planification() {
       })
       toast.success('Séance déplacée', {
         description: `${fmtJourCourt(date)} · ${fmtHeure(heure)}–${fmtHeure(draft.heure_fin)} · ${salle.nom_salle}${avant !== salle.id_salle ? ' (salle changée)' : ''}${rythme}`,
+      })
+    } else if (drag.nouveau) {
+      // matière au programme sans cours : le cours est créé avec sa première séance
+      const nouveau = drag.nouveau
+      mutate((x) => {
+        const id_cours = nextId(x.cours, 'id_cours')
+        x.cours.push({ ...nouveau, id_cours })
+        x.seance.push({ ...(draft as Seance), id_cours, id_seance: nextId(x.seance, 'id_seance'), id_salle: salle.id_salle })
+      })
+      const matiere = db.matiere.find((m) => m.id_matiere === nouveau.id_matiere)?.libelle ?? 'Le cours'
+      toast.success('Cours créé, séance posée', {
+        description: `${matiere} · ${nouveau.type_cours} · ${nouveau.volume_horaire} h au programme, enseignant à désigner (Référentiel › Cours). ${fmtJourCourt(date)} · ${fmtHeure(heure)}–${fmtHeure(draft.heure_fin)} · ${salle.nom_salle}`,
       })
     } else {
       mutate((x) => {
@@ -538,23 +609,45 @@ export default function Planification() {
   const toutDecocher = () => setCoches({ cle: '', ids: new Set() })
   const choisirSeule = (s: SeanceVue) => setCoches({ cle: cleCoches, ids: new Set([s.id_seance]) })
   // Un clic gauche dans le vide (ni carte, ni bouton, ni champ, ni menu, ni fenêtre, ni la barre au-dessus de la
-  // grille, et sans glisser) désélectionne tout et oublie la séance copiée. Un menu ou une fenêtre ouverte : le clic
-  // sert d'abord à la fermer.
+  // grille, et sans glisser) désélectionne tout. Il n'oublie pas les séances copiées : on clique souvent sur la case
+  // où coller, dans une autre semaine (Échap ou la croix de la barre les oublient). Un menu ou une fenêtre ouverte :
+  // le clic sert d'abord à la fermer.
   useEffect(() => { clic.current = (e: MouseEvent) => {
-    if ((!cochees.size && idCopie === null) || e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return
+    if (!cochees.size || e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return
     if (menu || menuSeance || aSupprimer || sel || seanceAPoser || epreuve || confirmDup) return
     const a = appui.current
     if (a && Math.hypot(e.clientX - a.x, e.clientY - a.y) > 4) return
     const cible = e.target as HTMLElement | null
     if (!cible?.isConnected || cible.closest('[data-seance], button, a, input, select, textarea, label, [role="button"], [role="menu"], [role="dialog"], [role="listbox"], [data-sonner-toaster], [data-barre-grille]')) return
-    if (cochees.size) toutDecocher()
-    if (idCopie !== null) oublierCopie()
+    toutDecocher()
   } })
   const toutCocher = () => setCoches({ cle: cleCoches, ids: new Set(semaineList.map((s) => s.id_seance)) })
+
+  /** Pourquoi ces séances ne peuvent pas être supprimées : une séance verrouillée ne se supprime pas, seule ou dans
+   *  un lot (la déverrouiller d'abord) */
+  const motifSuppression = (liste: Seance[]) => {
+    const n = liste.filter((s) => s.est_verrouillee).length
+    if (!n) return null
+    return liste.length === 1
+      ? 'Séance verrouillée : déverrouillez-la pour pouvoir la supprimer.'
+      : `${n === liste.length ? (n === 2 ? 'Les deux séances sont verrouillées' : `Les ${n} séances sont verrouillées`) : `${n} séance${n > 1 ? 's' : ''} verrouillée${n > 1 ? 's' : ''} dans la sélection`} : déverrouillez-les, ou retirez-les de la sélection, pour supprimer.`
+  }
+  /** Demande de suppression (menu, barre, touche Suppr) : refusée tout de suite s'il y a une séance verrouillée */
+  const demanderSuppression = (liste: SeanceVue[]) => {
+    setMenuSeance(null)
+    const motif = motifSuppression(liste)
+    if (motif) return void toast.error('Suppression impossible', { description: motif })
+    setASupprimer(liste)
+  }
 
   /** Supprime ces séances (après confirmation) ; « Annuler » dans la notification les remet si leurs créneaux
    *  sont encore libres. Un examen ne part pas sans son rattrapage, comme une à une. */
   const supprimerSeances = (liste: SeanceVue[]) => {
+    const motif = motifSuppression(db.seance.filter((s) => liste.some((l) => l.id_seance === s.id_seance)))
+    if (motif) {
+      setASupprimer(null)
+      return void toast.error('Suppression impossible', { description: motif })
+    }
     const ids = new Set(liste.map((s) => s.id_seance))
     const restantes = { ...db, seance: db.seance.filter((s) => !ids.has(s.id_seance)) }
     const bloques = liste.filter((s) => examenAvecRattrapage(restantes, s))
@@ -586,81 +679,170 @@ export default function Planification() {
     toast.success(absentes.length === 1 ? 'Séance remise' : `${absentes.length} séances remises`)
   })
 
-  // ---------- Copier-coller d'une séance ----------
+  // ---------- Verrouiller ou déverrouiller une séance ou un lot ----------
 
-  const copie = idCopie !== null ? db.seance.find((s) => s.id_seance === idCopie && s.id_edt === edt.id_edt) ?? null : null
-  const libelleSeance = (s: Seance) => db.matiere.find((m) => m.id_matiere === db.cours.find((c) => c.id_cours === s.id_cours)?.id_matiere)?.libelle ?? 'Séance'
-  const dureeSeance = (s: Seance) => (toMin(s.heure_fin) - toMin(s.heure_debut)) / 60
-
-  const copier = (s: Seance) => {
-    setIdCopie(s.id_seance)
-    setCoupe(false)
+  // Une épreuve ne se verrouille pas : la génération n'y touche jamais
+  const verrouillables = (liste: Seance[]) => liste.filter((s) => !estEpreuve(s))
+  /** Tout le lot est déjà verrouillé : l'action proposée devient « Déverrouiller » */
+  const toutesVerrouillees = (liste: Seance[]) => verrouillables(liste).length > 0 && verrouillables(liste).every((s) => s.est_verrouillee)
+  const basculerVerrou = (liste: Seance[]) => {
     setMenuSeance(null)
-    toast.success('Séance copiée', { description: `${libelleSeance(s)} · ${dureeSeance(s)} h. Ctrl+V la colle sous le pointeur ; clic droit sur une case : « Coller ».` })
-  }
-  const oublierCopie = () => { setIdCopie(null); setCoupe(false) }
-
-  /** Couper (Ctrl+X) : la séance reste à sa place, estompée, jusqu'au collage, qui la déplace (même séance, même
-   *  historique, mêmes règles qu'un glisser-déposer). Un clic dans le vide ou Échap annule. */
-  const couper = (s: Seance) => {
-    setMenuSeance(null)
-    if (s.est_verrouillee) return void toast.error('Coupe impossible', { description: 'Séance verrouillée : déverrouillez-la pour la déplacer.' })
-    if (s.statut === 'annulee') return void toast.error('Coupe impossible', { description: "Séance annulée : rétablissez-la d'abord." })
-    setIdCopie(s.id_seance)
-    setCoupe(true)
-    toast.success(estEpreuve(s) ? 'Épreuve coupée' : 'Séance coupée', {
-      description: `${libelleSeance(s)} · ${dureeSeance(s)} h. Ctrl+V la déplace sous le pointeur ; clic droit sur une case : « Déplacer ici ».`,
+    const cibles = verrouillables(liste)
+    if (!cibles.length) return void toast.error('Verrouillage impossible', { description: "Une épreuve ne se verrouille pas : la génération n'y touche jamais." })
+    const verrou = !toutesVerrouillees(liste)
+    const changees = cibles.filter((s) => s.est_verrouillee !== verrou).map((s) => s.id_seance)
+    mutate((x) => { for (const k of x.seance) if (changees.includes(k.id_seance)) k.est_verrouillee = verrou })
+    const ignorees = liste.length - cibles.length
+    const n = changees.length
+    const une = cibles.length === 1
+    const effet = verrou
+      ? (une ? 'Ni suppression ni déplacement tant qu\'elle reste verrouillée ; la génération la garde telle quelle.'
+        : 'Ni suppression ni déplacement tant qu\'elles restent verrouillées ; la génération les garde telles quelles.')
+      : (une ? 'Elle peut de nouveau être déplacée, supprimée ou recalculée par la génération.'
+        : 'Elles peuvent de nouveau être déplacées, supprimées ou recalculées par la génération.')
+    toast.success(liste.length === 1
+      ? (verrou ? 'Séance verrouillée' : 'Séance déverrouillée')
+      : `${n} séance${n > 1 ? 's' : ''} ${verrou ? 'verrouillée' : 'déverrouillée'}${n > 1 ? 's' : ''}`, {
+      description: effet + (ignorees ? ` ${ignorees} épreuve${ignorees > 1 ? 's' : ''} laissée${ignorees > 1 ? 's' : ''} de côté : une épreuve ne se verrouille pas.` : ''),
+      action: { label: 'Annuler', onClick: () => mutate((x) => { for (const k of x.seance) if (changees.includes(k.id_seance)) k.est_verrouillee = !verrou }) },
     })
   }
 
-  /** La séance coupée, posée le `date` à `heure` : déplacée, avec sa salle si elle est libre */
-  const deplacerCoupee = (source: Seance, date: string, heure: string) => {
+  // ---------- Copier-coller d'une ou de plusieurs séances ----------
+
+  // Le presse-papiers : les séances copiées encore présentes dans la version à jour, de la première à la dernière
+  const copies = useMemo(() => {
+    const ids = new Set(idsCopie)
+    return seancesEdt.filter((s) => ids.has(s.id_seance)).sort(ordreSeances)
+  }, [idsCopie, seancesEdt])
+  const idsCopiees = useMemo(() => new Set(copies.map((s) => s.id_seance)), [copies])
+  const libelleSeance = (s: Seance) => db.matiere.find((m) => m.id_matiere === db.cours.find((c) => c.id_cours === s.id_cours)?.id_matiere)?.libelle ?? 'Séance'
+  const dureeSeance = (s: Seance) => (toMin(s.heure_fin) - toMin(s.heure_debut)) / 60
+  const heuresLot = (liste: Seance[]) => liste.reduce((t, s) => t + dureeSeance(s), 0)
+
+  const copier = (liste: Seance[]) => {
+    setIdsCopie(liste.map((s) => s.id_seance))
+    setCoupe(false)
+    setMenuSeance(null)
+    if (liste.length === 1) {
+      toast.success('Séance copiée', { description: `${libelleSeance(liste[0])} · ${dureeSeance(liste[0])} h. Ctrl+V la colle sous le pointeur, ici ou dans une autre semaine, autant de fois que nécessaire ; clic droit sur une case : « Coller ».` })
+    } else {
+      toast.success(`${liste.length} séances copiées`, { description: `${heuresLot(liste)} h. Changez de semaine si besoin : Ctrl+V les colle aux mêmes jours et heures, autant de fois que nécessaire ; clic droit sur une case : « Coller à partir d'ici ».` })
+    }
+  }
+  const oublierCopie = () => { setIdsCopie([]); setCoupe(false) }
+
+  /** Pourquoi ces séances ne peuvent pas être coupées (déplacées) : verrouillée ou annulée */
+  const motifCoupe = (liste: Seance[]) => {
+    const verrouillees = liste.filter((s) => s.est_verrouillee).length
+    const annulees = liste.filter((s) => s.statut === 'annulee').length
+    if (liste.length === 1) {
+      return verrouillees ? 'Séance verrouillée : déverrouillez-la pour la déplacer.' : annulees ? "Séance annulée : rétablissez-la d'abord." : null
+    }
+    if (verrouillees) return `${verrouillees} séance${verrouillees > 1 ? 's' : ''} verrouillée${verrouillees > 1 ? 's' : ''} dans la sélection : déverrouillez-les, ou retirez-les de la sélection, pour déplacer.`
+    if (annulees) return `${annulees} séance${annulees > 1 ? 's' : ''} annulée${annulees > 1 ? 's' : ''} dans la sélection : rétablissez-les, ou retirez-les de la sélection, pour déplacer.`
+    return null
+  }
+
+  /** Couper (Ctrl+X) : les séances restent à leur place, estompées, jusqu'au collage, qui les déplace (mêmes séances,
+   *  même historique, mêmes règles qu'un glisser-déposer). Échap annule. */
+  const couper = (liste: Seance[]) => {
+    setMenuSeance(null)
+    const motif = motifCoupe(liste)
+    if (motif) return void toast.error('Coupe impossible', { description: motif })
+    setIdsCopie(liste.map((s) => s.id_seance))
+    setCoupe(true)
+    if (liste.length === 1) {
+      const s = liste[0]
+      toast.success(estEpreuve(s) ? 'Épreuve coupée' : 'Séance coupée', {
+        description: `${libelleSeance(s)} · ${dureeSeance(s)} h. Ctrl+V la déplace sous le pointeur, ici ou dans une autre semaine ; clic droit sur une case : « Déplacer ici ».`,
+      })
+    } else {
+      toast.success(`${liste.length} séances coupées`, {
+        description: "Changez de semaine si besoin : Ctrl+V les déplace aux mêmes jours et heures ; clic droit sur une case : « Déplacer à partir d'ici ».",
+      })
+    }
+  }
+
+  /** La première séance du presse-papiers le `date` à `heure`, les autres à la même distance d'elle (jours et heures) */
+  const aPartirDe = (date: string, heure: string): Placement => {
+    const ancre = copies[0]
+    const jours = ecartJours(ancre.date_seance, date)
+    const minutes = toMin(heure) - toMin(ancre.heure_debut)
+    return (s) => ({ date: addDays(s.date_seance, jours), heure: fromMin(toMin(s.heure_debut) + minutes) })
+  }
+  /** Mêmes jours de la semaine et mêmes heures, dans la semaine du lundi `lundi` */
+  const memePlace = (lundi: string): Placement => (s) => ({ date: addDays(lundi, ecartJours(mondayOf(s.date_seance), s.date_seance)), heure: s.heure_debut })
+  const semaineSuivante: Placement = (s) => ({ date: addDays(s.date_seance, 7), heure: s.heure_debut })
+  const ouEtQuand = (date: string, heure: string, duree: number) => `${fmtJourCourt(date)}, ${fmtHeure(heure)}–${fmtHeure(fromMin(toMin(heure) + duree * 60))}`
+  const resumeRefus = (refus: string[]) => refus.slice(0, 3).join('\n') + (refus.length > 3 ? `\n… et ${refus.length - 3} autre${refus.length > 4 ? 's' : ''}` : '')
+
+  /** Les séances coupées, posées selon `placer` : toutes déplacées, avec leur salle si elle est libre, ou aucune */
+  const deplacerCoupees = (sources: Seance[], placer: Placement) => {
     setMenu(null)
     setMenuSeance(null)
     setSelection(null)
-    const cr = creneauAt(db, date, heure)
-    const cours = db.cours.find((c) => c.id_cours === source.id_cours)
-    if (!cr || !cours) return void toast.error('Déplacement refusé', { description: "Ce jour n'a pas de créneau qui commence à cette heure." })
-    if (source.date_seance === date && source.heure_debut === heure) return void toast('La séance est déjà à cette place.')
-    const draft: SeanceDraft = {
-      ...source,
-      date_seance: date,
-      heure_debut: heure,
-      heure_fin: fromMin(toMin(heure) + dureeSeance(source) * 60),
-      id_creneau: cr.id_creneau,
-      statut: source.statut === 'validee' ? 'planifiee' : source.statut,
+    const seule = sources.length === 1 ? sources[0] : null
+    if (sources.every((s) => { const p = placer(s); return p.date === s.date_seance && p.heure === s.heure_debut })) {
+      return void toast(seule ? 'La séance est déjà à cette place.' : 'Les séances sont déjà à cette place.')
     }
-    const seances = db.seance.filter((s) => s.id_edt === edt.id_edt)
-    const salles = estEpreuve(source) ? sallesPourEpreuves(db) : sallesDuCours(db, cours)
-    const r = evaluerCreneau(db, draft, seances, salles, true)
-    if (!r.ok) return void toast.error('Déplacement refusé', { description: r.raison })
-    const avant = { date_seance: source.date_seance, heure_debut: source.heure_debut, heure_fin: source.heure_fin, id_creneau: source.id_creneau, id_salle: source.id_salle, statut: source.statut }
-    const apres = { date_seance: date, heure_debut: heure, heure_fin: draft.heure_fin, id_creneau: cr.id_creneau, id_salle: r.id_salle, statut: draft.statut }
-    const rythme = noteRythme({ ...draft, id_salle: r.id_salle })
-    mutate((x) => { Object.assign(x.seance.find((k) => k.id_seance === source.id_seance)!, apres) })
+    const ids = new Set(sources.map((s) => s.id_seance))
+    // contrôlées sans leur ancienne place, et chacune avec celles déjà replacées
+    let seances = seancesEdt.filter((s) => !ids.has(s.id_seance))
+    const apres = new Map<number, Pick<Seance, 'date_seance' | 'heure_debut' | 'heure_fin' | 'id_creneau' | 'id_salle' | 'statut'>>()
+    const refus: string[] = []
+    for (const source of sources) {
+      const { date, heure } = placer(source)
+      const cr = creneauAt(db, date, heure)
+      const cours = db.cours.find((c) => c.id_cours === source.id_cours)
+      const ou = ouEtQuand(date, heure, dureeSeance(source))
+      if (!cr || !cours) { refus.push(`${libelleSeance(source)}, ${ou} · pas de créneau qui commence à cette heure`); continue }
+      const draft: SeanceDraft = {
+        ...source,
+        date_seance: date,
+        heure_debut: heure,
+        heure_fin: fromMin(toMin(heure) + dureeSeance(source) * 60),
+        id_creneau: cr.id_creneau,
+        statut: source.statut === 'validee' ? 'planifiee' : source.statut,
+      }
+      const salles = estEpreuve(source) ? sallesPourEpreuves(db) : sallesDuCours(db, cours)
+      const r = evaluerCreneau(db, draft, seances, salles, true)
+      if (!r.ok) { refus.push(seule ? r.raison : `${libelleSeance(source)}, ${ou} · ${r.raison.split('\n')[0]}`); continue }
+      const champs = { date_seance: date, heure_debut: heure, heure_fin: draft.heure_fin, id_creneau: cr.id_creneau, id_salle: r.id_salle, statut: draft.statut }
+      apres.set(source.id_seance, champs)
+      seances = [...seances, { ...source, ...champs }]
+    }
+    if (refus.length) {
+      return void toast.error('Déplacement refusé', { description: seule ? refus[0] : `Rien n'a bougé : ${refus.length} séance${refus.length > 1 ? 's ne passent' : ' ne passe'} pas.\n${resumeRefus(refus)}` })
+    }
+    const avant = new Map(sources.map((s) => [s.id_seance, { date_seance: s.date_seance, heure_debut: s.heure_debut, heure_fin: s.heure_fin, id_creneau: s.id_creneau, id_salle: s.id_salle, statut: s.statut }]))
+    mutate((x) => { for (const k of x.seance) { const a = apres.get(k.id_seance); if (a) Object.assign(k, a) } })
     oublierCopie()
-    const salle = db.salle.find((x) => x.id_salle === r.id_salle)
-    toast.success(estEpreuve(source) ? 'Épreuve déplacée' : 'Séance déplacée', {
-      description: `${libelleSeance(source)} · ${fmtJourCourt(date)}, ${fmtHeure(heure)}–${fmtHeure(draft.heure_fin)} · ${salle?.nom_salle ?? ''}`
-        + (r.id_salle !== source.id_salle ? ' (salle changée)' : '') + rythme,
-      action: { label: 'Annuler', onClick: () => mutate((x) => { Object.assign(x.seance.find((k) => k.id_seance === source.id_seance)!, avant) }) },
+    const annuler = { label: 'Annuler', onClick: () => mutate((x) => { for (const k of x.seance) { const a = avant.get(k.id_seance); if (a) Object.assign(k, a) } }) }
+    if (seule) {
+      const a = apres.get(seule.id_seance)!
+      const salle = db.salle.find((x) => x.id_salle === a.id_salle)
+      return void toast.success(estEpreuve(seule) ? 'Épreuve déplacée' : 'Séance déplacée', {
+        description: `${libelleSeance(seule)} · ${ouEtQuand(a.date_seance, a.heure_debut, dureeSeance(seule))} · ${salle?.nom_salle ?? ''}`
+          + (a.id_salle !== seule.id_salle ? ' (salle changée)' : '') + noteRythme({ ...seule, ...a }),
+        action: annuler,
+      })
+    }
+    const sallesChangees = sources.filter((s) => apres.get(s.id_seance)!.id_salle !== s.id_salle).length
+    toast.success(`${sources.length} séances déplacées`, {
+      description: sallesChangees ? `${sallesChangees} changent de salle : la leur n'était pas libre.` : 'Chacune garde sa salle.',
+      action: annuler,
     })
   }
 
-  /** Coller la séance du presse-papiers : coupée, elle est déplacée ; copiée, elle est dupliquée */
-  const coller = (source: Seance, date: string, heure: string) =>
-    (coupe && source.id_seance === idCopie ? deplacerCoupee(source, date, heure) : poserCopie(source, date, heure))
-
-  /** Nouvelle séance comme `source`, le `date` à `heure` : même salle si elle est libre, sinon la plus ajustée ;
-   *  si seul son enseignant est pris ou absent, la séance est posée sans enseignant (à désigner). */
-  const poserCopie = (source: Seance, date: string, heure: string) => {
-    setMenu(null)
-    setMenuSeance(null)
-    setSelection(null) // réussi ou refusé, le prochain Ctrl+V vise le pointeur
+  /** La copie de `source` le `date` à `heure`, contrôlée contre `seances` : même salle si elle est libre, sinon la plus
+   *  ajustée ; si seul son enseignant est pris ou absent, elle est posée sans enseignant (à désigner). */
+  const essayerCopie = (source: Seance, date: string, heure: string, seances: Seance[], idProvisoire: number): { seance: Seance; sansEnseignant: boolean } | { raison: string } => {
     const cr = creneauAt(db, date, heure)
     const cours = db.cours.find((c) => c.id_cours === source.id_cours)
-    if (!cr || !cours) return void toast.error('Collage refusé', { description: "Ce jour n'a pas de créneau qui commence à cette heure." })
-    const draft: SeanceDraft = {
+    if (!cr || !cours) return { raison: "Ce jour n'a pas de créneau qui commence à cette heure." }
+    const draft: Seance = {
+      id_seance: idProvisoire, // les copies déjà posées du même collage comptent dans les contrôles des suivantes
       date_seance: date,
       heure_debut: heure,
       heure_fin: fromMin(toMin(heure) + dureeSeance(source) * 60),
@@ -673,7 +855,6 @@ export default function Planification() {
       id_edt: edt.id_edt,
       nature: source.nature,
     }
-    const seances = db.seance.filter((s) => s.id_edt === edt.id_edt)
     const salles = estEpreuve(source) ? sallesPourEpreuves(db) : sallesDuCours(db, cours)
     let r = evaluerCreneau(db, draft, seances, salles, true)
     let sansEnseignant = false
@@ -684,32 +865,84 @@ export default function Planification() {
         if (r2.ok) { r = r2; sansEnseignant = true }
       }
     }
-    if (!r.ok) return void toast.error('Collage refusé', { description: r.raison })
-    const id_salle = r.id_salle
-    const salle = db.salle.find((x) => x.id_salle === id_salle)
-    const rythmeCopie = noteRythme({ ...draft, id_salle })
-    mutate((x) => {
-      x.seance.push({ ...(draft as Seance), id_seance: nextId(x.seance, 'id_seance'), id_salle, id_enseignant: sansEnseignant ? null : draft.id_enseignant })
+    if (!r.ok) return { raison: r.raison }
+    return { seance: { ...draft, id_salle: r.id_salle, id_enseignant: sansEnseignant ? null : draft.id_enseignant }, sansEnseignant }
+  }
+
+  /** Nouvelles séances comme `sources`, posées selon `placer` : celles qui passent les règles sont posées, les
+   *  autres sont listées. Le presse-papiers reste plein : on peut coller encore, dans une autre semaine. */
+  const poserCopies = (sources: Seance[], placer: Placement) => {
+    setMenu(null)
+    setMenuSeance(null)
+    setSelection(null) // réussi ou refusé, le prochain Ctrl+V vise le pointeur
+    const seule = sources.length === 1 ? sources[0] : null
+    let seances = seancesEdt
+    const posees: { source: Seance; seance: Seance; sansEnseignant: boolean }[] = []
+    const refus: string[] = []
+    sources.forEach((source, i) => {
+      const { date, heure } = placer(source)
+      const r = essayerCopie(source, date, heure, seances, -(i + 1))
+      if ('raison' in r) refus.push(seule ? r.raison : `${libelleSeance(source)}, ${ouEtQuand(date, heure, dureeSeance(source))} · ${r.raison.split('\n')[0]}`)
+      else {
+        seances = [...seances, r.seance]
+        posees.push({ source, ...r })
+      }
     })
-    toast.success(estEpreuve(source) ? 'Épreuve dupliquée' : 'Séance dupliquée', {
-      description: `${libelleSeance(source)} · ${fmtJourCourt(date)}, ${fmtHeure(heure)}–${fmtHeure(draft.heure_fin)} · ${salle?.nom_salle ?? ''}`
-        + (sansEnseignant ? " · enseignant à désigner : le sien n'est pas libre" : '') + rythmeCopie,
+    if (!posees.length) {
+      return void toast.error(seule ? 'Collage refusé' : 'Aucune séance collée', { description: seule ? refus[0] : resumeRefus(refus) })
+    }
+    const ids: number[] = []
+    mutate((x) => {
+      for (const p of posees) {
+        const id_seance = nextId(x.seance, 'id_seance')
+        ids.push(id_seance)
+        x.seance.push({ ...p.seance, id_seance })
+      }
+    })
+    if (seule) {
+      const { seance, sansEnseignant } = posees[0]
+      const salle = db.salle.find((x) => x.id_salle === seance.id_salle)
+      return void toast.success(estEpreuve(seule) ? 'Épreuve dupliquée' : 'Séance dupliquée', {
+        description: `${libelleSeance(seule)} · ${ouEtQuand(seance.date_seance, seance.heure_debut, dureeSeance(seule))} · ${salle?.nom_salle ?? ''}`
+          + (sansEnseignant ? " · enseignant à désigner : le sien n'est pas libre" : '') + noteRythme(seance),
+      })
+    }
+    const sansEnseignant = posees.filter((p) => p.sansEnseignant).length
+    const notes = [
+      refus.length ? `${refus.length} refusée${refus.length > 1 ? 's' : ''} :\n${resumeRefus(refus)}` : '',
+      sansEnseignant ? `${sansEnseignant} sans enseignant (à désigner) : le leur n'est pas libre.` : '',
+    ].filter(Boolean).join('\n')
+    const semaines = new Set(posees.map((p) => mondayOf(p.seance.date_seance)))
+    ;(refus.length ? toast.warning : toast.success)(`${posees.length} séance${posees.length > 1 ? 's' : ''} collée${posees.length > 1 ? 's' : ''}${refus.length ? ` sur ${sources.length}` : ''}`, {
+      description: notes || (semaines.size === 1 ? `Semaine du ${fmtJourCourt([...semaines][0])}` : undefined),
+      duration: refus.length ? 10_000 : undefined,
+      // seulement celles du collage, et pas une qu'on aurait verrouillée entre-temps
+      action: { label: 'Annuler', onClick: () => mutate((x) => { x.seance = x.seance.filter((k) => !ids.includes(k.id_seance) || k.est_verrouillee) }) },
     })
   }
 
-  /** Où Ctrl+V colle : début des heures sélectionnées, sinon le créneau sous le pointeur, sinon le même jour de
-   *  la semaine et la même heure que la séance copiée, dans la semaine affichée */
-  const collerAuClavier = (source: Seance) => {
-    if (selection) return coller(source, selection.date, fromMin(selection.debut))
+  /** Coller le presse-papiers : coupées, les séances sont déplacées ; copiées, elles sont dupliquées */
+  const coller = (placer: Placement) => (coupe ? deplacerCoupees(copies, placer) : poserCopies(copies, placer))
+
+  /** Où Ctrl+V colle : à partir des heures sélectionnées sur la grille ; sinon, une séance seule sur le créneau
+   *  sous le pointeur ; sinon (et toujours pour plusieurs séances) aux mêmes jours et heures, dans la semaine affichée */
+  const collerAuClavier = () => {
+    if (selection) return coller(aPartirDe(selection.date, fromMin(selection.debut)))
     const p = survol.current
-    if (p) {
+    if (copies.length === 1 && p) {
       const cr = db.creneau.find((c) => c.jour === jourOf(p.date) && toMin(c.heure_debut) <= p.minute && p.minute < toMin(c.heure_fin))
       if (!cr) return void toast.error(coupe ? 'Déplacement refusé' : 'Collage refusé', { description: "Pas de créneau à cet endroit : visez une heure de cours de la grille." })
-      return coller(source, p.date, cr.heure_debut)
+      return coller(aPartirDe(p.date, cr.heure_debut))
     }
-    const jourSemaine = Math.round((parseDate(source.date_seance).getTime() - parseDate(mondayOf(source.date_seance)).getTime()) / 86_400_000)
-    coller(source, addDays(semaine, jourSemaine), source.heure_debut)
+    coller(memePlace(semaine))
   }
+
+  // Barre de la sélection : ce que le lot permet
+  const motifSupprSelection = motifSuppression(seancesCochees)
+  const verrouilleesSelection = seancesCochees.filter((s) => s.est_verrouillee).length
+  // Menu du clic droit : sur une séance de la sélection (deux ou plus), il agit sur tout le lot
+  const lotMenu = menuSeance && seancesCochees.length > 1 && cochees.has(menuSeance.s.id_seance) ? seancesCochees : null
+  const cibleMenu: SeanceVue[] = lotMenu ?? (menuSeance ? [menuSeance.s] : [])
 
   // à chaque rendu : le raccourci voit l'état du moment
   useEffect(() => { raccourci.current = (e: KeyboardEvent) => {
@@ -717,15 +950,16 @@ export default function Planification() {
     const cible = e.target as HTMLElement | null
     if (cible?.closest('input, textarea, select, [contenteditable="true"]')) return
     const fenetre = !!(sel || seanceAPoser || epreuve || confirmDup || aSupprimer)
-    // Suppr (ou retour arrière) : supprimer les séances sélectionnées ; Échap : tout désélectionner
+    // Suppr (ou retour arrière) : supprimer les séances sélectionnées (refusé s'il y en a une verrouillée) ;
+    // Échap : tout désélectionner, puis oublier les séances copiées ou coupées
     if (!fenetre && seancesCochees.length && (e.key === 'Delete' || e.key === 'Backspace') && !e.ctrlKey && !e.metaKey && !e.altKey) {
       e.preventDefault()
-      setMenuSeance(null)
-      setASupprimer(seancesCochees)
+      demanderSuppression(seancesCochees)
       return
     }
-    if (!fenetre && e.key === 'Escape' && cochees.size) return toutDecocher()
-    if (!fenetre && !menu && !menuSeance && e.key === 'Escape' && idCopie !== null && coupe) return oublierCopie()
+    // (un menu ouvert : Échap le ferme seulement, la sélection reste)
+    if (!fenetre && !menu && !menuSeance && e.key === 'Escape' && cochees.size) return toutDecocher()
+    if (!fenetre && !menu && !menuSeance && e.key === 'Escape' && copies.length) return oublierCopie()
     if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return
     const touche = e.key.toLowerCase()
     if (touche === 'a') {
@@ -735,19 +969,23 @@ export default function Planification() {
       toutCocher()
     } else if (touche === 'c' || touche === 'x') {
       if (window.getSelection()?.toString()) return // du texte choisi : la copie habituelle
+      // La séance du détail ouvert ; sinon la sélection, si le pointeur n'est pas sur une autre séance ; sinon la
+      // séance sous le pointeur (ou qui a le focus)
       const carte = (document.activeElement?.closest('[data-seance]') ?? document.querySelector('[data-seance]:hover')) as HTMLElement | null
       const idCarte = sel?.id_seance ?? (carte ? Number(carte.dataset.seance) : null)
-      const s = idCarte !== null ? db.seance.find((x) => x.id_seance === idCarte) : undefined
-      if (!s) return
+      const lot: Seance[] = !sel && seancesCochees.length && (idCarte === null || cochees.has(idCarte))
+        ? seancesCochees
+        : db.seance.filter((x) => x.id_seance === idCarte)
+      if (!lot.length) return
       e.preventDefault()
       if (touche === 'x') {
         setSelected(null) // le détail se ferme : la séance coupée attend son nouvel emplacement
-        couper(s)
-      } else copier(s)
+        couper(lot)
+      } else copier(lot)
     } else if (touche === 'v') {
-      if (!copie || id === null || sel || seanceAPoser || epreuve || confirmDup) return
+      if (!copies.length || id === null || sel || seanceAPoser || epreuve || confirmDup) return
       e.preventDefault()
-      collerAuClavier(copie)
+      collerAuClavier()
     }
   } })
 
@@ -869,6 +1107,21 @@ export default function Planification() {
           {!lecture && <div className="relative min-w-0"><div className="xl:absolute xl:inset-0"><Card className="flex max-h-96 flex-col p-4 xl:max-h-full xl:p-3">
             <p className="section-label px-1">Cours à placer</p>
             <p className="mt-1 px-1 text-xs text-ink-2">Glissez une durée sur la grille (en foncé, celle des séances types du cours). Les créneaux verts respectent toutes les contraintes dures.</p>
+            {res !== 'salle' && (
+              <div className="relative mt-2">
+                <Search className="pointer-events-none absolute top-1/2 left-3 size-3.5 -translate-y-1/2 text-ink-2" aria-hidden />
+                <input
+                  type="search"
+                  value={recherche}
+                  onChange={(e) => setRecherche(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Escape' && recherche) { e.preventDefault(); setRecherche('') } }}
+                  placeholder="Rechercher un cours…"
+                  aria-label="Rechercher un cours à placer"
+                  data-recherche-cours
+                  className="h-8 w-full rounded-full border border-white bg-white/80 pr-3 pl-8 text-xs text-ink outline-none placeholder:text-ink-2/70 focus:ring-2 focus:ring-navy/70"
+                />
+              </div>
+            )}
             {res === 'salle' ? (
               <p className="mt-4 px-1 text-sm text-ink-2">Choisissez une classe ou un enseignant pour placer des cours. Ici, vous pouvez déplacer les séances de la salle.</p>
             ) : (
@@ -904,9 +1157,30 @@ export default function Planification() {
                   <SquareCheck className="size-4 shrink-0 text-navy" />
                   <span className="min-w-0 flex-1 truncate">
                     <span className="font-medium text-ink">{seancesCochees.length} séance{seancesCochees.length > 1 ? 's' : ''} sélectionnée{seancesCochees.length > 1 ? 's' : ''}</span>
+                    {verrouilleesSelection > 0 && <> dont {verrouilleesSelection} verrouillée{verrouilleesSelection > 1 ? 's' : ''}</>}
                     {' '}· Ctrl+clic pour en ajouter ou en retirer, Ctrl+A pour toute la semaine, clic dans le vide pour tout désélectionner
                   </span>
-                  <button type="button" data-supprimer-selection className="press -my-1 flex shrink-0 items-center gap-1 rounded-full bg-[#FEE2E2] px-2.5 py-1 font-medium text-[#B91C1C] hover:bg-[#FECACA]" onClick={() => setASupprimer(seancesCochees)}>
+                  <button type="button" data-copier-selection className="press -my-1 flex shrink-0 items-center gap-1 rounded-full bg-white/80 px-2.5 py-1 font-medium text-ink hover:bg-white" onClick={() => copier(seancesCochees)}>
+                    <Copy className="size-3.5" />Copier<kbd className="ml-1 font-mono text-[10px] opacity-70">Ctrl+C</kbd>
+                  </button>
+                  <button
+                    type="button"
+                    data-verrouiller-selection={toutesVerrouillees(seancesCochees) ? 'deverrouiller' : 'verrouiller'}
+                    disabled={!verrouillables(seancesCochees).length}
+                    title={!verrouillables(seancesCochees).length ? 'Une épreuve ne se verrouille pas' : undefined}
+                    className="press -my-1 flex shrink-0 items-center gap-1 rounded-full bg-white/80 px-2.5 py-1 font-medium text-ink hover:bg-white disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-white/80"
+                    onClick={() => basculerVerrou(seancesCochees)}
+                  >
+                    {toutesVerrouillees(seancesCochees) ? <><LockOpen className="size-3.5" />Déverrouiller</> : <><Lock className="size-3.5" />Verrouiller</>}
+                  </button>
+                  <button
+                    type="button"
+                    data-supprimer-selection
+                    disabled={!!motifSupprSelection}
+                    title={motifSupprSelection ?? undefined}
+                    className="press -my-1 flex shrink-0 items-center gap-1 rounded-full bg-[#FEE2E2] px-2.5 py-1 font-medium text-[#B91C1C] hover:bg-[#FECACA] disabled:cursor-not-allowed disabled:bg-muted disabled:text-ink-2/60 disabled:hover:bg-muted"
+                    onClick={() => demanderSuppression(seancesCochees)}
+                  >
                     <Trash2 className="size-3.5" />Supprimer<kbd className="ml-1 font-mono text-[10px] opacity-70">Suppr</kbd>
                   </button>
                   <button type="button" className="press -mr-2 grid size-6 shrink-0 place-items-center rounded-full hover:bg-white" aria-label="Tout désélectionner" title="Tout désélectionner (Échap)" onClick={toutDecocher}>
@@ -914,16 +1188,22 @@ export default function Planification() {
                   </button>
                 </>
               )}
-              {!drag && !seancesCochees.length && !copie && <>Clic droit sur une séance : détails, copier, couper… (double-clic : détails). Glissez-la pour la déplacer ; Ctrl+clic pour en sélectionner plusieurs. Pour ajouter une séance ou un examen : sélectionnez 2 à 5 h sur une case vide, puis clic droit.</>}
-              {!drag && !seancesCochees.length && copie && (
+              {!drag && !seancesCochees.length && !copies.length && <>Clic droit sur une séance : détails, copier, couper, verrouiller… (double-clic : détails). Glissez-la pour la déplacer ; Ctrl+clic pour en sélectionner plusieurs. Pour ajouter une séance ou un examen : sélectionnez 2 à 5 h sur une case vide, puis clic droit.</>}
+              {!drag && !seancesCochees.length && copies.length > 0 && (
                 <>
                   {coupe ? <Scissors className="size-4 shrink-0" /> : <Copy className="size-4 shrink-0" />}
-                  <span className="min-w-0 flex-1 truncate">
-                    {coupe
-                      ? <><span className="font-medium text-ink">{libelleSeance(copie)}</span> coupée ({dureeSeance(copie)} h) : Ctrl+V la déplace sous le pointeur, ou clic droit sur une case puis « Déplacer ici » ; clic dans le vide ou Échap pour annuler.</>
-                      : <><span className="font-medium text-ink">{libelleSeance(copie)}</span> copiée ({dureeSeance(copie)} h) : Ctrl+V la colle sous le pointeur, ou clic droit sur une case puis « Coller » ; clic dans le vide pour l'oublier.</>}
+                  <span className="min-w-0 flex-1 truncate" data-presse-papiers={copies.length}>
+                    {copies.length === 1 ? (
+                      coupe
+                        ? <><span className="font-medium text-ink">{libelleSeance(copies[0])}</span> coupée ({dureeSeance(copies[0])} h) : Ctrl+V la déplace sous le pointeur, dans cette semaine ou une autre, ou clic droit sur une case puis « Déplacer ici » ; Échap pour annuler.</>
+                        : <><span className="font-medium text-ink">{libelleSeance(copies[0])}</span> copiée ({dureeSeance(copies[0])} h) : Ctrl+V la colle sous le pointeur, dans n'importe quelle semaine et autant de fois que nécessaire, ou clic droit sur une case puis « Coller » ; Échap pour l'oublier.</>
+                    ) : (
+                      coupe
+                        ? <><span className="font-medium text-ink">{copies.length} séances coupées</span> ({heuresLot(copies)} h) : dans la semaine voulue, Ctrl+V les déplace aux mêmes jours et heures, ou clic droit sur une case puis « Déplacer à partir d'ici » ; Échap pour annuler.</>
+                        : <><span className="font-medium text-ink">{copies.length} séances copiées</span> ({heuresLot(copies)} h) : dans la semaine voulue, Ctrl+V les colle aux mêmes jours et heures, autant de fois que nécessaire, ou clic droit sur une case puis « Coller à partir d'ici » ; Échap pour les oublier.</>
+                    )}
                   </span>
-                  <button type="button" className="press -mr-2 grid size-6 shrink-0 place-items-center rounded-full hover:bg-white" aria-label={coupe ? 'Annuler la coupe' : 'Oublier la séance copiée'} title={coupe ? 'Annuler la coupe' : 'Oublier la séance copiée'} onClick={oublierCopie}>
+                  <button type="button" className="press -mr-2 grid size-6 shrink-0 place-items-center rounded-full hover:bg-white" aria-label={coupe ? 'Annuler la coupe' : 'Oublier les séances copiées'} title={coupe ? 'Annuler la coupe (Échap)' : 'Oublier les séances copiées (Échap)'} onClick={oublierCopie}>
                     <X className="size-3.5" />
                   </button>
                 </>
@@ -957,7 +1237,7 @@ export default function Planification() {
                       onMenu: (x, y, s) => { setMenuSeance(null); setMenu({ x, y, selection: s }) },
                       onMenuSeance: (x, y, s) => { setMenu(null); setMenuSeance({ x, y, s }) },
                       onSurvol: (p) => { survol.current = p },
-                      copiee: copie?.id_seance ?? null,
+                      copiees: idsCopiees,
                       coupee: coupe,
                       cochees,
                       ajustements,
@@ -991,16 +1271,19 @@ export default function Planification() {
         footer={
           sel && !lecture && (
             <>
-              <Button variant="destructive" onClick={() => supprimerSeances([sel])}>
-                <Trash2 />Supprimer
-              </Button>
+              {/* verrouillée : pas de suppression (le bouton grisé ne reçoit pas le survol, le titre est sur l'enveloppe) */}
+              <span title={motifSuppression([sel]) ?? undefined} className="inline-flex">
+                <Button variant="destructive" disabled={sel.est_verrouillee} onClick={() => supprimerSeances([sel])} data-supprimer-detail>
+                  <Trash2 />Supprimer
+                </Button>
+              </span>
               {sel.statut === 'annulee' ? (
                 <Button variant="outline" onClick={() => changerStatut(sel, 'planifiee')}><Undo2 />Rétablir</Button>
               ) : (
                 <Button variant="outline" onClick={() => changerStatut(sel, 'annulee')}><Ban />Annuler la séance</Button>
               )}
               {!estEpreuve(sel) && (
-                <Button variant="primary" onClick={() => update({ est_verrouillee: !sel.est_verrouillee }, sel.est_verrouillee ? 'Séance déverrouillée' : 'Séance verrouillée pour la génération')}>
+                <Button variant="primary" onClick={() => basculerVerrou([sel])}>
                   {sel.est_verrouillee ? <><LockOpen />Déverrouiller</> : <><Lock />Verrouiller</>}
                 </Button>
               )}
@@ -1122,19 +1405,38 @@ export default function Planification() {
             role="menu"
             aria-label="Programmer sur ces heures"
             className="fixed z-50 w-64 rounded-2xl bg-white p-1.5 text-sm shadow-xl ring-1 ring-line"
-            style={{ left: Math.min(menu.x, window.innerWidth - 264), top: Math.min(menu.y, window.innerHeight - (copie ? 240 : 200)) }}
+            style={{ left: Math.min(menu.x, window.innerWidth - 264), top: Math.min(menu.y, window.innerHeight - (copies.length > 1 ? 310 : copies.length ? 240 : 200)) }}
           >
             <p className="px-3 py-1.5 text-xs text-ink-2">
               {fmtJourCourt(menu.selection.date)}, {fmtHeure(fromMin(menu.selection.debut))}–{fmtHeure(fromMin(menu.selection.fin))}
             </p>
-            {copie && (
-              <button type="button" role="menuitem" className="press flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left font-medium hover:bg-muted" onClick={() => coller(copie, menu.selection.date, fromMin(menu.selection.debut))}>
+            {copies.length === 1 && (
+              <button type="button" role="menuitem" data-coller="ici" className="press flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left font-medium hover:bg-muted" onClick={() => coller(aPartirDe(menu.selection.date, fromMin(menu.selection.debut)))}>
                 {coupe ? <Scissors className="size-4 shrink-0 text-ink-2" /> : <ClipboardPaste className="size-4 shrink-0 text-ink-2" />}
-                <span className="min-w-0 flex-1 truncate">{coupe ? 'Déplacer ici' : 'Coller'} {libelleSeance(copie)} ({dureeSeance(copie)} h)</span>
+                <span className="min-w-0 flex-1 truncate">{coupe ? 'Déplacer ici' : 'Coller'} {libelleSeance(copies[0])} ({dureeSeance(copies[0])} h)</span>
                 <kbd className="font-mono text-[10px] text-ink-2">Ctrl+V</kbd>
               </button>
             )}
-            <button type="button" role="menuitem" className={cn('press block w-full rounded-xl px-3 py-2 text-left hover:bg-muted', !copie && 'font-medium')} onClick={() => ouvrirSeance(menu.selection)}>Programmer une séance de cours</button>
+            {copies.length > 1 && (
+              <>
+                <button type="button" role="menuitem" data-coller="meme-place" className="press flex w-full items-start gap-2 rounded-xl px-3 py-2 text-left hover:bg-muted" onClick={() => coller(memePlace(mondayOf(menu.selection.date)))}>
+                  {coupe ? <Scissors className="mt-0.5 size-4 shrink-0 text-ink-2" /> : <ClipboardPaste className="mt-0.5 size-4 shrink-0 text-ink-2" />}
+                  <span className="min-w-0 flex-1">
+                    <span className="block font-medium">{coupe ? 'Déplacer' : 'Coller'} les {copies.length} séances</span>
+                    <span className="block text-xs text-ink-2">aux mêmes jours et heures, cette semaine</span>
+                  </span>
+                  <kbd className="mt-0.5 font-mono text-[10px] text-ink-2">Ctrl+V</kbd>
+                </button>
+                <button type="button" role="menuitem" data-coller="a-partir-d-ici" className="press flex w-full items-start gap-2 rounded-xl px-3 py-2 text-left hover:bg-muted" onClick={() => coller(aPartirDe(menu.selection.date, fromMin(menu.selection.debut)))}>
+                  {coupe ? <Scissors className="mt-0.5 size-4 shrink-0 text-ink-2" /> : <ClipboardPaste className="mt-0.5 size-4 shrink-0 text-ink-2" />}
+                  <span className="min-w-0 flex-1">
+                    <span className="block font-medium">{coupe ? 'Déplacer' : 'Coller'} à partir d'ici</span>
+                    <span className="block text-xs text-ink-2">la première sur cette case, les autres à la même distance</span>
+                  </span>
+                </button>
+              </>
+            )}
+            <button type="button" role="menuitem" className={cn('press block w-full rounded-xl px-3 py-2 text-left hover:bg-muted', !copies.length && 'font-medium')} onClick={() => ouvrirSeance(menu.selection)}>Programmer une séance de cours</button>
             <button type="button" role="menuitem" className="press block w-full rounded-xl px-3 py-2 text-left hover:bg-muted" onClick={() => ouvrirEpreuve('examen', menu.selection)}>Programmer un examen</button>
             <button type="button" role="menuitem" className="press block w-full rounded-xl px-3 py-2 text-left hover:bg-muted" onClick={() => ouvrirEpreuve('rattrapage', menu.selection)}>Programmer un rattrapage</button>
             <button type="button" role="menuitem" className="press block w-full rounded-xl px-3 py-2 text-left text-ink-2 hover:bg-muted" onClick={() => { setMenu(null); setSelection(null) }}>Annuler la sélection</button>
@@ -1148,59 +1450,85 @@ export default function Planification() {
           <div className="fixed inset-0 z-40" onClick={() => setMenuSeance(null)} onContextMenu={(e) => { e.preventDefault(); setMenuSeance(null) }} aria-hidden />
           <div
             role="menu"
-            aria-label="Séance"
+            aria-label={lotMenu ? 'Séances sélectionnées' : 'Séance'}
             className="fixed z-50 w-64 rounded-2xl bg-white p-1.5 text-sm shadow-xl ring-1 ring-line"
-            style={{ left: Math.min(menuSeance.x, window.innerWidth - 264), top: Math.min(menuSeance.y, window.innerHeight - 360) }}
+            style={{ left: Math.min(menuSeance.x, window.innerWidth - 264), top: Math.min(menuSeance.y, window.innerHeight - 400) }}
           >
             <p className="truncate px-3 py-1.5 text-xs text-ink-2">
-              {menuSeance.s.matiere.libelle} · {fmtJourCourt(menuSeance.s.date_seance)}, {fmtHeure(menuSeance.s.heure_debut)}–{fmtHeure(menuSeance.s.heure_fin)}
+              {lotMenu
+                ? <><span className="font-medium text-ink">{lotMenu.length} séances sélectionnées</span>{verrouilleesSelection > 0 && <> · {verrouilleesSelection} verrouillée{verrouilleesSelection > 1 ? 's' : ''}</>}</>
+                : <>{menuSeance.s.matiere.libelle} · {fmtJourCourt(menuSeance.s.date_seance)}, {fmtHeure(menuSeance.s.heure_debut)}–{fmtHeure(menuSeance.s.heure_fin)}</>}
             </p>
-            <button type="button" role="menuitem" className="press flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left font-medium hover:bg-muted" onClick={() => { setSelected(menuSeance.s.id_seance); setMenuSeance(null) }}>
+            {/* Sur une séance de la sélection : les actions valent pour toute la sélection ; celles qui ne
+                s'appliquent qu'à une séance, ou que le lot ne permet pas, sont grisées avec leur raison */}
+            <button
+              type="button"
+              role="menuitem"
+              data-action="details"
+              disabled={!!lotMenu}
+              title={lotMenu ? `Une séance à la fois : la sélection en compte ${lotMenu.length}` : undefined}
+              className={ITEM_MENU + ' font-medium'}
+              onClick={() => { setSelected(menuSeance.s.id_seance); setMenuSeance(null) }}
+            >
               <Info className="size-4 shrink-0 text-ink-2" /><span className="flex-1">Détails de la séance</span><kbd className="font-mono text-[10px] text-ink-2">Entrée</kbd>
             </button>
-            <button type="button" role="menuitem" className="press flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left hover:bg-muted" onClick={() => copier(menuSeance.s)}>
-              <Copy className="size-4 shrink-0 text-ink-2" /><span className="flex-1">Copier</span><kbd className="font-mono text-[10px] text-ink-2">Ctrl+C</kbd>
+            <button type="button" role="menuitem" data-action="copier" className={ITEM_MENU} onClick={() => copier(cibleMenu)}>
+              <Copy className="size-4 shrink-0 text-ink-2" /><span className="flex-1">{lotMenu ? `Copier les ${lotMenu.length} séances` : 'Copier'}</span><kbd className="font-mono text-[10px] text-ink-2">Ctrl+C</kbd>
             </button>
             <button
               type="button"
               role="menuitem"
-              disabled={menuSeance.s.est_verrouillee || menuSeance.s.statut === 'annulee'}
-              title={menuSeance.s.est_verrouillee ? 'Séance verrouillée' : menuSeance.s.statut === 'annulee' ? 'Séance annulée' : undefined}
-              className="press flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
-              onClick={() => couper(menuSeance.s)}
+              data-action="couper"
+              disabled={!!motifCoupe(cibleMenu)}
+              title={motifCoupe(cibleMenu) ?? undefined}
+              className={ITEM_MENU}
+              onClick={() => couper(cibleMenu)}
             >
-              <Scissors className="size-4 shrink-0 text-ink-2" /><span className="flex-1">Couper</span><kbd className="font-mono text-[10px] text-ink-2">Ctrl+X</kbd>
+              <Scissors className="size-4 shrink-0 text-ink-2" /><span className="flex-1">{lotMenu ? `Couper les ${lotMenu.length} séances` : 'Couper'}</span><kbd className="font-mono text-[10px] text-ink-2">Ctrl+X</kbd>
             </button>
-            <button type="button" role="menuitem" className="press flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left hover:bg-muted" onClick={() => poserCopie(menuSeance.s, addDays(menuSeance.s.date_seance, 7), menuSeance.s.heure_debut)}>
-              <CopyPlus className="size-4 shrink-0 text-ink-2" />Dupliquer la semaine suivante
+            <button type="button" role="menuitem" data-action="dupliquer" className={ITEM_MENU} onClick={() => poserCopies(cibleMenu, semaineSuivante)}>
+              <CopyPlus className="size-4 shrink-0 text-ink-2" /><span className="flex-1">{lotMenu ? `Dupliquer les ${lotMenu.length} la semaine suivante` : 'Dupliquer la semaine suivante'}</span>
             </button>
-            <button type="button" role="menuitem" className="press flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left hover:bg-muted" onClick={() => { basculerCoche(menuSeance.s); setMenuSeance(null) }}>
+            <button type="button" role="menuitem" data-action="selection" className={ITEM_MENU} onClick={() => { basculerCoche(menuSeance.s); setMenuSeance(null) }}>
               {cochees.has(menuSeance.s.id_seance)
                 ? <><SquareMinus className="size-4 shrink-0 text-ink-2" /><span className="flex-1">Retirer de la sélection</span></>
                 : <><SquareCheck className="size-4 shrink-0 text-ink-2" /><span className="flex-1">Ajouter à la sélection</span></>}
               <kbd className="font-mono text-[10px] text-ink-2">Ctrl+clic</kbd>
             </button>
-            {menuSeance.s.statut === 'annulee' ? (
-              <button type="button" role="menuitem" className="press flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left hover:bg-muted" onClick={() => changerStatut(menuSeance.s, 'planifiee')}>
-                <Undo2 className="size-4 shrink-0 text-ink-2" />Rétablir la séance
-              </button>
-            ) : (
-              <button type="button" role="menuitem" className="press flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-[#B91C1C] hover:bg-[#FEE2E2]/60" onClick={() => changerStatut(menuSeance.s, 'annulee')}>
-                <Ban className="size-4 shrink-0" />{estEpreuve(menuSeance.s) ? "Annuler l'épreuve" : 'Annuler la séance'}
-              </button>
-            )}
-            {/* Sur une séance de la sélection : toute la sélection ; sinon celle-ci */}
             <button
               type="button"
               role="menuitem"
-              className="press flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-[#B91C1C] hover:bg-[#FEE2E2]/60"
-              onClick={() => { setASupprimer(cochees.has(menuSeance.s.id_seance) ? seancesCochees : [menuSeance.s]); setMenuSeance(null) }}
+              data-action={toutesVerrouillees(cibleMenu) ? 'deverrouiller' : 'verrouiller'}
+              disabled={!verrouillables(cibleMenu).length}
+              title={!verrouillables(cibleMenu).length ? (lotMenu ? 'Que des épreuves : une épreuve ne se verrouille pas' : "Une épreuve ne se verrouille pas : la génération n'y touche jamais") : undefined}
+              className={ITEM_MENU}
+              onClick={() => basculerVerrou(cibleMenu)}
+            >
+              {toutesVerrouillees(cibleMenu)
+                ? <><LockOpen className="size-4 shrink-0 text-ink-2" /><span className="flex-1">{lotMenu ? `Déverrouiller les ${lotMenu.length} séances` : 'Déverrouiller'}</span></>
+                : <><Lock className="size-4 shrink-0 text-ink-2" /><span className="flex-1">{lotMenu ? `Verrouiller les ${lotMenu.length} séances` : 'Verrouiller'}</span></>}
+            </button>
+            {menuSeance.s.statut === 'annulee' ? (
+              <button type="button" role="menuitem" data-action="retablir" disabled={!!lotMenu} title={lotMenu ? 'Une séance à la fois' : undefined} className={ITEM_MENU} onClick={() => changerStatut(menuSeance.s, 'planifiee')}>
+                <Undo2 className="size-4 shrink-0 text-ink-2" />Rétablir la séance
+              </button>
+            ) : (
+              <button type="button" role="menuitem" data-action="annuler" disabled={!!lotMenu} title={lotMenu ? 'Une séance à la fois' : undefined} className={ITEM_MENU_ROUGE} onClick={() => changerStatut(menuSeance.s, 'annulee')}>
+                <Ban className="size-4 shrink-0" />{estEpreuve(menuSeance.s) ? "Annuler l'épreuve" : 'Annuler la séance'}
+              </button>
+            )}
+            <button
+              type="button"
+              role="menuitem"
+              data-action="supprimer"
+              disabled={!!motifSuppression(cibleMenu)}
+              title={motifSuppression(cibleMenu) ?? undefined}
+              className={ITEM_MENU_ROUGE}
+              onClick={() => demanderSuppression(cibleMenu)}
             >
               <Trash2 className="size-4 shrink-0" />
               <span className="flex-1">
-                {cochees.has(menuSeance.s.id_seance) && seancesCochees.length > 1
-                  ? `Supprimer les ${seancesCochees.length} séances`
-                  : estEpreuve(menuSeance.s) ? "Supprimer l'épreuve" : 'Supprimer la séance'}
+                {lotMenu ? `Supprimer les ${lotMenu.length} séances` : estEpreuve(menuSeance.s) ? "Supprimer l'épreuve" : 'Supprimer la séance'}
               </span>
               <kbd className="font-mono text-[10px] opacity-70">Suppr</kbd>
             </button>

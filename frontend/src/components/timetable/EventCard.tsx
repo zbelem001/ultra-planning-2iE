@@ -2,7 +2,7 @@ import { Check, Lock, MapPin, Minus, Plus, User, Users } from 'lucide-react'
 import type { DragEvent, KeyboardEvent, ReactNode } from 'react'
 import { cn } from '@/components/ui'
 import { estEpreuve, LIBELLE_NATURE } from '@/lib/publics'
-import { couleurMatiere, nomCourtSite, nomEnseignant, type SeanceVue } from '@/lib/queries'
+import { couleurSeance, nomCourtSite, nomEnseignant, type SeanceVue } from '@/lib/queries'
 import { fmtHeure } from '@/lib/time'
 
 export type Champ = 'enseignant' | 'salle' | 'public'
@@ -24,8 +24,9 @@ const LIGNE_HORAIRE = 18
 const LIGNE_TITRE = 19
 const LIGNE_DETAIL = 18.5
 const BADGE_ANNULEE = 18
+const LIGNE_ONGLETS = 20 // numéros des groupes (16 px et la marge dessous)
 
-export function EventCard({ s, hide = [], selected, cochee, compact, hauteur = Infinity, draggable, onDragStart, onDragEnd, onClick, onOuvrir, onPlus, plusTitre, onMoins, moinsTitre }: {
+export function EventCard({ s, hide = [], selected, cochee, compact, hauteur = Infinity, draggable, onDragStart, onDragEnd, onClick, onOuvrir, onPlus, plusTitre, onMoins, moinsTitre, onglets }: {
   s: SeanceVue
   hide?: Champ[]
   selected?: boolean
@@ -46,16 +47,19 @@ export function EventCard({ s, hide = [], selected, cochee, compact, hauteur = I
   /** Petit « − » à côté : la raccourcir d'une heure */
   onMoins?: () => void
   moinsTitre?: string
+  /** Numéros des groupes qui ont cours en même temps (WeekGrid), en haut à gauche : un clic montre la carte d'un autre groupe */
+  onglets?: ReactNode
 }) {
-  const color = couleurMatiere(s.matiere.id_matiere)
+  const color = couleurSeance(s) // par type : CM, TD, TP ; examen orange, rattrapage rouge
   const annulee = s.statut === 'annulee'
   const epreuve = estEpreuve(s)
   // Firefox ne glisse pas un <button> : une carte déplaçable est un bloc, cliquable au clavier aussi
-  const bouton = !!onClick && !draggable
+  // (pas de <button> non plus autour des numéros, qui sont des boutons)
+  const bouton = !!onClick && !draggable && !onglets
   const cliquable = !!onClick && !bouton
   const Tag = bouton ? 'button' : 'div'
   const serree = hauteur < CARTE_SERREE
-  const place = hauteur - (serree ? MARGES_CARTE_SERREE : MARGES_CARTE) - LIGNE_HORAIRE - LIGNE_TITRE - (annulee ? BADGE_ANNULEE : 0)
+  const place = hauteur - (serree ? MARGES_CARTE_SERREE : MARGES_CARTE) - LIGNE_HORAIRE - LIGNE_TITRE - (annulee ? BADGE_ANNULEE : 0) - (onglets ? LIGNE_ONGLETS : 0)
   // Le plus utile d'abord : où aller, avec qui (cours mutualisé : une classe par ligne), puis qui enseigne
   const champs = (['salle', 'public', 'enseignant'] as Champ[]).filter((c) => !hide.includes(c) && !(c === 'enseignant' && epreuve))
   const lignes = compact ? 0 : Math.max(0, Math.floor(place / LIGNE_DETAIL))
@@ -84,16 +88,17 @@ export function EventCard({ s, hide = [], selected, cochee, compact, hauteur = I
       onClick={onClick}
       aria-label={`${epreuve ? `${LIBELLE_NATURE[s.nature!]}, ` : ''}${s.matiere.libelle}, ${s.cours.type_cours}, ${fmtHeure(s.heure_debut)} à ${fmtHeure(s.heure_fin)}, ${s.salle.nom_salle}${s.site ? `, ${s.site.nom_site}` : ''}${annulee ? ', annulée' : ''}${cochee ? ', sélectionnée' : ''}`}
       className={cn(
-        'group relative flex h-full w-full flex-col overflow-hidden rounded-2xl border-l-[3px] px-2.5 text-left text-[12px] leading-snug transition-shadow duration-150',
+        'group relative flex h-full w-full flex-col overflow-hidden rounded-2xl px-2.5 text-left text-[12px] leading-snug transition-shadow duration-150',
         serree ? 'py-1' : 'py-2',
         draggable && 'cursor-grab select-none active:cursor-grabbing',
         onClick && 'hover:shadow-md focus-visible:shadow-md',
-        epreuve && 'ring-2 ring-orange',
+        epreuve && (s.nature === 'rattrapage' ? 'ring-2 ring-[#DC2626]' : 'ring-2 ring-orange'),
         (selected || cochee) && 'ring-2 ring-navy ring-offset-1',
         annulee && 'hatched opacity-70',
       )}
-      style={{ borderColor: color, backgroundColor: `color-mix(in srgb, ${color} 13%, white)` }}
+      style={{ backgroundColor: `color-mix(in srgb, ${color} 13%, white)` }}
     >
+      {onglets && <div className="mb-1">{onglets}</div>}
       <div className="flex items-center justify-between gap-1">
         <span className="flex min-w-0 items-center gap-1">
           {cochee && <span className="grid size-3.5 shrink-0 place-items-center rounded-full bg-navy text-white"><Check className="size-2.5" strokeWidth={3.5} /></span>}
@@ -104,7 +109,7 @@ export function EventCard({ s, hide = [], selected, cochee, compact, hauteur = I
         <span className="flex items-center gap-1">
           {s.est_verrouillee && <Lock className="size-3 text-navy" aria-label="Verrouillée" />}
           {epreuve
-            ? <span className="rounded-full bg-orange px-1.5 py-px text-[10px] font-semibold tracking-wide text-navy">{LIBELLE_NATURE[s.nature!]}</span>
+            ? <span className={cn('rounded-full px-1.5 py-px text-[10px] font-semibold tracking-wide', s.nature === 'rattrapage' ? 'bg-[#DC2626] text-white' : 'bg-orange text-navy')}>{LIBELLE_NATURE[s.nature!]}</span>
             : <TypeChip type={s.cours.type_cours} />}
         </span>
       </div>

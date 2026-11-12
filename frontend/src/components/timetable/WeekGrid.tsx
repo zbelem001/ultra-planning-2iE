@@ -2,10 +2,11 @@
 // coloré selon les contraintes dures et un bloc montre où la séance atterrirait. Le créneau visé
 // se déduit de la position du pointeur et de l'endroit où la séance a été saisie (lib/glisser.ts).
 
-import { useEffect, useLayoutEffect, useRef, useState, type DragEvent, type MouseEvent as SourisReact, type PointerEvent as PointeurReact, type ReactNode } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type DragEvent, type MouseEvent as SourisReact, type PointerEvent as PointeurReact, type ReactNode } from 'react'
 import { useSurfaceDepot } from '@/lib/glisser'
 import { cn } from '@/components/ui'
-import type { Db } from '@/types/db'
+import type { Db, Groupe } from '@/types/db'
+import { chaineGroupe } from '@/lib/publics'
 import type { SeanceVue } from '@/lib/queries'
 import { fermeture } from '@/lib/rules'
 import { addDays, fmtHeure, fmtJourCourt, fromMin, jourOf, todayIso, toMin } from '@/lib/time'
@@ -56,11 +57,11 @@ export interface GridEdition {
   onMenuSeance?: (x: number, y: number, s: SeanceVue) => void
   /** Jour et minute sous le pointeur (null : hors de la grille), pour coller une séance là où il se trouve */
   onSurvol?: (p: { date: string; minute: number } | null) => void
-  /** Séance copiée : encadrée en pointillé */
-  copiee?: number | null
-  /** La séance copiée est coupée (Ctrl+X) : estompée en plus, elle sera déplacée au collage */
+  /** Séances copiées (une ou plusieurs) : encadrées en pointillé */
+  copiees?: Set<number>
+  /** Les séances copiées sont coupées (Ctrl+X) : estompées en plus, elles seront déplacées au collage */
   coupee?: boolean
-  /** Séances sélectionnées ensemble (Ctrl+clic), pour les supprimer d'un coup */
+  /** Séances sélectionnées ensemble (Ctrl+clic), pour les copier, les verrouiller ou les supprimer d'un coup */
   cochees?: Set<number>
   /** Petits « + » et « − » d'une séance : l'info-bulle de l'heure en plus ou en moins, seulement quand elle
    *  passe toutes les règles (absente : pas de bouton) */
@@ -157,30 +158,110 @@ function horsGrille(db: Db, jour: string | null, start: number, end: number): [n
   return out
 }
 
-/** Répartit les séances qui se chevauchent sur des colonnes côte à côte */
-function lanes(list: SeanceVue[]): Map<number, { lane: number; of: number }> {
-  const sorted = [...list].sort((a, b) => a.heure_debut.localeCompare(b.heure_debut) || b.duree - a.duree)
-  const out = new Map<number, { lane: number; of: number }>()
-  let cluster: SeanceVue[] = []
+const debutPile = (p: SeanceVue[]) => Math.min(...p.map((s) => toMin(s.heure_debut)))
+const finPile = (p: SeanceVue[]) => Math.max(...p.map((s) => toMin(s.heure_fin)))
+
+/** Répartit les piles qui se chevauchent sur des colonnes côte à côte */
+function lanes(piles: SeanceVue[][]): Map<SeanceVue[], { lane: number; of: number }> {
+  const sorted = [...piles].sort((a, b) => debutPile(a) - debutPile(b) || finPile(b) - finPile(a))
+  const out = new Map<SeanceVue[], { lane: number; of: number }>()
+  let cluster: SeanceVue[][] = []
   let clusterEnd = -1
   let ends: number[] = []
   const flush = () => {
-    for (const s of cluster) out.get(s.id_seance)!.of = ends.length
+    for (const p of cluster) out.get(p)!.of = ends.length
     cluster = []
     ends = []
   }
-  for (const s of sorted) {
-    const d = toMin(s.heure_debut)
+  for (const p of sorted) {
+    const d = debutPile(p)
     if (d >= clusterEnd) { flush(); clusterEnd = -1 }
     let lane = ends.findIndex((e) => e <= d)
     if (lane === -1) { lane = ends.length; ends.push(0) }
-    ends[lane] = toMin(s.heure_fin)
-    clusterEnd = Math.max(clusterEnd, toMin(s.heure_fin))
-    out.set(s.id_seance, { lane, of: 0 })
-    cluster.push(s)
+    ends[lane] = finPile(p)
+    clusterEnd = Math.max(clusterEnd, finPile(p))
+    out.set(p, { lane, of: 0 })
+    cluster.push(p)
   }
   flush()
   return out
+}
+
+/**
+ * Séances d'un jour, en piles : les séances de groupes distincts d'une même classe qui se chevauchent (TP G1, G2,
+ * G3 à la même heure, ou décalées mais qui se recouvrent) forment une pile, dont l'écran ne montre qu'une carte à la
+ * fois, avec des numéros pour passer d'un groupe à l'autre. Toute autre séance est seule dans sa pile : deux séances
+ * qui se chevauchent sans être des groupes distincts d'une classe (la classe entière et un groupe, un groupe et son
+ * demi-groupe, deux classes) restent côte à côte, pour qu'un conflit se voie. Une pile est rangée par groupe
+ * (G1, G2, … G10), une séance annulée après celle qui ne l'est pas.
+ */
+function empiler(list: SeanceVue[], groupes: Groupe[]): SeanceVue[][] {
+  const piles: SeanceVue[][] = []
+  const ouvertes = new Map<number, { pile: SeanceVue[]; fin: number }>() // dernière pile de chaque classe
+  const lies = (a: Groupe, b: Groupe) =>
+    a.id_groupe === b.id_groupe || chaineGroupe(groupes, a.id_groupe).includes(b.id_groupe) || chaineGroupe(groupes, b.id_groupe).includes(a.id_groupe)
+  const sorted = [...list].sort((a, b) => a.heure_debut.localeCompare(b.heure_debut) || b.duree - a.duree)
+  for (const s of sorted) {
+    const g = s.groupe
+    if (!g) { piles.push([s]); continue }
+    const o = ouvertes.get(s.classe.id_classe)
+    if (o && toMin(s.heure_debut) < o.fin) {
+      if (o.pile.some((x) => lies(x.groupe!, g))) { piles.push([s]); continue } // même groupe en même temps : côte à côte
+      o.pile.push(s)
+      o.fin = Math.max(o.fin, toMin(s.heure_fin))
+      continue
+    }
+    const pile = [s]
+    piles.push(pile)
+    ouvertes.set(s.classe.id_classe, { pile, fin: toMin(s.heure_fin) })
+  }
+  for (const p of piles) {
+    if (p.length > 1) p.sort((a, b) =>
+      a.groupe!.code_groupe.localeCompare(b.groupe!.code_groupe, 'fr', { numeric: true })
+      || Number(a.statut === 'annulee') - Number(b.statut === 'annulee')
+      || a.heure_debut.localeCompare(b.heure_debut))
+  }
+  return piles
+}
+
+/** Numéros des groupes d'une pile, en haut à gauche de la carte : celui de la carte montrée est plein */
+function Onglets({ pile, montree, onChoisir, marquees }: {
+  pile: SeanceVue[]
+  montree: number
+  onChoisir: (id: number) => void
+  /** Séances sélectionnées ou cochées : leur numéro est cerclé même quand leur carte est cachée */
+  marquees: (id: number) => boolean
+}) {
+  return (
+    <div role="group" aria-label={`${pile.length} groupes à cette heure`} className="flex flex-wrap gap-1">
+      {pile.map((x, i) => {
+        const actif = x.id_seance === montree
+        const infos = `${x.groupe?.code_groupe ?? x.public_affiche} · ${x.cours.type_cours} · ${fmtHeure(x.heure_debut)}–${fmtHeure(x.heure_fin)} · ${x.salle.nom_salle}${x.statut === 'annulee' ? ' · annulée' : ''}`
+        return (
+          <button
+            key={x.id_seance}
+            type="button"
+            data-onglet={i + 1}
+            aria-pressed={actif}
+            aria-label={`Groupe ${i + 1} sur ${pile.length} : ${infos}`}
+            title={infos}
+            // ni sélectionner la carte, ni ouvrir son détail
+            onClick={(e) => { e.stopPropagation(); onChoisir(x.id_seance) }}
+            onDoubleClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') e.stopPropagation() }}
+            className={cn(
+              'press grid size-4 shrink-0 place-items-center rounded-full text-[10px] leading-none font-semibold tabular-nums transition-colors duration-150',
+              actif ? 'bg-navy text-white' : 'bg-white/90 text-navy ring-1 ring-navy/25 hover:bg-navy/10',
+              !actif && marquees(x.id_seance) && 'ring-2 ring-navy',
+              x.statut === 'annulee' && 'line-through opacity-60',
+            )}
+          >
+            {i + 1}
+          </button>
+        )
+      })}
+    </div>
+  )
 }
 
 export function WeekGrid({ db, days, seances, hide, selectedId, onSelect, onOuvrir, edition, renderEmptyDay, idClasse, remplir, impression }: {
@@ -227,6 +308,37 @@ export function WeekGrid({ db, days, seances, hide, selectedId, onSelect, onOuvr
   const y = (min: number) => ((min - start) / 60) * pxHeure
   const glisse = edition?.glisse ?? null
   const cible = edition?.cible ?? null
+
+  // Groupes en même temps : la carte montrée dans chaque pile est la dernière choisie (clic sur son numéro), ou
+  // sélectionnée, copiée, déplacée ou modifiée ; sinon celle du premier groupe. Un choix ne vaut que pour sa pile.
+  const [affichees, setAffichees] = useState<number[]>([])
+  const montrer = useCallback((ids: number[]) => setAffichees((a) => {
+    if (ids.every((id, i) => a[a.length - ids.length + i] === id)) return a
+    return [...a.filter((x) => !ids.includes(x)), ...ids].slice(-80)
+  }), [])
+  const montree = (pile: SeanceVue[]) => {
+    for (let i = affichees.length - 1; i >= 0; i--) {
+      const s = pile.find((x) => x.id_seance === affichees[i])
+      if (s) return s
+    }
+    return pile[0]
+  }
+  // identifiants des séances copiées, en texte : l'ensemble est recréé à chaque modification de la base
+  const copiees = edition?.copiees ? [...edition.copiees].join() : ''
+  useEffect(() => { if (selectedId != null) montrer([selectedId]) }, [selectedId, montrer])
+  useEffect(() => { if (copiees) montrer(copiees.split(',').map(Number)) }, [copiees, montrer])
+  // Séance ajoutée, déplacée, allongée, annulée… (collage, dépôt, assistant) : sa carte passe devant. Pas quand la
+  // semaine ou la ressource change (rien en commun avec l'affichage d'avant).
+  const positions = useRef<{ jours: string; places: Map<number, string> } | null>(null)
+  const joursCle = days.join()
+  useEffect(() => {
+    const avant = positions.current
+    const places = new Map(seances.map((s) => [s.id_seance, `${s.date_seance}|${s.heure_debut}|${s.heure_fin}|${s.statut}`]))
+    positions.current = { jours: joursCle, places }
+    if (!avant || avant.jours !== joursCle || ![...places.keys()].some((id) => avant.places.has(id))) return
+    const changees = [...places].filter(([id, place]) => avant.places.get(id) !== place).map(([id]) => id)
+    if (changees.length) montrer(changees)
+  }, [seances, joursCle, montrer])
 
   // Bandes de changement de semaine, visibles pendant un glisser
   const bandes = !!glisse && !!edition?.onSemaine
@@ -402,12 +514,14 @@ export function WeekGrid({ db, days, seances, hide, selectedId, onSelect, onOuvr
         </div>
 
         {/* Colonnes des jours */}
-        {days.map((d) => {
+        {days.map((d, i) => {
           const jour = jourOf(d)
           const ferie = fermeture(db, d, idClasse)
           const crs = db.creneau.filter((c) => c.jour === jour)
           const list = seances.filter((s) => s.date_seance === d)
-          const pos = lanes(list)
+          // Export PDF : pas de numéros à cliquer sur papier, les groupes restent côte à côte
+          const piles = impression ? list.map((s) => [s]) : empiler(list, db.groupe)
+          const pos = lanes(piles)
           return (
             <div
               key={d}
@@ -425,6 +539,10 @@ export function WeekGrid({ db, days, seances, hide, selectedId, onSelect, onOuvr
               {heuresLabels.slice(1, -1).map((m) => (
                 <div key={m} className="absolute inset-x-0 border-t border-dashed border-line/80" style={{ top: y(m) }} />
               ))}
+              {/* ligne verticale entre deux jours, comme celles des heures (au milieu de l'espace entre les colonnes) */}
+              {i < days.length - 1 && (
+                <div className="pointer-events-none absolute inset-y-0 -right-[3px] border-l border-dashed border-line/80" aria-hidden />
+              )}
               {/* hors grille : jour sans créneau, pause, férié */}
               {!ferie && horsGrille(db, jour, start, end).map(([a, b]) => (
                 <div key={a} className="hatched absolute inset-x-0 bg-muted/60" style={{ top: y(a), height: y(b) - y(a) }} aria-hidden />
@@ -458,21 +576,23 @@ export function WeekGrid({ db, days, seances, hide, selectedId, onSelect, onOuvr
               })}
 
               {/* séances */}
-              {list.map((s) => {
-                const p = pos.get(s.id_seance)!
+              {piles.map((pile) => {
+                const p = pos.get(pile)!
+                const s = pile.length > 1 ? montree(pile) : pile[0]
                 const top = y(toMin(s.heure_debut))
                 const h = y(toMin(s.heure_fin)) - top
                 const canDrag = !!edition && s.statut !== 'annulee' && !s.est_verrouillee
                 const aj = canDrag && !glisse && edition?.onAjuster ? edition.ajustements?.get(s.id_seance) : undefined
                 return (
                   <div
-                    key={s.id_seance}
+                    key={pile.length > 1 ? `pile-${pile[0].id_seance}` : s.id_seance}
                     data-seance={s.id_seance}
+                    data-pile={pile.length > 1 ? pile.length : undefined}
                     className={cn(
                       'absolute p-0.5',
                       glisse && (glisse.id_seance === s.id_seance ? 'opacity-30' : 'opacity-75'),
-                      edition?.copiee === s.id_seance && 'rounded-[1.1rem] outline-2 -outline-offset-1 outline-navy outline-dashed',
-                      edition?.copiee === s.id_seance && edition.coupee && 'opacity-50',
+                      edition?.copiees?.has(s.id_seance) && 'rounded-[1.1rem] outline-2 -outline-offset-1 outline-navy outline-dashed',
+                      edition?.copiees?.has(s.id_seance) && edition.coupee && 'opacity-50',
                     )}
                     style={{ top, height: h, left: `${(p.lane / p.of) * 100}%`, width: `${100 / p.of}%` }}
                     onContextMenu={edition?.onMenuSeance
@@ -497,6 +617,14 @@ export function WeekGrid({ db, days, seances, hide, selectedId, onSelect, onOuvr
                       plusTitre={aj?.plus}
                       onMoins={aj?.moins ? () => edition!.onAjuster!(s, -1) : undefined}
                       moinsTitre={aj?.moins}
+                      onglets={pile.length > 1 && (
+                        <Onglets
+                          pile={pile}
+                          montree={s.id_seance}
+                          onChoisir={(id) => montrer([id])}
+                          marquees={(id) => selectedId === id || !!edition?.cochees?.has(id)}
+                        />
+                      )}
                     />
                   </div>
                 )

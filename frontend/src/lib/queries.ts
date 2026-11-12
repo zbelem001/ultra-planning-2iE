@@ -122,9 +122,35 @@ export function lieuSalle(db: Db, s: Salle): string {
 export const publicCours = (classe: Classe, groupe: Groupe | null) =>
   groupe ? `${classe.code_classe} · ${groupe.code_groupe}` : classe.code_classe
 
-/** Couleur par matière : palette « intervenants » de DESIGN.md */
+/** Couleur par matière : palette « intervenants » de DESIGN.md (les séances, elles, se colorent par type) */
 const PALETTE = ['#6366F1', '#14B8A6', '#A855F7', '#0EA5E9', '#EC4899', '#84CC16', '#78716C', '#0891B2']
 export const couleurMatiere = (id_matiere: number) => PALETTE[(id_matiere - 1) % PALETTE.length]
+
+/** Couleur d'une séance selon son type : CM, TD, TP, Projet ; examen en orange, rattrapage en rouge */
+export const COULEURS_TYPE = {
+  CM: '#3B82F6',
+  TD: '#10B981',
+  TP: '#8B5CF6',
+  PROJET: '#0891B2', // type à venir : aujourd'hui, un projet est un TP
+  EXAMEN: '#F39B2A',
+  RATTRAPAGE: '#DC2626',
+} as const
+export type TypeCouleur = keyof typeof COULEURS_TYPE
+export const LIBELLES_TYPE: Record<TypeCouleur, string> = { CM: 'CM', TD: 'TD', TP: 'TP', PROJET: 'Projet', EXAMEN: 'Examen', RATTRAPAGE: 'Rattrapage' }
+
+export function typeSeance(s: Pick<SeanceVue, 'nature' | 'cours'>): TypeCouleur {
+  if (s.nature === 'examen') return 'EXAMEN'
+  if (s.nature === 'rattrapage') return 'RATTRAPAGE'
+  return couleurTypeCle(s.cours.type_cours)
+}
+const couleurTypeCle = (type: string): TypeCouleur => {
+  const t = type.toUpperCase()
+  return t in COULEURS_TYPE ? (t as TypeCouleur) : 'CM'
+}
+/** Couleur d'un type de cours (CM, TD, TP…) */
+export const couleurType = (type: string) => COULEURS_TYPE[couleurTypeCle(type)]
+/** Couleur d'une séance : son type, ou examen / rattrapage */
+export const couleurSeance = (s: Pick<SeanceVue, 'nature' | 'cours'>) => COULEURS_TYPE[typeSeance(s)]
 
 /** Heures planifiées (hors annulées) d'un cours dans un emploi du temps */
 export function heuresPlanifiees(db: Db, id_edt: number, id_cours: number, jusqua?: string): number {

@@ -32,6 +32,8 @@ export interface Ecart {
   type: TypeSeance
   /** Public concerné : la classe entière, ou un groupe de TD / TP */
   public: string
+  /** Groupe de ce public (null : la classe entière) */
+  id_groupe: number | null
   prevu: number
   couvert: number
 }
@@ -57,7 +59,7 @@ export function couverture(db: Db, id_semestre?: number): Ecart[] {
         const couvert = cours
           .filter((c) => c.type_cours === type && (c.id_groupe === null || c.id_groupe === pub.id))
           .reduce((a, c) => a + c.volume_horaire, 0)
-        out.push({ id_programme: p.id_programme, id_classe: p.id_classe, id_matiere: p.id_matiere, type, public: pub.nom, prevu, couvert })
+        out.push({ id_programme: p.id_programme, id_classe: p.id_classe, id_matiere: p.id_matiere, type, public: pub.nom, id_groupe: pub.id, prevu, couvert })
       }
     }
   }

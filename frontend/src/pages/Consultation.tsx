@@ -20,7 +20,7 @@ import type { Champ } from '@/components/timetable/EventCard'
 import { ecoles as ecolesApi } from '@/lib/api'
 import { exporterExcel } from '@/lib/excel'
 import { download, toIcs } from '@/lib/ics'
-import { couleurMatiere, enrichir, filtrer, nomEnseignant, type Ressource, type SeanceVue } from '@/lib/queries'
+import { COULEURS_TYPE, enrichir, filtrer, LIBELLES_TYPE, nomEnseignant, typeSeance, type Ressource, type SeanceVue, type TypeCouleur } from '@/lib/queries'
 import { useGrandEcran } from '@/lib/hauteur'
 import { ecoleCourante, edtPublie, useStore } from '@/lib/store'
 import { vueInvites } from '@/lib/versions'
@@ -196,7 +196,7 @@ function Contenu() {
   const avecSamedi = db.creneau.some((c) => c.jour === 'Samedi') || semaineList.some((s) => jourOf(s.date_seance) === 'Samedi')
   const jours = joursSemaine.slice(0, avecSamedi ? 6 : 5)
   const heures = semaineList.filter((s) => s.statut !== 'annulee').reduce((a, s) => a + s.duree, 0)
-  const matieresSemaine = [...new Map(semaineList.map((s) => [s.matiere.id_matiere, s.matiere])).values()]
+  const typesSemaine = (Object.keys(COULEURS_TYPE) as TypeCouleur[]).filter((t) => semaineList.some((s) => typeSeance(s) === t))
 
   const titre = useMemo(() => {
     if (id === null) return null
@@ -412,12 +412,13 @@ function Contenu() {
                   {vue === 'semestre' && <SemesterView db={db} weeks={weeks} seances={ressource} onPickWeek={(s) => set({ s, v: 'semaine' })} idClasse={res === 'classe' ? id : null} />}
                 </div>
 
-                {matieresSemaine.length > 0 && vue !== 'semestre' && (
+                {/* légende des couleurs : les types de séance de la semaine */}
+                {typesSemaine.length > 0 && vue !== 'semestre' && (
                   <div className="mt-4 flex flex-wrap gap-x-4 gap-y-1.5 px-1 text-xs text-ink-2 lg:hidden print:flex">
-                    {matieresSemaine.map((m) => (
-                      <span key={m.id_matiere} className="flex items-center gap-1.5">
-                        <span className="size-2 rounded-full" style={{ backgroundColor: couleurMatiere(m.id_matiere) }} />
-                        {m.libelle}
+                    {typesSemaine.map((t) => (
+                      <span key={t} className="flex items-center gap-1.5">
+                        <span className="size-2 rounded-full" style={{ backgroundColor: COULEURS_TYPE[t] }} />
+                        {LIBELLES_TYPE[t]}
                       </span>
                     ))}
                   </div>
